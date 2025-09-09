@@ -1,5 +1,4 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\design_planes.py
-
 import os
 import fitz
 import aiohttp
@@ -19,7 +18,6 @@ from bot.utils.image_processor import save_image_as_png
 from bot.utils.chat_actions import run_long_operation_with_action
 from bot.utils.ai_processor import generate_floor_plan
 from bot.utils.file_utils import safe_remove
-
 
 
 # Функция start_design_flow без изменений

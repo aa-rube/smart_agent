@@ -1,8 +1,9 @@
-#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\start.py
+#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\handler_manager.py
 
 import bot.keyboards.inline as inline
 import bot.keyboards.reply as reply
 import bot.utils.database as db
+import bot.utils.admin_db as adb
 
 import bot.utils.tokens as tk
 from aiogram import Router, F, Bot
@@ -17,6 +18,10 @@ async def frst_msg(message: Message, state: FSMContext, bot: Bot):
     if not db.check_and_add_user(user_id):
         db.set_variable(user_id, 'tokens', 2)
         db.set_variable(user_id, 'have_sub', 0)
+
+        adb.init_notification_table()  # создаст таблицы, если их нет
+        adb.inicialize_users(user_id, message.from_user.username or "")
+
         await message.answer_photo(FSInputFile('images/logo1.jpg'))
         await message.answer(frst_text, reply_markup=inline.frst_kb)
     else:

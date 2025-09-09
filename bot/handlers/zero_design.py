@@ -20,7 +20,6 @@ from bot.utils.ai_processor import generate_design, download_image_from_url
 from bot.utils.file_utils import safe_remove
 
 
-
 async def start_zero_design_flow(callback: CallbackQuery, state: FSMContext):
     user_id = callback.message.chat.id
     if tk.get_tokens(user_id) > 0:
