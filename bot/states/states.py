@@ -1,0 +1,21 @@
+from aiogram.fsm.state import State, StatesGroup
+
+class States(StatesGroup):
+    waiting_for_prompt = State()
+
+class DesignStates(StatesGroup):
+    waiting_for_file = State()
+    # waiting_for_plan_type = State()
+    waiting_for_visualization_style = State()
+    waiting_for_style = State()
+
+class RedesignStates(StatesGroup):
+    waiting_for_photo = State()
+    waiting_for_room_type = State()
+    waiting_for_style = State()
+
+class ZeroDesignStates(StatesGroup):
+    waiting_for_file = State()
+    waiting_for_room_type = State()
+    waiting_for_furniture = State()
+    waiting_for_style = State()

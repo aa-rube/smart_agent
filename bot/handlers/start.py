@@ -1,0 +1,60 @@
+#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\start.py
+
+import bot.keyboards.inline as inline
+import bot.keyboards.reply as reply
+import bot.utils.database as db
+
+import bot.utils.tokens as tk
+from aiogram import Router, F, Bot
+from aiogram.filters import CommandStart, Command
+from aiogram.types import Message, FSInputFile, CallbackQuery
+from aiogram.fsm.context import FSMContext
+from bot.text.texts import *
+
+
+async def frst_msg(message: Message, state: FSMContext, bot: Bot):
+    user_id = message.chat.id
+    if not db.check_and_add_user(user_id):
+        db.set_variable(user_id, 'tokens', 2)
+        db.set_variable(user_id, 'have_sub', 0)
+        await message.answer_photo(FSInputFile('images/logo1.jpg'))
+        await message.answer(frst_text, reply_markup=inline.frst_kb)
+    else:
+        await msg_start(message, state=state, bot=bot)
+
+
+async def msg_start(message: Message, state: FSMContext, bot: Bot):
+    user_id = message.chat.id
+    await message.answer_photo(FSInputFile('images/logo1.jpg'))
+    await message.answer(start_hello, reply_markup=reply.main_kb)
+    is_sub = db.get_variable(user_id, 'have_sub')
+    tokens = db.get_variable(user_id, 'tokens')
+    await message.answer(start_plan(is_sub, tokens), reply_markup=inline.start_kb)
+
+
+async def call_start(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    await msg_start(callback.message, state=state, bot=bot)
+
+
+async def sub(message: Message, state: FSMContext, bot: Bot):
+    user_id = message.chat.id
+    await message.answer(SUB_PAY, reply_markup=inline.sub(user_id))
+
+
+async def help(message: Message, state: FSMContext, bot: Bot):
+    await message.answer(HELP, reply_markup=inline.help())
+
+
+async def add_tokens(message: Message, state: FSMContext, bot: Bot):
+    user_id = message.chat.id
+    tk.add_tokens(user_id, 100)
+    await message.answer("Added 100 tokens, be happy")
+
+
+def router(rt: Router):
+    rt.message.register(frst_msg, CommandStart())
+    rt.message.register(sub, Command("sub"))
+    rt.message.register(add_tokens, Command("add"))
+    rt.message.register(msg_start, F.text=='🏁Главное меню')
+    rt.message.register(help, F.text=='🧑‍💻Тех. поддержка')
+    rt.callback_query.register(call_start, F.data=='start')
