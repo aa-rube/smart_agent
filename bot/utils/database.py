@@ -1,66 +1,196 @@
-#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\utils\database.py
+# smart_agent/bot/utils/database.py
+from __future__ import annotations
 
-import sqlite3
+from typing import Optional, Any, Iterable
+
+from sqlalchemy import (
+    create_engine, event,
+    String, Integer, ForeignKey
+)
+from sqlalchemy.orm import (
+    DeclarativeBase, Mapped, mapped_column, relationship,
+    sessionmaker, Session
+)
+
 from bot.config import DB_PATH
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS variables (
-            user_id INTEGER NOT NULL,
-            variable_name TEXT NOT NULL,
-            variable_value TEXT,
-            PRIMARY KEY (user_id, variable_name),
-            FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-        )
-    """)
-    conn.commit()
-    conn.close()
 
-def set_variable(user_id, variable_name, variable_value):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT OR REPLACE INTO variables (user_id, variable_name, variable_value)
-        VALUES (?, ?, ?)
-    """, (user_id, variable_name, str(variable_value)))
-    conn.commit()
-    conn.close()
-    return variable_value
+# =========================
+#     ORM Base & Engine
+# =========================
+class Base(DeclarativeBase):
+    pass
 
-def get_variable(user_id, variable_name):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT variable_value FROM variables WHERE user_id = ? AND variable_name = ?
-    """, (user_id, variable_name))
-    row = cur.fetchone()
-    conn.close()
-    return row[0] if row else None
 
-def check_and_add_user(user_id):
-    """Возвращает True, если уже был, False — если новый. Для нового ставим дефолты."""
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
-    exists = cur.fetchone() is not None
-    if not exists:
-        cur.execute("INSERT INTO users (user_id) VALUES (?)", (user_id,))
-        # дефолты: 2 токена, подписки нет
-        cur.execute("""
-            INSERT OR IGNORE INTO variables (user_id, variable_name, variable_value)
-            VALUES (?, 'tokens', '2')
-        """, (user_id,))
-        cur.execute("""
-            INSERT OR IGNORE INTO variables (user_id, variable_name, variable_value)
-            VALUES (?, 'have_sub', '0')
-        """, (user_id,))
-        conn.commit()
-    conn.close()
-    return exists
+def _make_engine():
+    engine = create_engine(
+        f"sqlite:///{DB_PATH}",
+        future=True,
+        echo=False,           # при необходимости включай лог SQL
+    )
+
+    # Включаем каскады FK в SQLite
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragma(dbapi_conn, conn_record):
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
+
+    return engine
+
+
+engine = _make_engine()
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+
+
+# =========================
+#          Models
+# =========================
+class User(Base):
+    __tablename__ = "users"
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    variables: Mapped[list["Variable"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+
+
+class Variable(Base):
+    __tablename__ = "variables"
+
+    # Композитный PK: (user_id, variable_name)
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        primary_key=True
+    )
+    variable_name: Mapped[str] = mapped_column(String, primary_key=True)
+    variable_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    user: Mapped[User] = relationship(back_populates="variables")
+
+
+# =========================
+#       Repository
+# =========================
+class UserRepository:
+    """
+    Аналог spring-repository: короткоживущие сессии, чистые методы,
+    никакого сырого SQL.
+    """
+
+    def __init__(self, session_factory: sessionmaker[Session]):
+        self._session_factory = session_factory
+
+    # --- schema ---
+    def init_schema(self) -> None:
+        Base.metadata.create_all(bind=engine)
+
+    # --- utils ---
+    def _session(self) -> Session:
+        return self._session_factory()
+
+    # --- users ---
+    def ensure_user(self, user_id: int) -> bool:
+        """
+        Возвращает True, если пользователь уже был; False — если только что создан.
+        Одновременно проставляет дефолты (tokens=2, have_sub=0).
+        """
+        with self._session() as s, s.begin():
+            existed = s.get(User, user_id) is not None
+            if not existed:
+                u = User(user_id=user_id)
+                s.add(u)
+                s.add_all([
+                    Variable(user_id=user_id, variable_name="tokens",   variable_value="2"),
+                    Variable(user_id=user_id, variable_name="have_sub", variable_value="0"),
+                ])
+            return existed
+
+    # --- variables ---
+    def set_var(self, user_id: int, name: str, value: Any) -> str:
+        value_str = str(value)
+        with self._session() as s, s.begin():
+            # гарантируем, что пользователь есть
+            if s.get(User, user_id) is None:
+                s.add(User(user_id=user_id))
+            v = s.get(Variable, (user_id, name))
+            if v is None:
+                s.add(Variable(user_id=user_id, variable_name=name, variable_value=value_str))
+            else:
+                v.variable_value = value_str
+        return value_str
+
+    def get_var(self, user_id: int, name: str) -> Optional[str]:
+        with self._session() as s:
+            v = s.get(Variable, (user_id, name))
+            return v.variable_value if v else None
+
+    # --- tokens helpers (на случай прямого использования репозитория) ---
+    def get_tokens(self, user_id: int) -> int:
+        raw = self.get_var(user_id, "tokens")
+        try:
+            return int(raw) if raw is not None else 0
+        except Exception:
+            return 0
+
+    def set_tokens(self, user_id: int, value: int) -> int:
+        self.set_var(user_id, "tokens", int(value))
+        return int(value)
+
+    def add_tokens(self, user_id: int, delta: int) -> int:
+        new_val = self.get_tokens(user_id) + int(delta)
+        self.set_tokens(user_id, new_val)
+        return new_val
+
+    def remove_tokens(self, user_id: int, delta: int = 1) -> int:
+        new_val = max(0, self.get_tokens(user_id) - int(delta))
+        self.set_tokens(user_id, new_val)
+        return new_val
+
+
+# Глобальный «репозиторий» для обратной совместимости
+_repo = UserRepository(SessionLocal)
+_repo.init_schema()
+
+
+# =========================
+#   Совместимые функции
+# =========================
+def init_db() -> None:
+    """Оставлено для совместимости."""
+    _repo.init_schema()
+
+
+def set_variable(user_id: int, variable_name: str, variable_value: Any) -> Any:
+    """Оставлено для совместимости."""
+    return _repo.set_var(user_id, variable_name, variable_value)
+
+
+def get_variable(user_id: int, variable_name: str) -> Optional[str]:
+    """Оставлено для совместимости."""
+    return _repo.get_var(user_id, variable_name)
+
+
+def check_and_add_user(user_id: int) -> bool:
+    """
+    Совместимость с прежним контрактом:
+    True  — пользователь уже был,
+    False — только что добавлен (проставлены дефолтные переменные).
+    """
+    return _repo.ensure_user(user_id)
+
+
+# Необязательно, но удобно (если где-то импортируешь напрямую токены из db)
+def get_tokens(user_id: int) -> int:
+    return _repo.get_tokens(user_id)
+
+
+def add_tokens(user_id: int, n: int) -> int:
+    return _repo.add_tokens(user_id, n)
+
+
+def remove_tokens(user_id: int, n: int = 1) -> int:
+    return _repo.remove_tokens(user_id, n)

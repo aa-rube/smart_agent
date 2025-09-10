@@ -3,7 +3,6 @@ import os
 import fitz
 import aiohttp
 import bot.keyboards.inline as inline
-import bot.utils.database as db
 import bot.utils.tokens as tk
 
 from aiogram import Router, F, Bot

@@ -1,7 +1,5 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\executor\ai_config.py
 
-import random
-
 # ================================================================
 #     НАСТРОЙКИ НЕЙРОСЕТИ ДЛЯ БОТА-ДИЗАЙНЕРА
 #

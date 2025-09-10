@@ -2,7 +2,6 @@
 
 import bot.keyboards.inline as inline
 import bot.keyboards.reply as reply
-import bot.utils.database as db
 import bot.utils.admin_db as adb
 
 import bot.utils.tokens as tk
