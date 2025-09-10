@@ -6,8 +6,13 @@ from bot.utils import youmoney
 
 frst_kb = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="🚀 Начать (работает по подписке)", callback_data="start"),],
-        [InlineKeyboardButton(text='Подписаться на контент', callback_data='ShowRates')],
+        [InlineKeyboardButton(text="🏗 Планировки", callback_data="floor_plan"),],
+        [InlineKeyboardButton(text="🛋 Интерьер", callback_data="design_start"),],
+        [InlineKeyboardButton(text="🚨 Закрыть возражение", callback_data="non"),],
+        [InlineKeyboardButton(text="🎯 Составить описание", callback_data="non2"), ],
+        [InlineKeyboardButton(text="🌟 Написать отзыв", callback_data="non3"), ],
+
+        [InlineKeyboardButton(text='Подписаться на контент', callback_data='show_rates')],
         [InlineKeyboardButton(text='Наше сообщество', url='https://t.me/+DJfn6NyHmRAzMTdi')],
         [InlineKeyboardButton(text='Тех. поддержка', url='https://t.me/dashaadminrealtor')],
         [InlineKeyboardButton(text='Мой профиль', callback_data='my_profile')],
@@ -17,9 +22,6 @@ frst_kb = InlineKeyboardMarkup(
 
 start_kb = InlineKeyboardMarkup(
     inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🏗  Дизайн планировок", callback_data="design"),
-        ],
         [
             InlineKeyboardButton(text="🛋 Редизайн интерьера", callback_data="redesign")
         ],
@@ -116,7 +118,7 @@ change_price_btn = InlineKeyboardMarkup(inline_keyboard=[
 
 # Стартовое меню
 start_batons = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text='Подписаться на контент', callback_data='ShowRates')],
+    [InlineKeyboardButton(text='Подписаться на контент', callback_data='show_rates')],
     [InlineKeyboardButton(text='Наше сообщество', url='https://t.me/+DJfn6NyHmRAzMTdi')],
     [InlineKeyboardButton(text='Тех. поддержка', url='https://t.me/dashaadminrealtor')],
     [InlineKeyboardButton(text='Мой профиль', callback_data='my_profile')],

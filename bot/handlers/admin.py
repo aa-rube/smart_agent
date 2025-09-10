@@ -16,7 +16,7 @@ import bot.config as cfg
 
 router = Router()
 
-# ====== Прайс (в копейках) ======
+# ====== Прайс (в рублях) ======
 Price = {
     'Rate_1': 250000,    # 2 500 ₽
     'Rate_2': 650000,    # 6 500 ₽
@@ -47,8 +47,8 @@ class EditPostState(StatesGroup):
 # =========================
 # Публичные команды/кнопки
 # =========================
-@router.message(Command('ShowRates'))
-@router.callback_query(F.data == 'ShowRates')
+@router.message(Command('show_rates'))
+@router.callback_query(F.data == 'show_rates')
 async def show_rates(evt: Message | CallbackQuery):
     msg = evt if isinstance(evt, Message) else evt.message
     await msg.answer(texts.info_rates_message, reply_markup=inline.select_rates)
@@ -70,7 +70,7 @@ async def my_profile(callback: CallbackQuery):
 # =========================
 #      ADMIN MENU
 # =========================
-@router.message(Command('/admin'))
+@router.message(Command('AdminMenu'))
 async def admin_menu(message: Message):
     if message.from_user.id != cfg.ADMIN_ID:
         await message.answer("У вас нет доступа к админ панели.")

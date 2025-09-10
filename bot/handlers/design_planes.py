@@ -24,7 +24,7 @@ from bot.utils.file_utils import safe_remove
 async def start_design_flow(callback: CallbackQuery, state: FSMContext):
     user_id = callback.message.chat.id
     if tk.get_tokens(user_id) > 0:
-        await callback.message.answer_photo(FSInputFile('images/plan.jpg'), caption=TEXT_GET_FILE)
+        await callback.message.answer_photo(FSInputFile('images/plan.jpg'), caption=text_get_file(user_id))
         await state.set_state(DesignStates.waiting_for_file)
     else:
         if db.get_variable(user_id, 'have_sub') == '0':
@@ -160,7 +160,7 @@ async def handle_style(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
 # --- ИЗМЕНЕНИЕ В РОУТЕРЕ ---
 def router(rt: Router):
-    rt.callback_query.register(start_design_flow, F.data == "design")
+    rt.callback_query.register(start_design_flow, F.data == "floor_plan")
     rt.message.register(handle_file, DesignStates.waiting_for_file,
                         F.content_type.in_({ContentType.PHOTO, ContentType.DOCUMENT, ContentType.TEXT}))
     

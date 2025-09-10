@@ -22,7 +22,7 @@ from bot.utils.file_utils import safe_remove
 async def start_redesign_flow(callback: CallbackQuery, state: FSMContext):
     user_id = callback.message.chat.id
     if tk.get_tokens(user_id) > 0:
-        await callback.message.answer_photo(FSInputFile('images/int.jpg'), TEXT_GET_PHOTO_REDESIGN)
+        await callback.message.answer_photo(FSInputFile('images/int.jpg'), text_get_photo_redesign(user_id))
         await state.set_state(RedesignStates.waiting_for_photo)
     else:
         if db.get_variable(user_id, 'have_sub') == '0':

@@ -187,6 +187,7 @@ def design_generate():
     img_bytes = files["image"].read()
     prompt = form["prompt"]
     img_meta = _image_meta(img_bytes)
+
     _log_payload(
         "design", MODEL_INTERIOR_DESIGN_REF, MODEL_INTERIOR_DESIGN_IMAGE_PARAM,
         prompt, img_meta, MODEL_INTERIOR_DESIGN_NEEDS_OPENAI_KEY

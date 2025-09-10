@@ -22,19 +22,18 @@ async def frst_msg(message: Message, state: FSMContext, bot: Bot):
         adb.init_notification_table()  # создаст таблицы, если их нет
         adb.inicialize_users(user_id, message.from_user.username or "")
 
-        await message.answer_photo(FSInputFile('images/logo1.jpg'))
-        await message.answer(frst_text, reply_markup=inline.frst_kb)
-    else:
-        await msg_start(message, state=state, bot=bot)
+    await message.answer_photo(FSInputFile('images/logo1.jpg'))
+    await message.answer(frst_text, reply_markup=inline.frst_kb)
+    # else:
+    #     await msg_start(message, state=state, bot=bot)
 
 
 async def msg_start(message: Message, state: FSMContext, bot: Bot):
     user_id = message.chat.id
-    await message.answer_photo(FSInputFile('images/logo1.jpg'))
+    # await message.answer_photo(FSInputFile('images/logo1.jpg'))
     await message.answer(start_hello, reply_markup=reply.main_kb)
-    is_sub = db.get_variable(user_id, 'have_sub')
-    tokens = db.get_variable(user_id, 'tokens')
-    await message.answer(start_plan(is_sub, tokens), reply_markup=inline.start_kb)
+
+    await message.answer(start_plan(user_id), reply_markup=inline.start_kb)
 
 
 async def call_start(callback: CallbackQuery, state: FSMContext, bot: Bot):
@@ -60,6 +59,6 @@ def router(rt: Router):
     rt.message.register(frst_msg, CommandStart())
     rt.message.register(sub, Command("sub"))
     rt.message.register(add_tokens, Command("add"))
-    rt.message.register(msg_start, F.text=='🏁Главное меню')
+    rt.message.register(frst_msg, F.text=='🏁Главное меню')
     rt.message.register(help, F.text=='🧑‍💻Тех. поддержка')
-    rt.callback_query.register(call_start, F.data=='start')
+    rt.callback_query.register(call_start, F.data=='design_start')

@@ -13,10 +13,6 @@ from aiohttp import web
 from bot import setup
 from bot.config import TOKEN
 
-# где создаётся dp / bot и scheduler
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from bot.handlers import admin as admin_handlers
-
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
 dp = Dispatcher(storage=MemoryStorage())
 setup(dp)
