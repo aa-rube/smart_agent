@@ -44,28 +44,6 @@ class EditPostState(StatesGroup):
     waiting_for_new_text = State()
     message_id = State()
 
-# =========================
-# Публичные команды/кнопки
-# =========================
-@router.message(Command('show_rates'))
-@router.callback_query(F.data == 'show_rates')
-async def show_rates(evt: Message | CallbackQuery):
-    msg = evt if isinstance(evt, Message) else evt.message
-    await msg.answer(texts.info_rates_message, reply_markup=inline.select_rates)
-    if isinstance(evt, CallbackQuery):
-        await evt.answer()
-
-@router.callback_query(F.data.startswith("my_profile"))
-async def my_profile(callback: CallbackQuery):
-    info = adb.get_my_info(callback.message.chat.id)
-    if info:
-        temp = (
-            f'Подписка: {"YES" if info[0] else "NO"}\n'
-            f'Дата оплаты подписки: {info[1] or "-"}\n'
-            f'Дата окончания подписки: {info[2] or "-"}'
-        )
-        await callback.message.answer(temp)
-    await callback.answer()
 
 # =========================
 #      ADMIN MENU
@@ -212,7 +190,7 @@ async def apply_post_edit(message: Message, state: FSMContext):
 @router.message(Command('CreateNewPost'))
 async def create_new_post_get_text(message: Message, state: FSMContext):
     if message.from_user.id != cfg.ADMIN_ID:
-        await message.answer("У вас нет доступа к админ панеле.")
+        await message.answer("У вас нет доступа к админ панели.")
         return
     await message.answer("Отправьте пост для публикации в канал")
     await state.set_state(CreateNewPostState.GetText)
@@ -251,7 +229,7 @@ async def mailing_stop(callback: CallbackQuery, state: FSMContext):
 @router.message(CreateMailing.GetText)
 async def mailing_accept(message: Message, state: FSMContext):
     text = message.text or (message.caption or "")
-    await state.update_data(TextForMiling=text)
+    await state.update_data(text_for_mailing=text)
     await message.answer(f'Начать рассылку сообщения:\n\n{text}', reply_markup=inline.btn_mailing)
 
 @router.callback_query(F.data == 'go_mailing')
@@ -260,7 +238,7 @@ async def go_mailing(callback: CallbackQuery, bot: Bot, state: FSMContext):
         await callback.answer("Нет доступа", show_alert=True)
         return
     data = await state.get_data()
-    text = data.get("TextForMiling", "")
+    text = data.get("text_for_mailing", "")
     users = adb.get_all_users() or []
     for user in users:
         try:

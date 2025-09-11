@@ -1,32 +1,53 @@
+from typing import List, Dict, Union, Optional
+
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.utils import youmoney
 
-
-frst_kb = InlineKeyboardMarkup(
+start_retry = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="🏗 Планировки", callback_data="floor_plan"),],
-        [InlineKeyboardButton(text="🛋 Интерьер", callback_data="design_start"),],
-        [InlineKeyboardButton(text="🚨 Закрыть возражение", callback_data="non"),],
-        [InlineKeyboardButton(text="🎯 Составить описание", callback_data="non2"), ],
-        [InlineKeyboardButton(text="🌟 Написать отзыв", callback_data="non3"), ],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")]
+    ]
+)
 
-        [InlineKeyboardButton(text='Подписаться на контент', callback_data='show_rates')],
-        [InlineKeyboardButton(text='Наше сообщество', url='https://t.me/+DJfn6NyHmRAzMTdi')],
-        [InlineKeyboardButton(text='Тех. поддержка', url='https://t.me/dashaadminrealtor')],
-        [InlineKeyboardButton(text='Мой профиль', callback_data='my_profile')],
+design_start = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="design_start")]
+    ]
+)
+
+floor_plan = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="floor_plan")]
     ]
 )
 
 
-start_kb = InlineKeyboardMarkup(
+frst_kb = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text='🏡 Контент для соцсетей риелтора', callback_data='smm_content')],
+        [InlineKeyboardButton(text="📐 Генератор красивых планировок", callback_data="floor_plan"), ],
+        [InlineKeyboardButton(text="🛋️ Генератор дизайна интерьера", callback_data="design_start"), ],
+        [InlineKeyboardButton(text="🤖 ИИ для закрытия возражений", callback_data="non"), ],
+        [InlineKeyboardButton(text="✍️ ИИ для написания отзывов от клиентов", callback_data="non3"), ],
+        [InlineKeyboardButton(text="💎 Генератор продающих описаний объектов", callback_data="non2"), ],
+
+        [InlineKeyboardButton(text='Наше сообщество', url='https://t.me/+DJfn6NyHmRAzMTdi')],
+        [InlineKeyboardButton(text='Тех. поддержка', url='https://t.me/dashaadminrealtor')],
+    ]
+)
+
+design_inline = InlineKeyboardMarkup(
     inline_keyboard=[
         [
             InlineKeyboardButton(text="🛋 Редизайн интерьера", callback_data="redesign")
         ],
         [
             InlineKeyboardButton(text="🆕 Дизайн с нуля", callback_data="0design")
+        ],
+        [
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")
         ]
     ]
 )
@@ -44,17 +65,11 @@ def sub(user_id):
     )
     return sub
 
+
 def help():
     builder = InlineKeyboardBuilder()
     builder.button(text="🛟 Поддержка", url="https://t.me/admrecontent")
     return builder.as_markup()
-
-
-# def get_plan_type_kb():
-#     builder = InlineKeyboardBuilder()
-#     builder.button(text="🔲 2D визуализация", callback_data="plan_2d")
-#     builder.button(text="🏠 3D визуализация", callback_data="plan_3d")
-#     return builder.as_markup()
 
 
 def get_style_kb():
@@ -77,7 +92,7 @@ def get_room_type_kb():
     for room in rooms:
         # Используем текст с эмодзи как данные для колбэка
         builder.button(text=room, callback_data=f"room_{room}")
-    builder.adjust(2) # Располагаем по 2 кнопки в ряд
+    builder.adjust(2)  # Располагаем по 2 кнопки в ряд
     return builder.as_markup()
 
 
@@ -95,16 +110,25 @@ def get_visualization_style_kb():
     return builder.as_markup()
 
 
-#welcomebot
 # Клавиатура выбора тарифа
+get_smm_subscribe = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")]
+    ]
+)
+
 select_rates = InlineKeyboardMarkup(inline_keyboard=[
     [
         InlineKeyboardButton(text='1 месяц', callback_data='Rate_1'),
         InlineKeyboardButton(text='3 месяца', callback_data='Rate_2'),
-        InlineKeyboardButton(text='6 месяцев', callback_data='Rate_3'),
+        InlineKeyboardButton(text='6 месяцев', callback_data='Rate_3')
     ],
     [
-        InlineKeyboardButton(text='12 месяцев', callback_data='Rate_4'),
+        InlineKeyboardButton(text='12 месяцев', callback_data='Rate_4')
+    ],
+    [
+        InlineKeyboardButton(text='⬅️ Назад', callback_data='smm_content')
     ]
 ])
 
@@ -132,6 +156,7 @@ btn_mailing = InlineKeyboardMarkup(inline_keyboard=[
     ]
 ])
 
+
 # Динамическая генерация клавиатуры для редактирования постов
 def generate_edit_posts_kb(posts):
     buttons = []
@@ -142,3 +167,46 @@ def generate_edit_posts_kb(posts):
         )
         buttons.append([btn])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def build_missing_subscribe_keyboard(
+        channels: List[Dict[str, Union[int, str]]],
+        sub_map: Dict[int, bool],
+        *,
+        retry_callback_data: Optional[str] = None,
+        columns: int = 1,
+) -> InlineKeyboardMarkup:
+    """
+    Строит клавиатуру ТОЛЬКО по отсутствующим подпискам.
+    Кнопка = URL из конфига, текст = label из конфига.
+    """
+    columns = max(1, min(columns, 4))
+    rows: list[list[InlineKeyboardButton]] = []
+    line: list[InlineKeyboardButton] = []
+
+    for cfg in channels:
+        chat_id: int = cfg["chat_id"]
+        if sub_map.get(chat_id, True):
+            continue  # уже подписан — кнопку не показываем
+
+        url: str = cfg["url"]  # если нет — упадёт (ошибка данных), это ок
+        label: str = str(cfg.get("label") or "Канал")
+
+        btn = InlineKeyboardButton(text=f"Подписаться → {label}", url=url)
+
+        if columns == 1:
+            rows.append([btn])
+        else:
+            line.append(btn)
+            if len(line) >= columns:
+                rows.append(line)
+                line = []
+
+    if columns > 1 and line:
+        rows.append(line)
+
+    if retry_callback_data:
+        rows.append([InlineKeyboardButton(text="✅ Проверить", callback_data=retry_callback_data)])
+        rows.append([InlineKeyboardButton(text="❗️ Не подписываться", callback_data="skip_subscribe")])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)

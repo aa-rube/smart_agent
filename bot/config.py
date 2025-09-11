@@ -29,7 +29,9 @@ ADMIN_DB_PATH  = os.getenv("ADMIN_DB_PATH",  str(DB_DIR / "admins.bd"))
 # === Интеграции / сервисы ===
 EXECUTOR_BASE_URL = os.getenv("EXECUTOR_BASE_URL", "http://127.0.0.1:5001")
 
-# YooMoney (если используешь)
+PARTNER_CHANNELS=[{"chat_id":"-1002969803274","url":"https://t.me/setrealtora","label":"Сеть Риэлтора"}]
+
+# YooMoney
 YOUMONEY_SHOP_ID     = os.getenv("YOUMONEY_SHOP_ID")
 YOUMONEY_SECRET_KEY  = os.getenv("YOUMONEY_SECRET_KEY")
 
