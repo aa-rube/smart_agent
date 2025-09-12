@@ -5,31 +5,31 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.utils import youmoney
 
-start_retry = InlineKeyboardMarkup(
+start_retry_inline = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")]
     ]
 )
 
-design_start = InlineKeyboardMarkup(
+design_start_inline = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="design_start")]
     ]
 )
 
-floor_plan = InlineKeyboardMarkup(
+floor_plan_inline = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="floor_plan")]
     ]
 )
 
 
-frst_kb = InlineKeyboardMarkup(
+frst_kb_inline = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text='🏡 Контент для соцсетей риелтора', callback_data='smm_content')],
         [InlineKeyboardButton(text="📐 Генератор красивых планировок", callback_data="floor_plan"), ],
         [InlineKeyboardButton(text="🛋️ Генератор дизайна интерьера", callback_data="design_start"), ],
-        [InlineKeyboardButton(text="🤖 ИИ для закрытия возражений", callback_data="non"), ],
+        [InlineKeyboardButton(text="🤖 ИИ для закрытия возражений", callback_data="objection_start"), ],
         [InlineKeyboardButton(text="✍️ ИИ для написания отзывов от клиентов", callback_data="non3"), ],
         [InlineKeyboardButton(text="💎 Генератор продающих описаний объектов", callback_data="non2"), ],
 
@@ -111,14 +111,14 @@ def get_visualization_style_kb():
 
 
 # Клавиатура выбора тарифа
-get_smm_subscribe = InlineKeyboardMarkup(
+get_smm_subscribe_inline = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")]
     ]
 )
 
-select_rates = InlineKeyboardMarkup(inline_keyboard=[
+select_rates_inline = InlineKeyboardMarkup(inline_keyboard=[
     [
         InlineKeyboardButton(text='1 месяц', callback_data='Rate_1'),
         InlineKeyboardButton(text='3 месяца', callback_data='Rate_2'),

@@ -1,6 +1,8 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\executor\prompt_factory.py
 
 import random
+from typing import Optional, Dict, Any
+
 from executor import ai_config
 
 ROOM_TYPE_PROMPTS = {
@@ -92,3 +94,21 @@ def create_floor_plan_prompt(visualization_style: str, interior_style: str) -> s
 
     full_prompt = f"{base_instructions.strip()}\n\n{visualization_block.strip()}\n\n{final_instructions.strip()}"
     return full_prompt
+
+
+#OPEN AI - ОТРАБОТКА ВОЗРАЖЕНИЙ КЛИЕНТОВ
+def build_objection_request(
+    question: str,
+    model: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Единственное место, где формируется payload для OpenAI Chat Completion.
+    """
+    system_prompt = ai_config.OBJECTION_PROMPT_DEFAULT
+    use_model = model or ai_config.OBJECTION_MODEL
+    return {
+        "model": use_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question},
+        ],
+    }

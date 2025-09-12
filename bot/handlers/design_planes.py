@@ -1,8 +1,6 @@
 # C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\design_planes.py
-import os
 import fitz
 import aiohttp
-import bot.utils.tokens as tk
 
 from aiogram import Router, F, Bot
 from aiogram.types import (
@@ -20,6 +18,8 @@ from bot.states.states import DesignStates
 from executor.prompt_factory import create_floor_plan_prompt
 from bot.text.texts import *
 from bot.keyboards.inline import *
+from bot.config import *
+import bot.utils.tokens as tk
 from bot.utils.image_processor import save_image_as_png
 from bot.utils.chat_actions import run_long_operation_with_action
 from bot.utils.ai_processor import generate_floor_plan
@@ -92,9 +92,9 @@ async def start_design_flow(callback: CallbackQuery, state: FSMContext, bot: Bot
         await _edit_or_replace_with_photo_file(
             bot=bot,
             msg=callback.message,
-            file_path='images/plan.jpg',
+            file_path=get_file_path('img/bot/plan.jpg'),
             caption=text_get_file(user_id),  # функция из texts, подставит инфо о токенах
-            kb=start_retry  # ваша исходная клавиатура
+            kb=start_retry_inline  # ваша исходная клавиатура
         )
     else:
         # показываем оффер пополнить/подписаться в том же сообщении
@@ -168,7 +168,7 @@ async def handle_style(callback: CallbackQuery, state: FSMContext, bot: Bot):
             await _edit_text_or_caption(
                 callback.message,
                 we_are_so_sorry_try_again,
-                kb=floor_plan
+                kb=floor_plan_inline
             )
 
     finally:

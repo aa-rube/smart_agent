@@ -21,6 +21,7 @@ from bot.states.states import RedesignStates
 from executor.prompt_factory import create_prompt
 from bot.text.texts import *
 from bot.keyboards.inline import *
+from bot.config import *
 from bot.utils.image_processor import save_image_as_png
 from bot.utils.chat_actions import run_long_operation_with_action
 from bot.utils.ai_processor import generate_design, download_image_from_url
@@ -76,9 +77,9 @@ async def start_redesign_flow(callback: CallbackQuery, state: FSMContext, bot: B
         await _edit_or_replace_with_photo(
             bot=bot,
             msg=callback.message,
-            photo_path='images/int.jpg',
+            photo_path=get_file_path('data/img/bot/int.jpg'),
             caption=text_get_photo_redesign(user_id),  # функция из texts, подставит {tokens_text}
-            kb=design_start
+            kb=design_start_inline
         )
         await state.set_state(RedesignStates.waiting_for_photo)
     else:
@@ -140,7 +141,7 @@ async def handle_style(callback: CallbackQuery, state: FSMContext, bot: Bot):
             image_bytes = await download_image_from_url(image_url)
             if image_bytes:
                 # временно сохраним, затем заменим текущий экран на фото-результат
-                tmp_path = f"/tmp/redesign_{user_id}.png"
+                tmp_path = get_file_path(f"/img/tmp/redesign_{user_id}.png")
                 with open(tmp_path, "wb") as f:
                     f.write(image_bytes)
 
@@ -160,13 +161,14 @@ async def handle_style(callback: CallbackQuery, state: FSMContext, bot: Bot):
             else:
                 await _edit_text_or_caption(
                     callback.message,
-                    "😔 Не удалось скачать сгенерированное изображение. Попробуйте позже."
+                    unsuccessful_try_later,
+                    kb=design_start_inline
                 )
         else:
             await _edit_text_or_caption(
                 callback.message,
                 we_are_so_sorry_try_again,
-                kb=design_start
+                kb=design_start_inline
             )
 
     finally:

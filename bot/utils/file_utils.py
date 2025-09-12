@@ -1,6 +1,7 @@
-#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\utils\file_utils.py
+# C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\utils\file_utils.py
 import os
 import time
+
 
 def safe_remove(path: str, retries: int = 5, delay: float = 0.2) -> bool:
     if not path:
