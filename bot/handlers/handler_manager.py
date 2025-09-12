@@ -1,6 +1,6 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\handler_manager.py
 
-from bot.handlers.subscribe_partner_manager import ensure_partner_subs
+from bot.utils.subscribe_partner_manager import ensure_partner_subs
 import bot.keyboards.inline as inline
 from bot.keyboards.inline import *
 from bot.text.texts import *
@@ -83,7 +83,7 @@ async def smm_content(callback: CallbackQuery):
 
 
 async def objection_start(callback: CallbackQuery):
-    await _edit_text_safe(callback, objection_description, start_retry_inline)
+    await _edit_text_safe(callback, objection_description, objection_playbook_inline)
 
 
 async def my_profile(callback: CallbackQuery):
@@ -130,7 +130,7 @@ def router(rt: Router):
     rt.message.register(help_cmd, Command("support"))
 
     # callbacks (все редактируют текущее сообщение)
-    rt.callback_query.register(design_start_inline, F.data == 'design_start')
+    rt.callback_query.register(design_start, F.data == 'design_start')
     rt.callback_query.register(check_subscribe_retry, F.data == 'start_retry')
     rt.callback_query.register(skip_subscribe, F.data == 'skip_subscribe')
     rt.callback_query.register(show_rates, F.data == 'show_rates')

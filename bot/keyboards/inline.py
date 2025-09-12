@@ -5,6 +5,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.utils import youmoney
 
+# кнопки для шага назад
 start_retry_inline = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")]
@@ -23,7 +24,7 @@ floor_plan_inline = InlineKeyboardMarkup(
     ]
 )
 
-
+# меню
 frst_kb_inline = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text='🏡 Контент для соцсетей риелтора', callback_data='smm_content')],
@@ -35,6 +36,26 @@ frst_kb_inline = InlineKeyboardMarkup(
 
         [InlineKeyboardButton(text='Наше сообщество', url='https://t.me/+DJfn6NyHmRAzMTdi')],
         [InlineKeyboardButton(text='Тех. поддержка', url='https://t.me/dashaadminrealtor')],
+    ]
+)
+
+objection_playbook_inline = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="🧠 Отработать возражение", callback_data="objection")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")],
+    ]
+)
+
+objection_playbook_retry_inline = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Попробовать ещё раз", callback_data="obj_retry")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")]
+    ]
+)
+
+objection_playbook_input_inline = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Ввести возражение", callback_data="obj_start")]
     ]
 )
 
@@ -53,6 +74,7 @@ design_inline = InlineKeyboardMarkup(
 )
 
 
+# платежка
 def sub(user_id):
     payment_url = youmoney.create_pay(user_id)
     print(payment_url)
@@ -64,6 +86,29 @@ def sub(user_id):
         ]
     )
     return sub
+
+
+# Клавиатура выбора тарифа
+get_smm_subscribe_inline = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")]
+    ]
+)
+
+select_rates_inline = InlineKeyboardMarkup(inline_keyboard=[
+    [
+        InlineKeyboardButton(text='1 месяц', callback_data='Rate_1'),
+        InlineKeyboardButton(text='3 месяца', callback_data='Rate_2'),
+        InlineKeyboardButton(text='6 месяцев', callback_data='Rate_3')
+    ],
+    [
+        InlineKeyboardButton(text='12 месяцев', callback_data='Rate_4')
+    ],
+    [
+        InlineKeyboardButton(text='⬅️ Назад', callback_data='smm_content')
+    ]
+])
 
 
 def help():
@@ -109,28 +154,6 @@ def get_visualization_style_kb():
     builder.button(text="📸 Реалистичный стиль", callback_data="viz_realistic")
     return builder.as_markup()
 
-
-# Клавиатура выбора тарифа
-get_smm_subscribe_inline = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")]
-    ]
-)
-
-select_rates_inline = InlineKeyboardMarkup(inline_keyboard=[
-    [
-        InlineKeyboardButton(text='1 месяц', callback_data='Rate_1'),
-        InlineKeyboardButton(text='3 месяца', callback_data='Rate_2'),
-        InlineKeyboardButton(text='6 месяцев', callback_data='Rate_3')
-    ],
-    [
-        InlineKeyboardButton(text='12 месяцев', callback_data='Rate_4')
-    ],
-    [
-        InlineKeyboardButton(text='⬅️ Назад', callback_data='smm_content')
-    ]
-])
 
 # Клавиатура изменения цены
 change_price_btn = InlineKeyboardMarkup(inline_keyboard=[

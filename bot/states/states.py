@@ -1,3 +1,5 @@
+#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\states\states.py
+
 from aiogram.fsm.state import State, StatesGroup
 
 class States(StatesGroup):
@@ -19,3 +21,6 @@ class ZeroDesignStates(StatesGroup):
     waiting_for_room_type = State()
     waiting_for_furniture = State()
     waiting_for_style = State()
+
+class ObjectionStates(StatesGroup):
+    waiting_for_question = State()

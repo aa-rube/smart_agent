@@ -2,18 +2,10 @@
 
 import aiohttp
 import fitz
-import os
 import bot.utils.tokens as tk
 
 from aiogram import Router, F, Bot
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    ContentType,
-    BufferedInputFile,
-    FSInputFile,
-    InputMediaPhoto,
-)
+from aiogram.types import *
 from aiogram.fsm.context import FSMContext
 from aiogram.enums.chat_action import ChatAction
 from aiogram.exceptions import TelegramBadRequest

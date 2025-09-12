@@ -103,7 +103,7 @@ def build_objection_request(
     """
     Единственное место, где формируется payload для OpenAI Chat Completion.
     """
-    system_prompt = ai_config.OBJECTION_PROMPT_DEFAULT
+    system_prompt = ai_config.OBJECTION_PROMPT_DEFAULT_RU
     use_model = model or ai_config.OBJECTION_MODEL
     return {
         "model": use_model,
