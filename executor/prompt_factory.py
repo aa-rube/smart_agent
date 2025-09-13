@@ -112,3 +112,70 @@ def build_objection_request(
             {"role": "user", "content": question},
         ],
     }
+
+
+# --- было: build_description_request(question) — оставляем для бэкапа
+def build_description_request(*, question: str, model: Optional[str] = None,
+                              temperature: float = 0.7, max_tokens: int = 1200) -> Dict[str, Any]:
+    system_prompt = ai_config.DESCRIPTION_PROMPT_DEFAULT_RU
+    use_model = model or ai_config.DESCRIPTION_MODEL
+    return {
+        "model": use_model,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": question},
+        ],
+    }
+
+# --------- НОВОЕ: сборка текста из сырых полей ----------
+def _label(m: Dict[str, str], key: Optional[str], default: str = "—") -> str:
+    return m.get(key, default) if key else default
+
+def compose_description_user_message(fields: Dict[str, Optional[str]]) -> str:
+    """
+    Сборка пользовательского сообщения для описания на основе сырых полей.
+    Ожидаемые ключи:
+      type, apt_class (только для flat), in_complex, area, comment
+    """
+    t_key  = fields.get("type")
+    c_key  = fields.get("apt_class") if t_key == "flat" else None
+    x_key  = fields.get("in_complex")
+    a_key  = fields.get("area")
+    cmt    = (fields.get("comment") or "").strip()
+
+    t_label  = _label(ai_config.DESCRIPTION_TYPES,   t_key)
+    cls_lbl  = _label(ai_config.DESCRIPTION_CLASSES, c_key) if c_key else "—"
+    cx_label = _label(ai_config.DESCRIPTION_COMPLEX, x_key)
+    ar_label = _label(ai_config.DESCRIPTION_AREA,    a_key)
+    comment  = cmt or "—"
+
+    return (
+        "Сгенерируй продающее, информативное описание объекта недвижимости "
+        "для объявления и презентации. Соблюдай гайд Х–П–В и заверши явным CTA.\n\n"
+        f"Тип: {t_label}\n"
+        f"Класс (если квартира): {cls_lbl}\n"
+        f"Новостройка/ЖК: {cx_label}\n"
+        f"Расположение: {ar_label}\n"
+        f"Комментарий риелтора: {comment}"
+    )
+
+def build_description_request_from_fields(
+    *,
+    fields: Dict[str, Optional[str]],
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    ЕДИНОЕ место сборки payload из сырых полей.
+    """
+    user_message = compose_description_user_message(fields)
+    system_prompt = ai_config.DESCRIPTION_PROMPT_DEFAULT_RU
+    use_model = model or ai_config.DESCRIPTION_MODEL
+    return {
+        "model": use_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+    }

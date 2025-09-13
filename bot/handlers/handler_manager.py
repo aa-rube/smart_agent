@@ -1,12 +1,13 @@
-#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\handler_manager.py
+# smart_agent/bot/handlers/handler_manager.py
+from __future__ import annotations
 
-from bot.utils.subscribe_partner_manager import ensure_partner_subs
 import bot.keyboards.inline as inline
 from bot.keyboards.inline import *
 from bot.text.texts import *
 from bot.config import *
 import bot.utils.tokens as tk
 import bot.utils.admin_db as adb
+import bot.utils.database as db  # <-- важно! используем БД
 
 from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart, Command
@@ -14,30 +15,42 @@ from aiogram.types import Message, FSInputFile, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest
 
+from bot.utils.subscribe_partner_manager import ensure_partner_subs
 
-async def frst_msg(message: Message, state: FSMContext, bot: Bot):
-    user_id = message.chat.id
 
+# --- единый хелпер инициализации для Message | CallbackQuery ---
+async def init_user_event(evt: Union[Message, CallbackQuery]) -> None:
+    """
+    Гарантирует, что пользователь есть в обеих БД и имеет дефолтные значения.
+    Работает и для входящих сообщений, и для callback’ов.
+    """
+    if isinstance(evt, CallbackQuery):
+        msg = evt.message
+        username = evt.from_user.username if evt.from_user else ""
+    else:
+        msg = evt
+        username = evt.from_user.username if evt.from_user else ""
+
+    if not msg:
+        return
+
+    user_id = msg.chat.id
+
+    # основная БД
     if not db.check_and_add_user(user_id):
         db.set_variable(user_id, 'tokens', 2)
         db.set_variable(user_id, 'have_sub', 0)
+
+        # админская БД (подписки/уведомления)
         adb.init_notification_table()
-        adb.inicialize_users(user_id, message.from_user.username or "")
-
-    skip = db.get_variable(user_id, 'skip_subscribe')
-
-    if not skip:
-        # Если не подписан — покажем ссылки и выйдем (тут message, не callback, поэтому допустимо отправить новое)
-        if not await ensure_partner_subs(bot, message, retry_callback_data="start_retry", columns=2):
-            return
-
-    await message.answer_photo(FSInputFile(get_file_path('/img/bot/logo1.jpg')))
-    await message.answer(frst_text, reply_markup=inline.frst_kb_inline)
+        adb.inicialize_users(user_id, username or "")
 
 
 # --- helpers for editing current message (callbacks) ---
-
 async def _edit_text_safe(cb: CallbackQuery, text: str, kb=None):
+    # инициализация для callback
+    await init_user_event(cb)
+
     try:
         await cb.message.edit_text(text, reply_markup=kb)
     except TelegramBadRequest:
@@ -51,19 +64,41 @@ async def _edit_text_safe(cb: CallbackQuery, text: str, kb=None):
     await cb.answer()
 
 
-# --- callbacks ---
+# --- /start и основной экран ---
+async def frst_msg(message: Message, state: FSMContext, bot: Bot):
+    await init_user_event(message)
 
+    user_id = message.chat.id
+    skip = db.get_variable(user_id, 'skip_subscribe')
+
+    if not skip:
+        # проверка партнёрских подписок (если не подписан — покажем ссылки и выйдем)
+        if not await ensure_partner_subs(bot, message, retry_callback_data="start_retry", columns=2):
+            return
+
+    await message.answer_photo(FSInputFile(get_file_path('/img/bot/logo1.jpg')))
+    await message.answer(frst_text, reply_markup=inline.frst_kb_inline)
+
+
+async def ai_tools(callback: CallbackQuery):
+    await init_user_event(callback)
+    await _edit_text_safe(callback, ai_tools_text, ai_tools_inline)
+
+
+# --- callbacks (все редактируют текущее сообщение) ---
 async def check_subscribe_retry(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    # повторная проверка
+    await init_user_event(callback)
+
     if not await ensure_partner_subs(bot, callback, retry_callback_data="start_retry", columns=2):
         await callback.answer("Похоже, ещё не на все каналы подписаны 🤏", show_alert=True)
         return
 
-    # Всё ок — заменяем текущее сообщение на приветствие
     await _edit_text_safe(callback, frst_text, frst_kb_inline)
 
 
 async def skip_subscribe(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    await init_user_event(callback)
+
     user_id = callback.from_user.id
     db.set_variable(user_id, 'tokens', 0)
     db.set_variable(user_id, 'skip_subscribe', True)
@@ -73,20 +108,26 @@ async def skip_subscribe(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
 async def show_rates(evt: Message | CallbackQuery):
     if isinstance(evt, CallbackQuery):
+        await init_user_event(evt)
         await _edit_text_safe(evt, info_rates_message, select_rates_inline)
     else:
+        await init_user_event(evt)
         await evt.answer(info_rates_message, reply_markup=select_rates_inline)
 
 
 async def smm_content(callback: CallbackQuery):
+    await init_user_event(callback)
     await _edit_text_safe(callback, smm_description, get_smm_subscribe_inline)
 
 
 async def objection_start(callback: CallbackQuery):
+    await init_user_event(callback)
     await _edit_text_safe(callback, objection_description, objection_playbook_inline)
 
 
 async def my_profile(callback: CallbackQuery):
+    await init_user_event(callback)
+
     info = adb.get_my_info(callback.from_user.id)
     if info:
         text = (
@@ -100,6 +141,8 @@ async def my_profile(callback: CallbackQuery):
 
 
 async def design_start(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    await init_user_event(callback)
+
     user_id = callback.from_user.id
     await _edit_text_safe(callback, start_plan(user_id), design_inline)
 
@@ -107,15 +150,18 @@ async def design_start(callback: CallbackQuery, state: FSMContext, bot: Bot):
 # --- commands (messages) ---
 
 async def sub_cmd(message: Message, state: FSMContext, bot: Bot):
+    await init_user_event(message)
     user_id = message.chat.id
     await message.answer(SUB_PAY, reply_markup=inline.sub(user_id))
 
 
 async def help_cmd(message: Message, state: FSMContext, bot: Bot):
+    await init_user_event(message)
     await message.answer(HELP, reply_markup=inline.help())
 
 
 async def add_tokens(message: Message, state: FSMContext, bot: Bot):
+    await init_user_event(message)
     user_id = message.chat.id
     tk.add_tokens(user_id, 100)
     await message.answer("Added 100 tokens, be happy")
@@ -130,12 +176,11 @@ def router(rt: Router):
     rt.message.register(help_cmd, Command("support"))
 
     # callbacks (все редактируют текущее сообщение)
+    rt.callback_query.register(ai_tools, F.data == 'ai_tools')
     rt.callback_query.register(design_start, F.data == 'design_start')
     rt.callback_query.register(check_subscribe_retry, F.data == 'start_retry')
     rt.callback_query.register(skip_subscribe, F.data == 'skip_subscribe')
     rt.callback_query.register(show_rates, F.data == 'show_rates')
     rt.callback_query.register(my_profile, F.data == 'my_profile')
     rt.callback_query.register(smm_content, F.data == 'smm_content')
-    rt.callback_query.register(smm_content, F.data == 'smm_content')
-
     rt.callback_query.register(objection_start, F.data == 'objection_start')

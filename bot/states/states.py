@@ -1,9 +1,11 @@
-#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\states\states.py
+# C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\states\states.py
 
 from aiogram.fsm.state import State, StatesGroup
 
+
 class States(StatesGroup):
     waiting_for_prompt = State()
+
 
 class DesignStates(StatesGroup):
     waiting_for_file = State()
@@ -11,10 +13,12 @@ class DesignStates(StatesGroup):
     waiting_for_visualization_style = State()
     waiting_for_style = State()
 
+
 class RedesignStates(StatesGroup):
     waiting_for_photo = State()
     waiting_for_room_type = State()
     waiting_for_style = State()
+
 
 class ZeroDesignStates(StatesGroup):
     waiting_for_file = State()
@@ -22,5 +26,14 @@ class ZeroDesignStates(StatesGroup):
     waiting_for_furniture = State()
     waiting_for_style = State()
 
+
 class ObjectionStates(StatesGroup):
     waiting_for_question = State()
+
+
+class DescriptionStates(StatesGroup):
+    waiting_for_type = State()
+    waiting_for_class = State()
+    waiting_for_complex = State()
+    waiting_for_area = State()
+    waiting_for_comment = State()

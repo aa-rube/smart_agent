@@ -161,7 +161,7 @@ def objection_generate():
     debug_flag = request.args.get("debug") == "1"
 
     try:
-        text, used_model = send_chat_request(question, True)
+        text, used_model = send_objection_generate_request(question, True)
         body = {"text": text}
         if debug_flag:
             body["debug"] = {"model_used": used_model}
@@ -172,4 +172,47 @@ def objection_generate():
         body = {"error": "openai_error", "detail": str(e)}
         if debug_flag:
             body["debug"] = {"model": OBJECTION_MODEL}
+        return jsonify(body), 502
+
+
+@api.post("/description/generate")
+def description_generate():
+    if _config_issues:
+        return jsonify({"error": "config", "detail": "; ".join(_config_issues)}), 500
+
+    data = request.get_json(silent=True) or {}
+    form = request.form
+
+    # BACK-COMPAT: если прислали уже собранное "question" — работаем по-старому
+    question = (data.get("question") or form.get("question") or "").strip()
+    debug_flag = request.args.get("debug") == "1"
+
+    try:
+        if question:
+            text, used_model = send_description_generate_request(question, True)
+        else:
+            # НОВЫЙ ПУТЬ: сырые поля
+            fields = {
+                "type":       data.get("type")       or form.get("type"),
+                "apt_class":  data.get("apt_class")  or form.get("apt_class"),
+                "in_complex": data.get("in_complex") or form.get("in_complex"),
+                "area":       data.get("area")       or form.get("area"),
+                "comment":    data.get("comment")    or form.get("comment"),
+            }
+            # минимальная валидация
+            if not fields["type"]:
+                return jsonify({"error": "bad_request", "detail": "field 'type' is required"}), 400
+
+            text, used_model = send_description_generate_request_from_fields(fields, True)
+
+        body = {"text": text}
+        if debug_flag:
+            body["debug"] = {"model_used": used_model}
+        return jsonify(body), 200
+
+    except Exception as e:
+        LOG.exception("OpenAI error (description)")
+        body = {"error": "openai_error", "detail": str(e)}
+        if debug_flag:
+            body["debug"] = {"model": DESCRIPTION_MODEL}
         return jsonify(body), 502
