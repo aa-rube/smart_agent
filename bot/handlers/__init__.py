@@ -1,6 +1,5 @@
 # smart_agent/bot/handlers/__init__.py
 from aiogram import Router
-
 from . import (
     handler_manager,
     design_planes,
@@ -8,7 +7,8 @@ from . import (
     zero_design,
     admin,
     objection_playbook,
-    description_playbook
+    description_playbook,
+    feedback_playbook
 )
 
 def register_routers(rt: Router):
@@ -18,4 +18,5 @@ def register_routers(rt: Router):
     zero_design.router(rt)
     description_playbook.router(rt)
     objection_playbook.router(rt)
+    feedback_playbook.router(rt)
     rt.include_router(admin.router)

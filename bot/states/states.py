@@ -37,3 +37,18 @@ class DescriptionStates(StatesGroup):
     waiting_for_complex = State()
     waiting_for_area = State()
     waiting_for_comment = State()
+
+class FeedbackStates(StatesGroup):
+    waiting_client = State()
+    waiting_agent = State()
+    waiting_company = State()
+    waiting_city_mode = State()  # выбор способа ввода
+    waiting_city_input = State()
+    waiting_address = State()
+    waiting_deal_type = State()
+    waiting_deal_custom = State()
+    waiting_situation = State()
+    waiting_style = State()
+    showing_summary = State()
+    browsing_variants = State()
+    history_search = State()

@@ -1,11 +1,7 @@
 # smart_agent/executor/controller.py
 from __future__ import annotations
-
-import logging
 from flask import Blueprint, request, jsonify
-
 from replicate.exceptions import ReplicateError, ModelError
-
 from executor.config import *
 from executor.helpers import *
 

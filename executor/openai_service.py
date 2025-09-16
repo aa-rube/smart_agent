@@ -70,15 +70,33 @@ def _send_with_fallback(payload: Dict[str, Any], default_model: str, allow_fallb
 # ---- public ----
 
 def send_objection_generate_request(question: str, allow_fallback: bool = OPENAI_FALLBACK) -> Tuple[str, str]:
-    payload = build_objection_request(question=question, model=OBJECTION_MODEL)
-    return _send_with_fallback(payload, default_model=OBJECTION_MODEL, allow_fallback=allow_fallback)
+    payload = build_objection_request(
+        question=question,
+        model=OBJECTION_MODEL
+    )
+    return _send_with_fallback(
+        payload,
+        default_model=OBJECTION_MODEL,
+        allow_fallback=allow_fallback
+    )
 
 def send_description_generate_request_from_fields(fields: Dict[str, Optional[str]],
                                                   allow_fallback: bool = OPENAI_FALLBACK) -> Tuple[str, str]:
-    payload = build_description_request_from_fields(fields=fields, model=DESCRIPTION_MODEL)
-    return _send_with_fallback(payload, default_model=DESCRIPTION_MODEL, allow_fallback=allow_fallback)
+    payload = build_description_request_from_fields(
+        fields=fields,
+        model=DESCRIPTION_MODEL
+    )
+    return _send_with_fallback(
+        payload,
+        default_model=DESCRIPTION_MODEL,
+        allow_fallback=allow_fallback
+    )
 
 # (оставляем для совместимости путь через 'question', если когда-то прилетит)
 def send_description_generate_request(question: str, allow_fallback: bool = OPENAI_FALLBACK) -> Tuple[str, str]:
-    payload = build_description_request(question=question, model=DESCRIPTION_MODEL)
-    return _send_with_fallback(payload, default_model=DESCRIPTION_MODEL, allow_fallback=allow_fallback)
+    payload = build_description_request(
+        question=question,
+        model=DESCRIPTION_MODEL)
+    return _send_with_fallback(payload,
+                               default_model=DESCRIPTION_MODEL,
+                               allow_fallback=allow_fallback)
