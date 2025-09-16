@@ -154,7 +154,7 @@ async def run_long_operation_with_action(*, bot: Bot, chat_id: int, action: Chat
 
 
 async def _return_to_summary(msg: Message, state: FSMContext) -> None:
-    """Render summary and switch state to showing_summary; clear edit flag."""
+    """Показать сводку и очистить режим редактирования конкретного поля."""
     d = await state.get_data()
     await _edit_text_or_caption(msg, _summary_text(d), kb_summary())
     await state.update_data(edit_field=None)
@@ -408,7 +408,10 @@ async def handle_agent_name(message: Message, state: FSMContext):
     if d.get("edit_field") == "agent":
         await _return_to_summary(message, state)
         return
-    await message.answer(ASK_COMPANY, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=BTN_SKIP, callback_data="company.skip")]]))
+    await message.answer(ASK_COMPANY, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=BTN_SKIP, callback_data="company.skip")],
+        [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
+    ]))
     await state.set_state(FeedbackStates.waiting_company)
 
 
@@ -445,10 +448,10 @@ async def handle_city_choice(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
     if data == "loc.addr":
-        await _edit_text_or_caption(callback.message, ASK_ADDRESS,
-                                    InlineKeyboardMarkup(inline_keyboard=
-                                                         [[InlineKeyboardButton(text=BTN_SKIP, callback_data="addr.skip")],
-                                                         [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")]]))
+        await _edit_text_or_caption(callback.message, ASK_ADDRESS, InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=BTN_SKIP, callback_data="addr.skip")],
+            [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
+        ]))
 
         await state.set_state(FeedbackStates.waiting_address)
         await callback.answer()
@@ -603,7 +606,10 @@ async def edit_field_router(callback: CallbackQuery, state: FSMContext):
         await state.set_state(FeedbackStates.waiting_agent)
     elif data == "edit.company":
         await state.update_data(edit_field="company")
-        await _edit_text_or_caption(callback.message, ASK_COMPANY, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=BTN_SKIP, callback_data="company.skip")],[InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")]]))
+        await _edit_text_or_caption(callback.message, ASK_COMPANY, InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=BTN_SKIP, callback_data="company.skip")],
+            [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
+        ]))
         await state.set_state(FeedbackStates.waiting_company)
     elif data == "edit.city":
         await state.update_data(edit_field="city")
@@ -611,7 +617,10 @@ async def edit_field_router(callback: CallbackQuery, state: FSMContext):
         await state.set_state(FeedbackStates.waiting_city_mode)
     elif data == "edit.addr":
         await state.update_data(edit_field="address")
-        await _edit_text_or_caption(callback.message, ASK_ADDRESS, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=BTN_SKIP, callback_data="addr.skip")],[InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")]]))
+        await _edit_text_or_caption(callback.message, ASK_ADDRESS, InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=BTN_SKIP, callback_data="addr.skip")],
+            [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
+        ]))
         await state.set_state(FeedbackStates.waiting_address)
     elif data == "edit.deal":
         await state.update_data(edit_field="deal")
