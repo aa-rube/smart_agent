@@ -1,5 +1,4 @@
 # C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\feedback_playbook.py
-
 from __future__ import annotations
 
 import asyncio
@@ -24,8 +23,8 @@ from aiogram.types import (
 )
 
 from bot.config import EXECUTOR_BASE_URL
-from bot.handlers.feedback.model.history_item import HistoryItem
 from bot.handlers.feedback.model.review_payload import ReviewPayload
+from bot.utils.database import history_add, history_list, history_get
 from bot.states.states import FeedbackStates
 
 logger = logging.getLogger(__name__)
@@ -57,14 +56,19 @@ HINT_SITUATION = (
     "• Задача: что нужно было решить\n• Особенности: ограничения, сложности\n"
     "• Ход работы: как шли к результату\n• Итог: что клиент получил"
 )
-ASK_STYLE = "Выберите стиль черновика."
-STYLE_INFO = (
-    "Стили:"
+ASK_TONE = "Выберите тон текста."
+TONE_INFO = (
+    "Тон оф войс:"
     "\n— Дружелюбный: теплее, разговорно"
     "\n— Нейтральный: спокойно, по делу"
     "\n— Официальный: без эмоций, формально"
-    "\n— Лаконичный: короче (≈300–500 знаков)"
-    "\n— Подробный: развернуто (до ≈1200 знаков)"
+)
+ASK_LENGTH = "Выберите длину текста."
+LENGTH_INFO = (
+    "Длины:"
+    "\n— Короткий: до 250 знаков"
+    "\n— Средний: до 450 знаков"
+    "\n— Развернутый: до 1200 знаков"
 )
 SUMMARY_TITLE = "Проверьте данные перед генерацией:"
 BTN_GENERATE = "Сгенерировать"
@@ -92,39 +96,19 @@ VARIANT_HEAD_UPDATED = "Вариант {idx} (обновлён)\n\n"
 
 DEFAULT_CITIES = ["Москва", "Санкт-Петербург", "Тбилиси", "Баку", "Ереван", "Алматы"]
 
+# длины
+LENGTH_CHOICES = [("short", "Короткий ≤250"), ("medium", "Средний ≤450"), ("long", "Развернутый ≤1200")]
+LENGTH_LIMITS = {"short": 250, "medium": 450, "long": 1200}
+def _length_limit(code: Optional[str]) -> Optional[int]:
+    return LENGTH_LIMITS.get(code or "")
+
 # Чекбоксы
 CHECK_OFF = "⬜"
 CHECK_ON  = "✅"
 # Коды типов сделки и их подписи
-DEAL_CHOICES = [
-    ("sale", "Продажа"),
-    ("buy", "Покупка"),
-    ("rent", "Аренда"),
-    ("mortgage", "Ипотека"),
-    ("social_mortgage", "Гос. поддержка"),
-    ("maternity_capital", "Мат.капитал"),
-]
+DEAL_CHOICES = [("sale", "Продажа"), ("buy", "Покупка"), ("rent", "Аренда"), ("lease", "Лизинг")]
 
-# =============================================================================
-# Simple in-memory history (replace with DB in production)
-# =============================================================================
-
-_HISTORY: Dict[int, List[HistoryItem]] = {}
-_NEXT_HISTORY_ID = 1
-
-
-def _history_add(user_id: int, payload: ReviewPayload, final_text: str) -> HistoryItem:
-    global _NEXT_HISTORY_ID
-    item = HistoryItem(
-        item_id=_NEXT_HISTORY_ID,
-        created_at=datetime.utcnow(),
-        payload=payload,
-        final_text=final_text,
-    )
-    _NEXT_HISTORY_ID += 1
-    _HISTORY.setdefault(user_id, []).insert(0, item)
-    _HISTORY[user_id] = _HISTORY[user_id][:100]  # keep last 100
-    return item
+# История теперь хранится в БД (см. utils/database.py)
 
 
 # =============================================================================
@@ -400,18 +384,30 @@ def kb_deal_types_ms(d: Dict[str, Any]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def kb_style() -> InlineKeyboardMarkup:
+def kb_tone() -> InlineKeyboardMarkup:
     rows = [
         [
-            InlineKeyboardButton(text="Дружелюбный", callback_data="style.friendly"),
-            InlineKeyboardButton(text="Нейтральный", callback_data="style.neutral"),
+            InlineKeyboardButton(text="Дружелюбный", callback_data="tone.friendly"),
+            InlineKeyboardButton(text="Нейтральный", callback_data="tone.neutral"),
         ],
         [
-            InlineKeyboardButton(text="Официальный", callback_data="style.formal"),
-            InlineKeyboardButton(text="Лаконичный", callback_data="style.brief"),
+            InlineKeyboardButton(text="Официальный", callback_data="tone.formal"),
         ],
-        [InlineKeyboardButton(text="Подробный", callback_data="style.long")],
-        [InlineKeyboardButton(text="О стилях", callback_data="style.info")],
+        [InlineKeyboardButton(text="О тоне", callback_data="tone.info")],
+        [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def kb_length() -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(text="Короткий (≤250)", callback_data="length.short"),
+            InlineKeyboardButton(text="Средний (≤450)", callback_data="length.medium"),
+        ],
+        [
+            InlineKeyboardButton(text="Развернутый (≤1200)", callback_data="length.long"),
+        ],
+        [InlineKeyboardButton(text="О длине", callback_data="length.info")],
         [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -442,8 +438,9 @@ def kb_edit_menu() -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text="Ситуация", callback_data="edit.sit"),
-            InlineKeyboardButton(text="Стиль", callback_data="edit.style"),
+            InlineKeyboardButton(text="Тон", callback_data="edit.tone"),
         ],
+        [InlineKeyboardButton(text="Длина", callback_data="edit.length")],
         [InlineKeyboardButton(text="Готово", callback_data="edit.done")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -457,7 +454,7 @@ def kb_variant(index: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="Сделать короче", callback_data=f"mutate.{index}.short"),
                 InlineKeyboardButton(text="Сделать длиннее", callback_data=f"mutate.{index}.long"),
             ],
-            [InlineKeyboardButton(text="Изменить стиль", callback_data=f"mutate.{index}.style")],
+            [InlineKeyboardButton(text="Изменить тон", callback_data=f"mutate.{index}.style")],
             [InlineKeyboardButton(text="Ещё вариант", callback_data=f"gen.more.{index}")],
             [
                 InlineKeyboardButton(text="Экспорт .txt", callback_data=f"export.{index}.txt"),
@@ -487,11 +484,12 @@ def kb_final() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def kb_history(items: List[HistoryItem]) -> InlineKeyboardMarkup:
+def kb_history(items: List[Any]) -> InlineKeyboardMarkup:
     rows: List[List[InlineKeyboardButton]] = []
     for it in items[:10]:
-        label = f"#{it.item_id} · {it.created_at.strftime('%Y-%m-%d %H:%M')} · {it.payload.city} · {it.payload.deal_type}"
-        rows.append([InlineKeyboardButton(text=label, callback_data=f"hist.open.{it.item_id}")])
+        # it — ORM ReviewHistory
+        label = f"#{it.id} · {it.created_at.strftime('%Y-%m-%d %H:%M')} · {it.city or '—'} · {it.deal_type or '—'}"
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"hist.open.{it.id}")])
     rows.append(
         [
             InlineKeyboardButton(text="Поиск", callback_data="hist.search"),
@@ -603,7 +601,13 @@ def _summary_text(d: Dict[str, Any]) -> str:
     deal_line = ", ".join(human_list) if human_list else "—"
     lines.append(f"• Тип сделки: {deal_line}")
     lines.append(f"• Ситуация: {_shorten(d.get('situation', ''), 150)}")
-    lines.append(f"• Стиль: {d.get('style')}")
+    # Тон / Длина
+    tone = d.get("tone") or d.get("style")  # для совместимости
+    length_code = d.get("length")
+    length_human = {"short": "короткий (≤250)", "medium": "средний (≤450)", "long": "развернутый (≤1200)"}\
+        .get(length_code, "—")
+    lines.append(f"• Тон: {tone or '—'}")
+    lines.append(f"• Длина: {length_human}")
     return "\n".join(lines)
 
 
@@ -626,7 +630,8 @@ def _payload_from_state(d: Dict[str, Any]) -> ReviewPayload:
         deal_type=deal_type_str,
         deal_custom=deal_custom,
         situation=d.get("situation"),
-        style=d.get("style"),
+        # В payload.style теперь передаём ТОН
+        style=d.get("tone") or d.get("style"),
     )
 
 
@@ -856,21 +861,67 @@ async def handle_situation(message: Message, state: FSMContext):
     if d.get("edit_field") == "situation":
         await _return_to_summary(message, state)
     else:
-        await ui_reply(message, ASK_STYLE, kb_style(), state=state)
-        await state.set_state(FeedbackStates.waiting_style)
+        # Переходим к выбору тона
+        await ui_reply(message, ASK_TONE, kb_tone(), state=state)
+        await state.set_state(FeedbackStates.waiting_tone)
 
 
-async def handle_style(callback: CallbackQuery, state: FSMContext):
+async def handle_tone(callback: CallbackQuery, state: FSMContext, bot: Optional[Bot] = None):
     data = callback.data
-    if data == "style.info":
-        await ui_reply(callback, STYLE_INFO, kb_style(), state=state)
+    if data == "tone.info":
+        await ui_reply(callback, TONE_INFO, kb_tone(), state=state)
         await callback.answer()
         return
-    if not data.startswith("style."):
+    if not data.startswith("tone."):
         await callback.answer()
         return
-    style = data.split(".", 1)[1]
-    await state.update_data(style=style)
+    tone = data.split(".", 1)[1]
+    await state.update_data(tone=tone)
+    d = await state.get_data()
+
+    # Если мы выбирали тон в режиме мутации варианта — сразу меняем текст
+    mut_idx = d.get("mutating_idx")
+    if mut_idx:
+        variants: List[str] = d.get("variants", [])
+        if 1 <= mut_idx <= len(variants):
+            base_text = variants[mut_idx - 1]
+            await ui_reply(callback, "Меняю тон…", state=state)
+            chat_id = callback.message.chat.id
+            async def _do():
+                payload = _payload_from_state(await state.get_data())
+                return await _request_mutate(base_text, operation="style", style=tone, payload=payload)
+            try:
+                new_text: str = await run_long_operation_with_action(
+                    bot=bot or callback.bot, chat_id=chat_id, action=ChatAction.TYPING, coro=_do()
+                )
+                variants[mut_idx - 1] = new_text
+                await state.update_data(variants=variants, mutating_idx=None)
+                parts = _split_for_telegram(new_text)
+                head = VARIANT_HEAD_UPDATED.format(idx=mut_idx) + parts[0]
+                await ui_reply(callback, head, kb_variant(mut_idx), state=state)
+                for p in parts[1:]:
+                    await send_text(callback.message, p)
+            except Exception as e:
+                await ui_reply(callback, f"{ERROR_TEXT}\n\n{e}", state=state)
+        await callback.answer()
+        return
+
+    # Иначе — после тона спрашиваем длину
+    await ui_reply(callback, ASK_LENGTH, kb_length(), state=state)
+    await state.set_state(FeedbackStates.waiting_length)
+    await callback.answer()
+
+async def handle_length(callback: CallbackQuery, state: FSMContext):
+    data = callback.data
+    if data == "length.info":
+        await ui_reply(callback, LENGTH_INFO, kb_length(), state=state)
+        return await callback.answer()
+    if not data.startswith("length."):
+        return await callback.answer()
+    length_code = data.split(".", 1)[1]
+    if length_code not in {"short", "medium", "long"}:
+        return await callback.answer()
+    await state.update_data(length=length_code)
     d = await state.get_data()
     await ui_reply(callback, _summary_text(d), kb_summary(), state=state)
     await state.set_state(FeedbackStates.showing_summary)
@@ -914,10 +965,14 @@ async def edit_field_router(callback: CallbackQuery, state: FSMContext):
         await state.update_data(edit_field="situation")
         await ui_reply(callback, ASK_SITUATION, kb_situation_hints(), state=state)
         await state.set_state(FeedbackStates.waiting_situation)
-    elif data == "edit.style":
-        await state.update_data(edit_field="style")
-        await ui_reply(callback, ASK_STYLE, kb_style(), state=state)
-        await state.set_state(FeedbackStates.waiting_style)
+    elif data == "edit.tone" or data == "edit.style":  # alias: edit.style -> тон
+        await state.update_data(edit_field="tone")
+        await ui_reply(callback, ASK_TONE, kb_tone(), state=state)
+        await state.set_state(FeedbackStates.waiting_tone)
+    elif data == "edit.length":
+        await state.update_data(edit_field="length")
+        await ui_reply(callback, ASK_LENGTH, kb_length(), state=state)
+        await state.set_state(FeedbackStates.waiting_length)
     elif data == "edit.done":
         d = await state.get_data()
         await ui_reply(callback, _summary_text(d), kb_summary(), state=state)
@@ -939,7 +994,9 @@ async def start_generation(callback: CallbackQuery, state: FSMContext, bot: Bot)
     chat_id = callback.message.chat.id
 
     async def _do():
-        return await _request_generate(payload, num_variants=3)
+        # передаём пожелание по длине
+        length_hint = _length_limit((await state.get_data()).get("length"))
+        return await _request_generate(payload, num_variants=3, length_hint=length_hint)
 
     try:
         variants: List[str] = await run_long_operation_with_action(
@@ -984,8 +1041,8 @@ async def mutate_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
     if op == "style":
         await state.update_data(mutating_idx=idx)
-        await ui_reply(callback, ASK_STYLE, kb_style(), state=state)
-        await state.set_state(FeedbackStates.waiting_style)
+        await ui_reply(callback, ASK_TONE, kb_tone(), state=state)
+        await state.set_state(FeedbackStates.waiting_tone)
         await callback.answer()
         return
 
@@ -1014,41 +1071,7 @@ async def mutate_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
         await callback.answer()
 
 
-async def handle_style_after_mutate(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """Если ранее выбрали mutate.{idx}.style, сюда попадём после выбора стиля."""
-    d = await state.get_data()
-    mut_idx = d.get("mutating_idx")
-    if not mut_idx:
-        return
-
-    style = d.get("style")
-    variants: List[str] = d.get("variants", [])
-    if mut_idx < 1 or mut_idx > len(variants):
-        await callback.message.answer("Не найден вариант.")
-        await state.update_data(mutating_idx=None)
-        return
-
-    base_text = variants[mut_idx - 1]
-    await ui_reply(callback, MUTATING_STYLE, state=state)
-    chat_id = callback.message.chat.id
-
-    async def _do():
-        payload = _payload_from_state(d)
-        return await _request_mutate(base_text, operation="style", style=style, payload=payload)
-
-    try:
-        new_text: str = await run_long_operation_with_action(
-            bot=bot, chat_id=chat_id, action=ChatAction.TYPING, coro=_do()
-        )
-        variants[mut_idx - 1] = new_text
-        await state.update_data(variants=variants, mutating_idx=None)
-        parts = _split_for_telegram(new_text)
-        head = VARIANT_HEAD_UPDATED.format(idx=mut_idx) + parts[0]
-        await ui_reply(callback, head, kb_variant(mut_idx), state=state, bot=bot)
-        for p in parts[1:]:
-            await send_text(callback.message, p)
-    except Exception as e:
-        await ui_reply(callback, f"{ERROR_TEXT}\n\n{e}", state=state)
+# (обработчик изменения тона для мутации теперь встроен в handle_tone)
 
 
 async def gen_more_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
@@ -1059,7 +1082,8 @@ async def gen_more_variant(callback: CallbackQuery, state: FSMContext, bot: Bot)
     chat_id = callback.message.chat.id
 
     async def _do():
-        lst = await _request_generate(payload, num_variants=1)
+        length_hint = _length_limit((await state.get_data()).get("length"))
+        lst = await _request_generate(payload, num_variants=1, length_hint=length_hint)
         return lst[0]
 
     try:
@@ -1125,8 +1149,8 @@ async def finalize_choice(callback: CallbackQuery, state: FSMContext):
     final_text = variants[idx - 1]
     payload = _payload_from_state(d)
 
-    # save to history
-    _history_add(callback.from_user.id, payload, final_text)
+    # save to DB history
+    history_add(callback.from_user.id, asdict(payload), final_text)
 
     await ui_reply(callback, READY_FINAL, kb_final(), state=state)
     await state.update_data(final_text=final_text)
@@ -1175,8 +1199,8 @@ async def clone_from_final(callback: CallbackQuery, state: FSMContext):
 # =============================================================================
 
 async def open_history(callback: CallbackQuery, state: FSMContext):
-    items = _HISTORY.get(callback.from_user.id, [])
-    if not items:
+    items = history_list(callback.from_user.id, limit=10)
+    if not items or len(items) == 0:
         await ui_reply(
             callback,
             HISTORY_EMPTY,
@@ -1191,7 +1215,7 @@ async def open_history(callback: CallbackQuery, state: FSMContext):
     text_lines = [RECENT_DRAFTS_TITLE]
     for it in items[:10]:
         text_lines.append(
-            f"#{it.item_id} · {it.created_at.strftime('%Y-%m-%d %H:%M')} · {it.payload.city} · {it.payload.deal_type} · {it.payload.client_name}"
+            f"#{it.id} · {it.created_at.strftime('%Y-%m-%d %H:%M')} · {it.city or '—'} · {it.deal_type or '—'} · {it.client_name or '—'}"
         )
     await ui_reply(callback, "\n".join(text_lines), kb_history(items), state=state)
     await callback.answer()
@@ -1206,18 +1230,27 @@ async def history_open_item(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    items = _HISTORY.get(callback.from_user.id, [])
-    item = next((x for x in items if x.item_id == item_id), None)
+    item = history_get(callback.from_user.id, item_id)
     if not item:
         await callback.answer("Не найдено.")
         return
 
-    p = item.payload
-    header = f"#{item.item_id} · {item.created_at.strftime('%Y-%m-%d %H:%M')}"
+    # humanize deal types
+    human_map = {code: title for code, title in DEAL_CHOICES}
+    codes = [c for c in (item.deal_type or "").split(",") if c]
+    human_list = [human_map.get(c, c) for c in codes if c]
+    if item.deal_custom:
+        human_list.append(f"Другое: {item.deal_custom}")
+    deal_line = ", ".join(human_list) if human_list else "—"
+
+    header = f"#{item.id} · {item.created_at.strftime('%Y-%m-%d %H:%M')}"
     body = (
-        f"Клиент: {p.client_name}\nАгент: {p.agent_name}{', ' + p.company if p.company else ''}\n"
-        f"Локация: {p.city}{', ' + p.address if p.address else ''}\nТип: {p.deal_type}{' (' + p.deal_custom + ')' if p.deal_custom else ''}\nСтиль: {p.style}\n\n"
-        + item.final_text
+        f"Клиент: {item.client_name or '—'}\n"
+        f"Агент: {item.agent_name or '—'}{(', ' + item.company) if item.company else ''}\n"
+        f"Локация: {item.city or '—'}{(', ' + item.address) if item.address else ''}\n"
+        f"Тип: {deal_line}\n"
+        f"Стиль: {item.style or '—'}\n\n"
+        f"{item.final_text}"
     )
     parts = _split_for_telegram(header + "\n\n" + body)
     await ui_reply(
@@ -1225,10 +1258,10 @@ async def history_open_item(callback: CallbackQuery, state: FSMContext):
         parts[0],
         InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="Создать похожий", callback_data=f"hist.{item.item_id}.clone")],
+                [InlineKeyboardButton(text="Создать похожий", callback_data=f"hist.{item.id}.clone")],
                 [
-                    InlineKeyboardButton(text="Экспорт .txt", callback_data=f"hist.{item.item_id}.export.txt"),
-                    InlineKeyboardButton(text="Экспорт .md", callback_data=f"hist.{item.item_id}.export.md"),
+                    InlineKeyboardButton(text="Экспорт .txt", callback_data=f"hist.{item.id}.export.txt"),
+                    InlineKeyboardButton(text="Экспорт .md", callback_data=f"hist.{item.id}.export.md"),
                 ],
                 [InlineKeyboardButton(text="В историю", callback_data="hist.back")],
             ]
@@ -1248,12 +1281,11 @@ async def history_export(callback: CallbackQuery, state: FSMContext):
     except Exception:
         await callback.answer()
         return
-    items = _HISTORY.get(callback.from_user.id, [])
-    item = next((x for x in items if x.item_id == item_id), None)
+    item = history_get(callback.from_user.id, item_id)
     if not item:
         await callback.answer("Не найдено.")
         return
-    buf = BufferedInputFile(item.final_text.encode("utf-8"), filename=f"review_{item.item_id}.{fmt}")
+    buf = BufferedInputFile(item.final_text.encode("utf-8"), filename=f"review_{item.id}.{fmt}")
     await callback.message.answer_document(buf)
     await callback.answer()
 
@@ -1266,14 +1298,28 @@ async def history_clone(callback: CallbackQuery, state: FSMContext):
     except Exception:
         await callback.answer()
         return
-    items = _HISTORY.get(callback.from_user.id, [])
-    item = next((x for x in items if x.item_id == item_id), None)
+    item = history_get(callback.from_user.id, item_id)
     if not item:
         await callback.answer("Не найдено.")
         return
-
-    await state.update_data(**asdict(item.payload))
-    await ui_reply(callback, _summary_text(asdict(item.payload)), kb_summary(), state=state)
+    # распаковываем поля payload из ORM-объекта истории
+    # конвертируем deal_type CSV в deal_types list (без 'custom')
+    codes = [c for c in (item.deal_type or "").split(",") if c]
+    base_codes = [c for c in codes if c != "custom"]
+    payload_dict = {
+        "client_name": item.client_name,
+        "agent_name":  item.agent_name,
+        "company":     item.company,
+        "city":        item.city,
+        "address":     item.address,
+        # состояние использует deal_types + deal_custom
+        "deal_types":  base_codes,
+        "deal_custom": item.deal_custom,
+        "situation":   item.situation,
+        "style":       item.style,
+    }
+    await state.update_data(**payload_dict)
+    await ui_reply(callback, _summary_text(payload_dict), kb_summary(), state=state)
     await state.set_state(FeedbackStates.showing_summary)
     await callback.answer()
 
@@ -1317,12 +1363,14 @@ def router(rt: Router):
     # situation hints
     rt.callback_query.register(handle_situation_hints, F.data == "sit.hints")
 
-    # style selection
-    rt.callback_query.register(handle_style, F.data.startswith("style."))
-    # style after mutate (тот же handler вызовет, если в state есть mutating_idx)
-    # вызывать вручную не нужно; он используется из handle_style при наличии mutating_idx
-    # но оставляем регистрацию для совместимости (если захотите дергать напрямую)
-    rt.callback_query.register(handle_style_after_mutate, F.data == "style.apply.after_mutate")
+    # tone & length selection
+    rt.callback_query.register(handle_tone, F.data.startswith("tone."))
+    rt.callback_query.register(handle_length, F.data.startswith("length."))
+    # Алиас на случай старых кнопок (если где-то остались): style.* -> перенаправим в tone.*
+    rt.callback_query.register(
+        lambda cq, **_: None,  # no-op, чтобы не падать
+        F.data.startswith("style.")
+    )
 
     # edit menu
     rt.callback_query.register(open_edit_menu, F.data == "edit.open")
