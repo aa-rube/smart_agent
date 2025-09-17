@@ -5,7 +5,6 @@ import asyncio
 import json
 import logging
 from dataclasses import asdict
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
 import aiohttp
