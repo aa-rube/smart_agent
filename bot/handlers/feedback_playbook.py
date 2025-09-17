@@ -38,7 +38,7 @@ ASK_CLIENT_NAME = (
     "Введите имя клиента (обязательно).\n\n"
     "Например: Мария П., Иван, Семья Коваленко"
 )
-ASK_AGENT_NAME = "Введите ваше имя (агента)."
+ASK_AGENT_NAME = "Введите имя агента недвижимости."
 ASK_COMPANY = "Укажите название компании (можно пропустить)."
 ASK_CITY = (
     "Где проходила сделка? Выберите город ниже или введите свой.\n\n"
@@ -91,6 +91,19 @@ VARIANT_HEAD = "Вариант {idx}\n\n"
 VARIANT_HEAD_UPDATED = "Вариант {idx} (обновлён)\n\n"
 
 DEFAULT_CITIES = ["Москва", "Санкт-Петербург", "Тбилиси", "Баку", "Ереван", "Алматы"]
+
+# Чекбоксы
+CHECK_OFF = "⬜"
+CHECK_ON  = "✅"
+# Коды типов сделки и их подписи
+DEAL_CHOICES = [
+    ("sale", "Продажа"),
+    ("buy", "Покупка"),
+    ("rent", "Аренда"),
+    ("mortgage", "Ипотека"),
+    ("social_mortgage", "Гос. поддержка"),
+    ("maternity_capital", "Мат.капитал"),
+]
 
 # =============================================================================
 # Simple in-memory history (replace with DB in production)
@@ -269,6 +282,20 @@ async def _return_to_summary(event: Event, state: FSMContext) -> None:
     await ui_reply(event, _summary_text(d), kb_summary(), state=state)
 
 
+def _ensure_deal_types(d: Dict[str, Any]) -> List[str]:
+    """
+    Берём массив выбранных типов сделки из FSM:
+      - если уже есть deal_types -> возвращаем;
+      - если остался старый deal_type (строка) -> оборачиваем в массив;
+      - иначе пустой список.
+    """
+    if "deal_types" in d and isinstance(d["deal_types"], list):
+        return [str(x) for x in d["deal_types"] if x]
+    if d.get("deal_type"):
+        return [str(d["deal_type"])]
+    return []
+
+
 # =============================================================================
 # Keyboards (builders)
 # =============================================================================
@@ -327,19 +354,49 @@ def kb_city_addr_question() -> InlineKeyboardMarkup:
     )
 
 
-def kb_deal_types() -> InlineKeyboardMarkup:
-    rows = [
-        [
-            InlineKeyboardButton(text="Продажа", callback_data="deal.sale"),
-            InlineKeyboardButton(text="Покупка", callback_data="deal.buy"),
-        ],
-        [
-            InlineKeyboardButton(text="Аренда", callback_data="deal.rent"),
-            InlineKeyboardButton(text="Лизинг", callback_data="deal.lease"),
-        ],
-        [InlineKeyboardButton(text="Другое", callback_data="deal.other")],
-        [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
-    ]
+def kb_deal_types_ms(d: Dict[str, Any]) -> InlineKeyboardMarkup:
+    """
+    Мультивыбор типов сделки с чекбоксами.
+    Кнопки:
+      - deal.toggle.<code>  — переключить чекбокс
+      - deal.custom         — ввести/изменить «Другое…»
+      - deal.custom.clear   — очистить «Другое»
+      - deal.clear          — снять все галочки
+      - deal.next           — продолжить
+    """
+    selected = set(_ensure_deal_types(d))
+    rows: List[List[InlineKeyboardButton]] = []
+
+    # Ряды с чекбоксами по DEAL_CHOICES
+    row: List[InlineKeyboardButton] = []
+    for code, label in DEAL_CHOICES:
+        mark = CHECK_ON if code in selected else CHECK_OFF
+        row.append(InlineKeyboardButton(text=f"{mark} {label}", callback_data=f"deal.toggle.{code}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+
+    # Другое
+    custom = (d.get("deal_custom") or "").strip()
+    if custom:
+        # показываем значение и действия
+        rows.append([InlineKeyboardButton(text=f"✏️ Другое: {custom}", callback_data="deal.custom")])
+        rows.append([
+            InlineKeyboardButton(text="Изменить", callback_data="deal.custom"),
+            InlineKeyboardButton(text="Очистить", callback_data="deal.custom.clear"),
+        ])
+    else:
+        rows.append([InlineKeyboardButton(text="➕ Другое…", callback_data="deal.custom")])
+
+    # Управление
+    rows.append([
+        InlineKeyboardButton(text="Сбросить", callback_data="deal.clear"),
+        InlineKeyboardButton(text=BTN_NEXT, callback_data="deal.next"),
+    ])
+    # Отмена
+    rows.append([InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -537,24 +594,37 @@ def _summary_text(d: Dict[str, Any]) -> str:
     loc = d.get("city") or "—"
     addr = d.get("address")
     lines.append(f"• Локация: {loc}{', ' + addr if addr else ''}")
-    deal_type = d.get("deal_type")
-    if deal_type == "custom":
-        deal_type = f"Другое: {d.get('deal_custom') or ''}"
-    lines.append(f"• Тип сделки: {deal_type}")
+    # Тип сделки (мультивыбор + опционально «другое»)
+    deal_types = _ensure_deal_types(d)
+    human_map = {code: title for code, title in DEAL_CHOICES}
+    human_list = [human_map.get(code, code) for code in deal_types]
+    if d.get("deal_custom"):
+        human_list.append(f"Другое: {d.get('deal_custom')}")
+    deal_line = ", ".join(human_list) if human_list else "—"
+    lines.append(f"• Тип сделки: {deal_line}")
     lines.append(f"• Ситуация: {_shorten(d.get('situation', ''), 150)}")
     lines.append(f"• Стиль: {d.get('style')}")
     return "\n".join(lines)
 
 
 def _payload_from_state(d: Dict[str, Any]) -> ReviewPayload:
+    # Для обратной совместимости с микросервисом:
+    # в поле deal_type передаём коды через запятую; если задано deal_custom,
+    # добавляем код 'custom' (если его нет в списке).
+    deal_types = _ensure_deal_types(d)
+    deal_custom = d.get("deal_custom")
+    codes = list(dict.fromkeys(deal_types))  # уникальные, в порядке выбора
+    if deal_custom and "custom" not in codes:
+        codes.append("custom")
+    deal_type_str = ",".join(codes) if codes else None
     return ReviewPayload(
         client_name=d.get("client_name"),
         agent_name=d.get("agent_name"),
         company=d.get("company"),
         city=d.get("city"),
         address=d.get("address"),
-        deal_type=d.get("deal_type"),
-        deal_custom=d.get("deal_custom"),
+        deal_type=deal_type_str,
+        deal_custom=deal_custom,
         situation=d.get("situation"),
         style=d.get("style"),
     )
@@ -663,7 +733,7 @@ async def handle_city_choice(callback: CallbackQuery, state: FSMContext):
         if d.get("edit_field") == "city":
             await _return_to_summary(callback, state)
         else:
-            await ui_reply(callback, ASK_DEAL_TYPE, kb_deal_types(), state=state)
+            await ui_reply(callback, ASK_DEAL_TYPE, kb_deal_types_ms(d), state=state)
             await state.set_state(FeedbackStates.waiting_deal_type)
         await callback.answer()
         return
@@ -686,7 +756,7 @@ async def handle_address(message: Message, state: FSMContext):
     if d.get("edit_field") in ("address", "city"):
         await _return_to_summary(message, state)
     else:
-        await ui_reply(message, ASK_DEAL_TYPE, kb_deal_types(), state=state)
+        await ui_reply(message, ASK_DEAL_TYPE, kb_deal_types_ms(d), state=state)
         await state.set_state(FeedbackStates.waiting_deal_type)
 
 
@@ -696,30 +766,62 @@ async def handle_address_skip(callback: CallbackQuery, state: FSMContext):
     if d.get("edit_field") in ("address", "city"):
         await _return_to_summary(callback, state)
     else:
-        await ui_reply(callback, ASK_DEAL_TYPE, kb_deal_types(), state=state)
+        await ui_reply(callback, ASK_DEAL_TYPE, kb_deal_types_ms(d), state=state)
         await state.set_state(FeedbackStates.waiting_deal_type)
     await callback.answer()
 
 
 async def handle_deal_type(callback: CallbackQuery, state: FSMContext):
-    data = callback.data
+    data = callback.data or ""
     if not data.startswith("deal."):
-        await callback.answer()
-        return
-    deal_code = data.split(".", 1)[1]
-    if deal_code == "other":
+        return await callback.answer()
+
+    d = await state.get_data()
+    selected = set(_ensure_deal_types(d))
+
+    # deal.toggle.<code>
+    if data.startswith("deal.toggle."):
+        code = data.split(".", 2)[2]
+        if code in selected:
+            selected.remove(code)
+        else:
+            selected.add(code)
+        await state.update_data(deal_types=list(selected))
+        # перерисовываем клавиатуру
+        d = await state.get_data()
+        await ui_reply(callback, ASK_DEAL_TYPE, kb_deal_types_ms(d), state=state)
+        return await callback.answer()
+
+    # Очистить весь выбор
+    if data == "deal.clear":
+        await state.update_data(deal_types=[], deal_custom=None)
+        d = await state.get_data()
+        await ui_reply(callback, ASK_DEAL_TYPE, kb_deal_types_ms(d), state=state)
+        return await callback.answer("Выбор очищен")
+
+    # Ввод/изменение «Другое…»
+    if data == "deal.custom":
         await ui_reply(callback, ASK_DEAL_CUSTOM, kb_only_cancel(), state=state)
         await state.set_state(FeedbackStates.waiting_deal_custom)
-        await callback.answer()
-        return
-    await state.update_data(deal_type=deal_code, deal_custom=None)
-    d = await state.get_data()
-    if d.get("edit_field") == "deal":
-        await _return_to_summary(callback, state)
-    else:
-        await ui_reply(callback, ASK_SITUATION, kb_situation_hints(), state=state)
-        await state.set_state(FeedbackStates.waiting_situation)
-    await callback.answer()
+        return await callback.answer()
+
+    if data == "deal.custom.clear":
+        await state.update_data(deal_custom=None)
+        d = await state.get_data()
+        await ui_reply(callback, ASK_DEAL_TYPE, kb_deal_types_ms(d), state=state)
+        return await callback.answer("Очищено")
+
+    # Продолжить
+    if data == "deal.next":
+        # если редактировали поле – возвращаемся к сводке
+        if d.get("edit_field") == "deal":
+            await _return_to_summary(callback, state)
+        else:
+            await ui_reply(callback, ASK_SITUATION, kb_situation_hints(), state=state)
+            await state.set_state(FeedbackStates.waiting_situation)
+        return await callback.answer()
+
+    return await callback.answer()
 
 
 async def handle_deal_custom(message: Message, state: FSMContext):
@@ -727,13 +829,15 @@ async def handle_deal_custom(message: Message, state: FSMContext):
     if len(custom) < 2:
         await reply_plain(message, "Слишком короткое значение. Уточните тип сделки.")
         return
-    await state.update_data(deal_type="custom", deal_custom=custom)
+    # сохраняем текст «Другое», код 'custom' добавим при сборке payload,
+    # а пользователю снова покажем мультивыбор (чтобы мог добавить галочки)
     d = await state.get_data()
-    if d.get("edit_field") == "deal":
-        await _return_to_summary(message, state)
-    else:
-        await ui_reply(message, ASK_SITUATION, kb_situation_hints(), state=state)
-        await state.set_state(FeedbackStates.waiting_situation)
+    deal_types = _ensure_deal_types(d)
+    await state.update_data(deal_custom=custom, deal_types=deal_types)
+    # Возвращаемся к мультивыбору типов
+    d = await state.get_data()
+    await ui_reply(message, ASK_DEAL_TYPE, kb_deal_types_ms(d), state=state)
+    await state.set_state(FeedbackStates.waiting_deal_type)
 
 
 async def handle_situation_hints(callback: CallbackQuery, state: FSMContext):
@@ -803,7 +907,8 @@ async def edit_field_router(callback: CallbackQuery, state: FSMContext):
         await state.set_state(FeedbackStates.waiting_address)
     elif data == "edit.deal":
         await state.update_data(edit_field="deal")
-        await ui_reply(callback, ASK_DEAL_TYPE, kb_deal_types(), state=state)
+        d = await state.get_data()
+        await ui_reply(callback, ASK_DEAL_TYPE, kb_deal_types_ms(d), state=state)
         await state.set_state(FeedbackStates.waiting_deal_type)
     elif data == "edit.sit":
         await state.update_data(edit_field="situation")
@@ -1206,7 +1311,7 @@ def router(rt: Router):
     rt.callback_query.register(handle_city_choice, F.data == "loc.addr")
     rt.callback_query.register(handle_city_choice, F.data == "loc.next")
 
-    # deal type
+    # deal type (мультивыбор/чекбоксы)
     rt.callback_query.register(handle_deal_type, F.data.startswith("deal."))
 
     # situation hints
