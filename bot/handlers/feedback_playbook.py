@@ -113,7 +113,6 @@ DEAL_CHOICES = [("sale", "Продажа"), ("buy", "Покупка"), ("rent", 
 # =============================================================================
 # UI Helpers
 # =============================================================================
-
 Event = Union[Message, CallbackQuery]
 
 
@@ -282,7 +281,6 @@ def _ensure_deal_types(d: Dict[str, Any]) -> List[str]:
 # =============================================================================
 # Keyboards (builders)
 # =============================================================================
-
 def kb_only_cancel() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")]]
@@ -522,7 +520,6 @@ def kb_situation_hints() -> InlineKeyboardMarkup:
 # =============================================================================
 # HTTP client (microservice)
 # =============================================================================
-
 async def _request_generate(
     payload: ReviewPayload, *, num_variants: int = 3, timeout_sec: int = 90
 ) -> List[str]:
@@ -575,7 +572,6 @@ async def _extract_error_detail(resp: aiohttp.ClientResponse) -> str:
 # =============================================================================
 # Rendering helpers
 # =============================================================================
-
 def _shorten(s: str, n: int) -> str:
     if len(s) <= n:
         return s
@@ -637,7 +633,6 @@ def _payload_from_state(d: Dict[str, Any]) -> ReviewPayload:
 # =============================================================================
 # Flow handlers
 # =============================================================================
-
 async def start_feedback_flow(callback: CallbackQuery, state: FSMContext):
     # якорим текущее сообщение для последующих редактирований
     await state.update_data(anchor_id=callback.message.message_id)
@@ -1071,8 +1066,6 @@ async def mutate_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
 
 # (обработчик изменения тона для мутации теперь встроен в handle_tone)
-
-
 async def gen_more_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
     d = await state.get_data()
     payload = _payload_from_state(d)
@@ -1196,7 +1189,6 @@ async def clone_from_final(callback: CallbackQuery, state: FSMContext):
 # =============================================================================
 # History
 # =============================================================================
-
 async def open_history(callback: CallbackQuery, state: FSMContext):
     items = history_list(callback.from_user.id, limit=10)
     if not items or len(items) == 0:
@@ -1330,7 +1322,6 @@ async def history_back(callback: CallbackQuery, state: FSMContext):
 # =============================================================================
 # Navigation
 # =============================================================================
-
 async def go_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await ui_reply(callback, MAIN_MENU_TITLE, kb_menu_main(), state=state)
@@ -1340,7 +1331,6 @@ async def go_menu(callback: CallbackQuery, state: FSMContext):
 # =============================================================================
 # Router
 # =============================================================================
-
 def router(rt: Router):
     # start & cancel & menu
     rt.callback_query.register(start_feedback_flow, F.data == "nav.feedback_start")
