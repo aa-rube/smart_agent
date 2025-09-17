@@ -1,27 +1,38 @@
+# C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\feedback_playbook.py
+
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+from dataclasses import asdict
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Union
+
+import aiohttp
+from aiogram import F, Bot, Router
+from aiogram.enums.chat_action import ChatAction
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    BufferedInputFile,
+)
+
+from bot.config import EXECUTOR_BASE_URL
 from bot.handlers.feedback.model.history_item import HistoryItem
 from bot.handlers.feedback.model.review_payload import ReviewPayload
 from bot.states.states import FeedbackStates
 
-import asyncio
-import json
-from dataclasses import asdict
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+logger = logging.getLogger(__name__)
 
-import aiohttp
-from aiogram import F, Bot, Router
-from aiogram.types import *
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.enums.chat_action import ChatAction
-from aiogram.fsm.context import FSMContext
-
-from bot.config import EXECUTOR_BASE_URL
-
-# ==========================
-# Texts (UX copy)
-# ==========================
+# =============================================================================
+# UX Texts (copy)
+# =============================================================================
 
 ASK_CLIENT_NAME = (
     "Введите имя клиента (обязательно).\n\n"
@@ -48,7 +59,7 @@ HINT_SITUATION = (
 )
 ASK_STYLE = "Выберите стиль черновика."
 STYLE_INFO = (
-    "Стили:"\
+    "Стили:"
     "\n— Дружелюбный: теплее, разговорно"
     "\n— Нейтральный: спокойно, по делу"
     "\n— Официальный: без эмоций, формально"
@@ -63,53 +74,148 @@ BTN_BACK = "Назад"
 BTN_NEXT = "Дальше"
 BTN_SKIP = "Пропустить"
 GENERATING = "Генерирую варианты…"
-ERROR_TEXT = (
-    "Не удалось получить текст от сервиса. Попробуйте еще раз."
-)
+MUTATING = "Меняю вариант…"
+MUTATING_STYLE = "Меняю стиль…"
+ONE_MORE = "Ещё вариант…"
+ERROR_TEXT = "Не удалось получить текст от сервиса. Попробуйте еще раз."
 READY_FINAL = (
     "Черновик готов. Отправьте клиенту и опубликуйте при согласии.\n"
     "Сохранено в истории."
 )
 HISTORY_EMPTY = "История пуста. Сгенерируйте первый черновик."
+RECENT_DRAFTS_TITLE = "Недавние черновики:"
+MAIN_MENU_TITLE = "Главное меню:"
+PICKED_TEMPLATE = "Вы выбрали вариант {idx}. Готово к выдаче?"
+RETURN_TO_VARIANTS = "Вернитесь к вариантам выше или запросите ещё один."
+VARIANT_HEAD = "Вариант {idx}\n\n"
+VARIANT_HEAD_UPDATED = "Вариант {idx} (обновлён)\n\n"
 
 DEFAULT_CITIES = ["Москва", "Санкт-Петербург", "Тбилиси", "Баку", "Ереван", "Алматы"]
 
+# =============================================================================
+# Simple in-memory history (replace with DB in production)
+# =============================================================================
 
-# naive in‑memory store; replace with DB/repo in prod
 _HISTORY: Dict[int, List[HistoryItem]] = {}
 _NEXT_HISTORY_ID = 1
 
 
 def _history_add(user_id: int, payload: ReviewPayload, final_text: str) -> HistoryItem:
     global _NEXT_HISTORY_ID
-    item = HistoryItem(item_id=_NEXT_HISTORY_ID, created_at=datetime.utcnow(), payload=payload, final_text=final_text)
+    item = HistoryItem(
+        item_id=_NEXT_HISTORY_ID,
+        created_at=datetime.utcnow(),
+        payload=payload,
+        final_text=final_text,
+    )
     _NEXT_HISTORY_ID += 1
     _HISTORY.setdefault(user_id, []).insert(0, item)
-    # keep last 100
-    _HISTORY[user_id] = _HISTORY[user_id][:100]
+    _HISTORY[user_id] = _HISTORY[user_id][:100]  # keep last 100
     return item
 
 
-# ==========================
-# Small utils
-# ==========================
+# =============================================================================
+# UI Helpers
+# =============================================================================
 
-async def _edit_text_or_caption(msg: Message, text: str, kb: Optional[InlineKeyboardMarkup] = None) -> None:
-    """Edit text/caption/reply_markup of the same message to avoid spam."""
+Event = Union[Message, CallbackQuery]
+
+
+async def send_text(
+    msg: Message,
+    text: str,
+    kb: Optional[InlineKeyboardMarkup] = None,
+) -> Message:
+    """
+    Отправка нового сообщения без парсинга разметки.
+    """
+    return await msg.answer(text, reply_markup=kb, parse_mode=None)
+
+
+async def reply_plain(
+    msg: Message,
+    text: str,
+) -> Message:
+    """
+    Ответ на сообщение (reply) без парсинга разметки.
+    Используй для валидационных ошибок и коротких подсказок.
+    """
+    return await msg.reply(text, parse_mode=None)
+
+
+async def ui_reply(
+    event: Event,
+    text: str,
+    kb: Optional[InlineKeyboardMarkup] = None,
+    *,
+    state: Optional[FSMContext] = None,
+    bot: Optional[Bot] = None,
+    use_anchor: bool = True,
+) -> Message:
+    """
+    Универсальный ответ:
+      - если event = Message (пользователь прислал текст) → всегда отправляет НОВОЕ сообщение;
+      - если event = CallbackQuery (пользователь нажал кнопку) → пытается РЕДАКТИРОВАТЬ текущее
+        (предпочтительно по anchor_id из state), при неудаче отправляет новое.
+
+    Возвращает фактическое сообщение (оригинальное отредактированное или свежее).
+    При отправке нового в режиме callback — обновит anchor_id в FSM.
+    """
+    if isinstance(event, Message):
+        # Всегда новое при текстовом вводе
+        new_msg = await event.answer(text, reply_markup=kb, parse_mode=None)
+        if state:
+            await state.update_data(anchor_id=new_msg.message_id)
+        return new_msg
+
+    # CallbackQuery
+    cq: CallbackQuery = event
+    msg = cq.message
+    chat_id = msg.chat.id
+    message_id_to_edit: Optional[int] = None
+
+    if use_anchor and state:
+        d = await state.get_data()
+        anchor_id = d.get("anchor_id")
+        if anchor_id:
+            message_id_to_edit = anchor_id
+
+    # Если anchor не задан — редактируем сам cq.message
+    if message_id_to_edit is None:
+        message_id_to_edit = msg.message_id
+
+    # Пытаемся редактировать
     try:
-        await msg.edit_text(text, reply_markup=kb)
-        return
+        if bot:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id_to_edit,
+                text=text,
+                reply_markup=kb,
+                parse_mode=None,
+            )
+            # Если редактирование прошло — anchor остаётся прежним
+            return msg
+        else:
+            # у объектов типа Message есть методы edit_*
+            await msg.edit_text(text, reply_markup=kb, parse_mode=None)
+            return msg
     except TelegramBadRequest:
-        pass
-    try:
-        await msg.edit_caption(caption=text, reply_markup=kb)
-        return
-    except TelegramBadRequest:
-        pass
-    try:
-        await msg.edit_reply_markup(reply_markup=kb)
-    except TelegramBadRequest:
-        pass
+        # Пытаемся редактировать caption
+        try:
+            await msg.edit_caption(caption=text, reply_markup=kb, parse_mode=None)
+            return msg
+        except TelegramBadRequest:
+            # Пытаемся хотя бы разметку
+            try:
+                await msg.edit_reply_markup(reply_markup=kb)
+                return msg
+            except TelegramBadRequest:
+                # Всё не получилось — отправляем новое
+                new_msg = await msg.answer(text, reply_markup=kb, parse_mode=None)
+                if state:
+                    await state.update_data(anchor_id=new_msg.message_id)
+                return new_msg
 
 
 def _split_for_telegram(text: str, limit: int = 4000) -> List[str]:
@@ -131,9 +237,10 @@ def _split_for_telegram(text: str, limit: int = 4000) -> List[str]:
     return parts
 
 
-async def run_long_operation_with_action(*, bot: Bot, chat_id: int, action: ChatAction, coro: asyncio.Future | asyncio.Task | Any) -> Any:
-    """Lightweight mimic of typing action wrapper."""
-    # fire-and-forget pinger while waiting
+async def run_long_operation_with_action(
+    *, bot: Bot, chat_id: int, action: ChatAction, coro: asyncio.Future | asyncio.Task | Any
+) -> Any:
+    """Показывает чат-экшен, пока выполняется долгая операция."""
     is_done = False
 
     async def _pinger():
@@ -146,27 +253,39 @@ async def run_long_operation_with_action(*, bot: Bot, chat_id: int, action: Chat
 
     pinger_task = asyncio.create_task(_pinger())
     try:
-        result = await coro
-        return result
+        return await coro
     finally:
         is_done = True
         pinger_task.cancel()
 
 
-async def _return_to_summary(msg: Message, state: FSMContext) -> None:
-    """Показать сводку и очистить режим редактирования конкретного поля."""
+async def _return_to_summary(event: Event, state: FSMContext) -> None:
+    """
+    Показать сводку, соблюдая правило вывода:
+      - если event = Message → отправляем новое сообщение;
+      - если event = CallbackQuery → редактируем текущее (anchor).
+    """
     d = await state.get_data()
-    await _edit_text_or_caption(msg, _summary_text(d), kb_summary())
-    await state.update_data(edit_field=None)
-    await state.set_state(FeedbackStates.showing_summary)
+    await ui_reply(event, _summary_text(d), kb_summary(), state=state)
 
 
-# ==========================
-# Inline keyboards builders
-# ==========================
+# =============================================================================
+# Keyboards (builders)
+# =============================================================================
 
 def kb_only_cancel() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")]])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")]]
+    )
+
+
+def kb_with_skip(skip_cb: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=BTN_SKIP, callback_data=skip_cb)],
+            [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
+        ]
+    )
 
 
 def kb_cities() -> InlineKeyboardMarkup:
@@ -179,12 +298,33 @@ def kb_cities() -> InlineKeyboardMarkup:
             row = []
     if row:
         rows.append(row)
-    rows.append([
-        InlineKeyboardButton(text="Ввести город", callback_data="loc.city.input"),
-        InlineKeyboardButton(text="Указать адрес (опц.)", callback_data="loc.addr"),
-    ])
+    rows.append(
+        [
+            InlineKeyboardButton(text="Ввести город", callback_data="loc.city.input"),
+            InlineKeyboardButton(text="Указать адрес (опц.)", callback_data="loc.addr"),
+        ]
+    )
     rows.append([InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def kb_city_next_or_addr() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=BTN_NEXT, callback_data="loc.next")],
+            [InlineKeyboardButton(text="Указать адрес (опц.)", callback_data="loc.addr")],
+        ]
+    )
+
+
+def kb_city_addr_question() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Да, указать адрес", callback_data="loc.addr")],
+            [InlineKeyboardButton(text=BTN_NEXT, callback_data="loc.next")],
+            [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
+        ]
+    )
 
 
 def kb_deal_types() -> InlineKeyboardMarkup:
@@ -205,10 +345,14 @@ def kb_deal_types() -> InlineKeyboardMarkup:
 
 def kb_style() -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="Дружелюбный", callback_data="style.friendly"),
-         InlineKeyboardButton(text="Нейтральный", callback_data="style.neutral")],
-        [InlineKeyboardButton(text="Официальный", callback_data="style.formal"),
-         InlineKeyboardButton(text="Лаконичный", callback_data="style.brief")],
+        [
+            InlineKeyboardButton(text="Дружелюбный", callback_data="style.friendly"),
+            InlineKeyboardButton(text="Нейтральный", callback_data="style.neutral"),
+        ],
+        [
+            InlineKeyboardButton(text="Официальный", callback_data="style.formal"),
+            InlineKeyboardButton(text="Лаконичный", callback_data="style.brief"),
+        ],
         [InlineKeyboardButton(text="Подробный", callback_data="style.long")],
         [InlineKeyboardButton(text="О стилях", callback_data="style.info")],
         [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
@@ -227,29 +371,43 @@ def kb_summary() -> InlineKeyboardMarkup:
 
 def kb_edit_menu() -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="Имя клиента", callback_data="edit.client"),
-         InlineKeyboardButton(text="Имя агента", callback_data="edit.agent")],
-        [InlineKeyboardButton(text="Компания", callback_data="edit.company"),
-         InlineKeyboardButton(text="Город", callback_data="edit.city")],
-        [InlineKeyboardButton(text="Адрес", callback_data="edit.addr"),
-         InlineKeyboardButton(text="Тип сделки", callback_data="edit.deal")],
-        [InlineKeyboardButton(text="Ситуация", callback_data="edit.sit"),
-         InlineKeyboardButton(text="Стиль", callback_data="edit.style")],
+        [
+            InlineKeyboardButton(text="Имя клиента", callback_data="edit.client"),
+            InlineKeyboardButton(text="Имя агента", callback_data="edit.agent"),
+        ],
+        [
+            InlineKeyboardButton(text="Компания", callback_data="edit.company"),
+            InlineKeyboardButton(text="Город", callback_data="edit.city"),
+        ],
+        [
+            InlineKeyboardButton(text="Адрес", callback_data="edit.addr"),
+            InlineKeyboardButton(text="Тип сделки", callback_data="edit.deal"),
+        ],
+        [
+            InlineKeyboardButton(text="Ситуация", callback_data="edit.sit"),
+            InlineKeyboardButton(text="Стиль", callback_data="edit.style"),
+        ],
         [InlineKeyboardButton(text="Готово", callback_data="edit.done")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def kb_variant(index: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Выбрать этот", callback_data=f"pick.{index}")],
-        [InlineKeyboardButton(text="Сделать короче", callback_data=f"mutate.{index}.short"),
-         InlineKeyboardButton(text="Сделать длиннее", callback_data=f"mutate.{index}.long")],
-        [InlineKeyboardButton(text="Изменить стиль", callback_data=f"mutate.{index}.style")],
-        [InlineKeyboardButton(text="Ещё вариант", callback_data=f"gen.more.{index}")],
-        [InlineKeyboardButton(text="Экспорт .txt", callback_data=f"export.{index}.txt"),
-         InlineKeyboardButton(text="Экспорт .md", callback_data=f"export.{index}.md")],
-    ])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Выбрать этот", callback_data=f"pick.{index}")],
+            [
+                InlineKeyboardButton(text="Сделать короче", callback_data=f"mutate.{index}.short"),
+                InlineKeyboardButton(text="Сделать длиннее", callback_data=f"mutate.{index}.long"),
+            ],
+            [InlineKeyboardButton(text="Изменить стиль", callback_data=f"mutate.{index}.style")],
+            [InlineKeyboardButton(text="Ещё вариант", callback_data=f"gen.more.{index}")],
+            [
+                InlineKeyboardButton(text="Экспорт .txt", callback_data=f"export.{index}.txt"),
+                InlineKeyboardButton(text="Экспорт .md", callback_data=f"export.{index}.md"),
+            ],
+        ]
+    )
 
 
 def kb_variants_common() -> InlineKeyboardMarkup:
@@ -262,8 +420,10 @@ def kb_variants_common() -> InlineKeyboardMarkup:
 
 def kb_final() -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="Экспорт .txt", callback_data="export.final.txt"),
-         InlineKeyboardButton(text="Экспорт .md", callback_data="export.final.md")],
+        [
+            InlineKeyboardButton(text="Экспорт .txt", callback_data="export.final.txt"),
+            InlineKeyboardButton(text="Экспорт .md", callback_data="export.final.md"),
+        ],
         [InlineKeyboardButton(text="Создать похожий", callback_data="clone.from.final")],
         [InlineKeyboardButton(text="В меню", callback_data="nav.menu")],
     ]
@@ -275,15 +435,43 @@ def kb_history(items: List[HistoryItem]) -> InlineKeyboardMarkup:
     for it in items[:10]:
         label = f"#{it.item_id} · {it.created_at.strftime('%Y-%m-%d %H:%M')} · {it.payload.city} · {it.payload.deal_type}"
         rows.append([InlineKeyboardButton(text=label, callback_data=f"hist.open.{it.item_id}")])
-    rows.append([InlineKeyboardButton(text="Поиск", callback_data="hist.search"), InlineKeyboardButton(text="В меню", callback_data="nav.menu")])
+    rows.append(
+        [
+            InlineKeyboardButton(text="Поиск", callback_data="hist.search"),
+            InlineKeyboardButton(text="В меню", callback_data="nav.menu"),
+        ]
+    )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# ==========================
-# HTTP client (microservice)
-# ==========================
+def kb_menu_main() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Создать отзыв", callback_data="nav.feedback_start")],
+            [InlineKeyboardButton(text="История", callback_data="hist.open")],
+        ]
+    )
 
-async def _request_generate(payload: ReviewPayload, *, num_variants: int = 3, timeout_sec: int = 90) -> List[str]:
+
+def kb_try_again_gen() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Попробовать ещё раз", callback_data="gen.start")]]
+    )
+
+
+def kb_situation_hints() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Показать подсказки", callback_data="sit.hints")]]
+    )
+
+
+# =============================================================================
+# HTTP client (microservice)
+# =============================================================================
+
+async def _request_generate(
+    payload: ReviewPayload, *, num_variants: int = 3, timeout_sec: int = 90
+) -> List[str]:
     url = f"{EXECUTOR_BASE_URL.rstrip('/')}/api/v1/review/generate"
     t = aiohttp.ClientTimeout(total=timeout_sec)
     body = asdict(payload)
@@ -296,7 +484,6 @@ async def _request_generate(payload: ReviewPayload, *, num_variants: int = 3, ti
             data = await resp.json()
             variants = (data or {}).get("variants")
             if not variants:
-                # Fallback: single text field
                 txt = (data or {}).get("text", "").strip()
                 if not txt:
                     raise RuntimeError("Executor returned no variants")
@@ -304,16 +491,13 @@ async def _request_generate(payload: ReviewPayload, *, num_variants: int = 3, ti
             return [str(v).strip() for v in variants if str(v).strip()]
 
 
-async def _request_mutate(base_text: str, *, operation: str, style: Optional[str], payload: ReviewPayload, timeout_sec: int = 60) -> str:
+async def _request_mutate(
+    base_text: str, *, operation: str, style: Optional[str], payload: ReviewPayload, timeout_sec: int = 60
+) -> str:
     """operation: 'short' | 'long' | 'style'"""
     url = f"{EXECUTOR_BASE_URL.rstrip('/')}/api/v1/review/mutate"
     t = aiohttp.ClientTimeout(total=timeout_sec)
-    body = {
-        "base_text": base_text,
-        "operation": operation,
-        "style": style,
-        "context": asdict(payload),
-    }
+    body = {"base_text": base_text, "operation": operation, "style": style, "context": asdict(payload)}
     async with aiohttp.ClientSession(timeout=t) as session:
         async with session.post(url, json=body) as resp:
             if resp.status != 200:
@@ -334,9 +518,9 @@ async def _extract_error_detail(resp: aiohttp.ClientResponse) -> str:
         return await resp.text()
 
 
-# ==========================
+# =============================================================================
 # Rendering helpers
-# ==========================
+# =============================================================================
 
 def _shorten(s: str, n: int) -> str:
     if len(s) <= n:
@@ -349,10 +533,7 @@ def _summary_text(d: Dict[str, Any]) -> str:
     lines.append(f"• Клиент: {d.get('client_name')}")
     agent = d.get("agent_name")
     company = d.get("company")
-    if company:
-        lines.append(f"• Агент/компания: {agent}, {company}")
-    else:
-        lines.append(f"• Агент: {agent}")
+    lines.append(f"• Агент/компания: {agent}, {company}" if company else f"• Агент: {agent}")
     loc = d.get("city") or "—"
     addr = d.get("address")
     lines.append(f"• Локация: {loc}{', ' + addr if addr else ''}")
@@ -360,285 +541,9 @@ def _summary_text(d: Dict[str, Any]) -> str:
     if deal_type == "custom":
         deal_type = f"Другое: {d.get('deal_custom') or ''}"
     lines.append(f"• Тип сделки: {deal_type}")
-    lines.append(f"• Ситуация: {_shorten(d.get('situation',''), 150)}")
+    lines.append(f"• Ситуация: {_shorten(d.get('situation', ''), 150)}")
     lines.append(f"• Стиль: {d.get('style')}")
     return "\n".join(lines)
-
-
-# ==========================
-# Flow handlers
-# ==========================
-
-async def start_feedback_flow(callback: CallbackQuery, state: FSMContext):
-    """Entry point via callback 'nav.feedback_start' from your menu."""
-    anchor_id = callback.message.message_id
-    await state.update_data(anchor_id=anchor_id)
-    await _edit_text_or_caption(callback.message, ASK_CLIENT_NAME, kb_only_cancel())
-    await state.set_state(FeedbackStates.waiting_client)
-    await callback.answer()
-
-
-async def cancel_flow(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await _edit_text_or_caption(callback.message, "Операция отменена. Чем займёмся?", None)
-    await callback.answer()
-
-
-async def handle_client_name(message: Message, state: FSMContext):
-    name = (message.text or "").strip()
-    if len(name) < 2 or len(name) > 60:
-        await message.reply("Имя должно быть 2–60 символов. Попробуйте снова.")
-        return
-    await state.update_data(client_name=name)
-    d = await state.get_data()
-    if d.get("edit_field") == "client":
-        await _return_to_summary(message, state)
-        return
-    await message.answer(ASK_AGENT_NAME)
-    await state.set_state(FeedbackStates.waiting_agent)
-
-
-async def handle_agent_name(message: Message, state: FSMContext):
-    name = (message.text or "").strip()
-    if len(name) < 2 or len(name) > 60:
-        await message.reply("Имя должно быть 2–60 символов. Попробуйте снова.")
-        return
-    await state.update_data(agent_name=name)
-    d = await state.get_data()
-    if d.get("edit_field") == "agent":
-        await _return_to_summary(message, state)
-        return
-    await message.answer(ASK_COMPANY, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=BTN_SKIP, callback_data="company.skip")],
-        [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
-    ]))
-    await state.set_state(FeedbackStates.waiting_company)
-
-
-async def handle_company_skip(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(company=None)
-    d = await state.get_data()
-    if d.get("edit_field") == "company":
-        await _return_to_summary(callback.message, state)
-    else:
-        await _edit_text_or_caption(callback.message, ASK_CITY, kb_cities())
-        await state.set_state(FeedbackStates.waiting_city_mode)
-    await callback.answer()
-
-
-async def handle_company_name(message: Message, state: FSMContext):
-    company = (message.text or "").strip()
-    if company and (len(company) < 2 or len(company) > 80):
-        await message.reply("Название компании 2–80 символов или пропустите.")
-        return
-    await state.update_data(company=company or None)
-    d = await state.get_data()
-    if d.get("edit_field") == "company":
-        await _return_to_summary(message, state)
-    else:
-        await message.answer(ASK_CITY, reply_markup=kb_cities())
-        await state.set_state(FeedbackStates.waiting_city_mode)
-
-
-async def handle_city_choice(callback: CallbackQuery, state: FSMContext):
-    data = callback.data
-    if data == "loc.city.input":
-        await _edit_text_or_caption(callback.message, ASK_CITY_INPUT, kb_only_cancel())
-        await state.set_state(FeedbackStates.waiting_city_input)
-        await callback.answer()
-        return
-    if data == "loc.addr":
-        await _edit_text_or_caption(callback.message, ASK_ADDRESS, InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=BTN_SKIP, callback_data="addr.skip")],
-            [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
-        ]))
-
-        await state.set_state(FeedbackStates.waiting_address)
-        await callback.answer()
-        return
-    # loc.city.{Name}
-    if data.startswith("loc.city."):
-        city = data.split(".", 2)[2]
-        await state.update_data(city=city)
-        # show short confirmation and next
-        await _edit_text_or_caption(callback.message, f"Город: {city}.\n\nНужно указать адрес?", InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Да, указать адрес", callback_data="loc.addr")],
-            [InlineKeyboardButton(text=BTN_NEXT, callback_data="loc.next")],
-            [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
-        ]))
-        await state.set_state(FeedbackStates.waiting_city_mode)
-        await callback.answer()
-        return
-
-    if data == "loc.next":
-        d = await state.get_data()
-        if d.get("edit_field") == "city":
-            await _return_to_summary(callback.message, state)
-        else:
-            # proceed to deal type
-            await _edit_text_or_caption(callback.message, ASK_DEAL_TYPE, kb_deal_types())
-            await state.set_state(FeedbackStates.waiting_deal_type)
-        await callback.answer()
-        return
-
-
-async def handle_city_input(message: Message, state: FSMContext):
-    city = (message.text or "").strip()
-    if len(city) < 2:
-        await message.reply("Слишком короткое название города. Попробуйте снова.")
-        return
-    await state.update_data(city=city)
-    await message.answer(f"Город: {city}.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=BTN_NEXT, callback_data="loc.next")],
-        [InlineKeyboardButton(text="Указать адрес (опц.)", callback_data="loc.addr")],
-    ]))
-    await state.set_state(FeedbackStates.waiting_city_mode)
-
-
-async def handle_address(message: Message, state: FSMContext):
-    addr = (message.text or "").strip()
-    await state.update_data(address=addr or None)
-    d = await state.get_data()
-    if d.get("edit_field") in ("address", "city"):
-        await _return_to_summary(message, state)
-    else:
-        await message.answer(ASK_DEAL_TYPE, reply_markup=kb_deal_types())
-        await state.set_state(FeedbackStates.waiting_deal_type)
-
-
-async def handle_address_skip(callback: CallbackQuery, state: FSMContext):
-    await state.update_data(address=None)
-    d = await state.get_data()
-    if d.get("edit_field") in ("address", "city"):
-        await _return_to_summary(callback.message, state)
-    else:
-        await _edit_text_or_caption(callback.message, ASK_DEAL_TYPE, kb_deal_types())
-        await state.set_state(FeedbackStates.waiting_deal_type)
-    await callback.answer()
-
-
-async def handle_deal_type(callback: CallbackQuery, state: FSMContext):
-    data = callback.data
-    if not data.startswith("deal."):
-        await callback.answer()
-        return
-    deal_code = data.split(".", 1)[1]
-    if deal_code == "other":
-        await _edit_text_or_caption(callback.message, ASK_DEAL_CUSTOM, kb_only_cancel())
-        await state.set_state(FeedbackStates.waiting_deal_custom)
-        await callback.answer()
-        return
-    await state.update_data(deal_type=deal_code, deal_custom=None)
-    d = await state.get_data()
-    if d.get("edit_field") == "deal":
-        await _return_to_summary(callback.message, state)
-    else:
-        await _edit_text_or_caption(callback.message, ASK_SITUATION, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Показать подсказки", callback_data="sit.hints")]]))
-        await state.set_state(FeedbackStates.waiting_situation)
-    await callback.answer()
-
-
-async def handle_deal_custom(message: Message, state: FSMContext):
-    custom = (message.text or "").strip()
-    if len(custom) < 2:
-        await message.reply("Слишком короткое значение. Уточните тип сделки.")
-        return
-    await state.update_data(deal_type="custom", deal_custom=custom)
-    d = await state.get_data()
-    if d.get("edit_field") == "deal":
-        await _return_to_summary(message, state)
-    else:
-        await message.answer(ASK_SITUATION, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Показать подсказки", callback_data="sit.hints")]]))
-        await state.set_state(FeedbackStates.waiting_situation)
-
-
-async def handle_situation_hints(callback: CallbackQuery, state: FSMContext):
-    await callback.message.answer(HINT_SITUATION)
-    await callback.answer()
-
-
-async def handle_situation(message: Message, state: FSMContext):
-    txt = (message.text or "").strip()
-    if len(txt) < 100 or len(txt) > 4000:
-        await message.reply("Нужно 100–4000 символов. Добавьте деталей (сроки, результат, особенности).")
-        return
-    await state.update_data(situation=txt)
-    d = await state.get_data()
-    if d.get("edit_field") == "situation":
-        await _return_to_summary(message, state)
-    else:
-        await message.answer(ASK_STYLE, reply_markup=kb_style())
-        await state.set_state(FeedbackStates.waiting_style)
-
-
-async def handle_style(callback: CallbackQuery, state: FSMContext):
-    data = callback.data
-    if data == "style.info":
-        await callback.message.answer(STYLE_INFO)
-        await callback.answer()
-        return
-    if not data.startswith("style."):
-        await callback.answer()
-        return
-    style = data.split(".", 1)[1]
-    await state.update_data(style=style)
-    d = await state.get_data()
-    summary = _summary_text(d)
-    await _edit_text_or_caption(callback.message, summary, kb_summary())
-    await state.set_state(FeedbackStates.showing_summary)
-    await callback.answer()
-
-
-async def open_edit_menu(callback: CallbackQuery, state: FSMContext):
-    await _edit_text_or_caption(callback.message, "Что изменить?", kb_edit_menu())
-    await callback.answer()
-
-
-async def edit_field_router(callback: CallbackQuery, state: FSMContext):
-    data = callback.data
-    if data == "edit.client":
-        await state.update_data(edit_field="client")
-        await _edit_text_or_caption(callback.message, ASK_CLIENT_NAME, kb_only_cancel())
-        await state.set_state(FeedbackStates.waiting_client)
-    elif data == "edit.agent":
-        await state.update_data(edit_field="agent")
-        await _edit_text_or_caption(callback.message, ASK_AGENT_NAME, kb_only_cancel())
-        await state.set_state(FeedbackStates.waiting_agent)
-    elif data == "edit.company":
-        await state.update_data(edit_field="company")
-        await _edit_text_or_caption(callback.message, ASK_COMPANY, InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=BTN_SKIP, callback_data="company.skip")],
-            [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
-        ]))
-        await state.set_state(FeedbackStates.waiting_company)
-    elif data == "edit.city":
-        await state.update_data(edit_field="city")
-        await _edit_text_or_caption(callback.message, ASK_CITY, kb_cities())
-        await state.set_state(FeedbackStates.waiting_city_mode)
-    elif data == "edit.addr":
-        await state.update_data(edit_field="address")
-        await _edit_text_or_caption(callback.message, ASK_ADDRESS, InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=BTN_SKIP, callback_data="addr.skip")],
-            [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
-        ]))
-        await state.set_state(FeedbackStates.waiting_address)
-    elif data == "edit.deal":
-        await state.update_data(edit_field="deal")
-        await _edit_text_or_caption(callback.message, ASK_DEAL_TYPE, kb_deal_types())
-        await state.set_state(FeedbackStates.waiting_deal_type)
-    elif data == "edit.sit":
-        await state.update_data(edit_field="situation")
-        await _edit_text_or_caption(callback.message, ASK_SITUATION, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Показать подсказки", callback_data="sit.hints")]]))
-        await state.set_state(FeedbackStates.waiting_situation)
-    elif data == "edit.style":
-        await state.update_data(edit_field="style")
-        await _edit_text_or_caption(callback.message, ASK_STYLE, kb_style())
-        await state.set_state(FeedbackStates.waiting_style)
-    elif data == "edit.done":
-        d = await state.get_data()
-        await _edit_text_or_caption(callback.message, _summary_text(d), kb_summary())
-        await state.set_state(FeedbackStates.showing_summary)
-    await callback.answer()
 
 
 def _payload_from_state(d: Dict[str, Any]) -> ReviewPayload:
@@ -655,19 +560,278 @@ def _payload_from_state(d: Dict[str, Any]) -> ReviewPayload:
     )
 
 
+# =============================================================================
+# Flow handlers
+# =============================================================================
+
+async def start_feedback_flow(callback: CallbackQuery, state: FSMContext):
+    # якорим текущее сообщение для последующих редактирований
+    await state.update_data(anchor_id=callback.message.message_id)
+    await ui_reply(callback, ASK_CLIENT_NAME, kb_only_cancel(), state=state)
+    await state.set_state(FeedbackStates.waiting_client)
+    await callback.answer()
+
+
+async def cancel_flow(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await ui_reply(callback, "Операция отменена. Чем займёмся?", None, state=state)
+    await callback.answer()
+
+
+async def handle_client_name(message: Message, state: FSMContext):
+    name = (message.text or "").strip()
+    if len(name) < 2 or len(name) > 60:
+        await reply_plain(message, "Имя должно быть 2–60 символов. Попробуйте снова.")
+        return
+    await state.update_data(client_name=name)
+    d = await state.get_data()
+    if d.get("edit_field") == "client":
+        await _return_to_summary(message, state)
+        return
+    await ui_reply(message, ASK_AGENT_NAME, state=state)
+    await state.set_state(FeedbackStates.waiting_agent)
+
+
+async def handle_agent_name(message: Message, state: FSMContext):
+    name = (message.text or "").strip()
+    if len(name) < 2 or len(name) > 60:
+        await reply_plain(message, "Имя должно быть 2–60 символов. Попробуйте снова.")
+        return
+    await state.update_data(agent_name=name)
+    d = await state.get_data()
+    if d.get("edit_field") == "agent":
+        await _return_to_summary(message, state)
+        return
+    await ui_reply(message, ASK_COMPANY, kb_with_skip("company.skip"), state=state)
+    await state.set_state(FeedbackStates.waiting_company)
+
+
+async def handle_company_skip(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(company=None)
+    d = await state.get_data()
+    if d.get("edit_field") == "company":
+        await _return_to_summary(callback, state)
+    else:
+        await ui_reply(callback, ASK_CITY, kb_cities(), state=state)
+        await state.set_state(FeedbackStates.waiting_city_mode)
+    await callback.answer()
+
+
+async def handle_company_name(message: Message, state: FSMContext):
+    company = (message.text or "").strip()
+    if company and (len(company) < 2 or len(company) > 80):
+        await reply_plain(message, "Название компании 2–80 символов или пропустите.")
+        return
+    await state.update_data(company=company or None)
+    d = await state.get_data()
+    if d.get("edit_field") == "company":
+        await _return_to_summary(message, state)
+    else:
+        await ui_reply(message, ASK_CITY, kb_cities(), state=state)
+        await state.set_state(FeedbackStates.waiting_city_mode)
+
+
+async def handle_city_choice(callback: CallbackQuery, state: FSMContext):
+    data = callback.data
+    if data == "loc.city.input":
+        await ui_reply(callback, ASK_CITY_INPUT, kb_only_cancel(), state=state)
+        await state.set_state(FeedbackStates.waiting_city_input)
+        await callback.answer()
+        return
+
+    if data == "loc.addr":
+        await ui_reply(callback, ASK_ADDRESS, kb_with_skip("addr.skip"), state=state)
+        await state.set_state(FeedbackStates.waiting_address)
+        await callback.answer()
+        return
+
+    if data.startswith("loc.city."):
+        city = data.split(".", 2)[2]
+        await state.update_data(city=city)
+        await ui_reply(
+            callback,
+            f"Город: {city}.\n\nНужно указать адрес?",
+            kb_city_addr_question(),
+            state=state,
+        )
+        await state.set_state(FeedbackStates.waiting_city_mode)
+        await callback.answer()
+        return
+
+    if data == "loc.next":
+        d = await state.get_data()
+        if d.get("edit_field") == "city":
+            await _return_to_summary(callback, state)
+        else:
+            await ui_reply(callback, ASK_DEAL_TYPE, kb_deal_types(), state=state)
+            await state.set_state(FeedbackStates.waiting_deal_type)
+        await callback.answer()
+        return
+
+
+async def handle_city_input(message: Message, state: FSMContext):
+    city = (message.text or "").strip()
+    if len(city) < 2:
+        await reply_plain(message, "Слишком короткое название города. Попробуйте снова.")
+        return
+    await state.update_data(city=city)
+    await send_text(message, f"Город: {city}.", kb_city_next_or_addr())
+    await state.set_state(FeedbackStates.waiting_city_mode)
+
+
+async def handle_address(message: Message, state: FSMContext):
+    addr = (message.text or "").strip()
+    await state.update_data(address=addr or None)
+    d = await state.get_data()
+    if d.get("edit_field") in ("address", "city"):
+        await _return_to_summary(message, state)
+    else:
+        await ui_reply(message, ASK_DEAL_TYPE, kb_deal_types(), state=state)
+        await state.set_state(FeedbackStates.waiting_deal_type)
+
+
+async def handle_address_skip(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(address=None)
+    d = await state.get_data()
+    if d.get("edit_field") in ("address", "city"):
+        await _return_to_summary(callback, state)
+    else:
+        await ui_reply(callback, ASK_DEAL_TYPE, kb_deal_types(), state=state)
+        await state.set_state(FeedbackStates.waiting_deal_type)
+    await callback.answer()
+
+
+async def handle_deal_type(callback: CallbackQuery, state: FSMContext):
+    data = callback.data
+    if not data.startswith("deal."):
+        await callback.answer()
+        return
+    deal_code = data.split(".", 1)[1]
+    if deal_code == "other":
+        await ui_reply(callback, ASK_DEAL_CUSTOM, kb_only_cancel(), state=state)
+        await state.set_state(FeedbackStates.waiting_deal_custom)
+        await callback.answer()
+        return
+    await state.update_data(deal_type=deal_code, deal_custom=None)
+    d = await state.get_data()
+    if d.get("edit_field") == "deal":
+        await _return_to_summary(callback, state)
+    else:
+        await ui_reply(callback, ASK_SITUATION, kb_situation_hints(), state=state)
+        await state.set_state(FeedbackStates.waiting_situation)
+    await callback.answer()
+
+
+async def handle_deal_custom(message: Message, state: FSMContext):
+    custom = (message.text or "").strip()
+    if len(custom) < 2:
+        await reply_plain(message, "Слишком короткое значение. Уточните тип сделки.")
+        return
+    await state.update_data(deal_type="custom", deal_custom=custom)
+    d = await state.get_data()
+    if d.get("edit_field") == "deal":
+        await _return_to_summary(message, state)
+    else:
+        await ui_reply(message, ASK_SITUATION, kb_situation_hints(), state=state)
+        await state.set_state(FeedbackStates.waiting_situation)
+
+
+async def handle_situation_hints(callback: CallbackQuery, state: FSMContext):
+    # Показываем подсказки в том же сообщении (редактируем)
+    await ui_reply(callback, HINT_SITUATION, kb_situation_hints(), state=state)
+    await callback.answer()
+
+
+async def handle_situation(message: Message, state: FSMContext):
+    txt = (message.text or "").strip()
+    if len(txt) < 100 or len(txt) > 4000:
+        await reply_plain(message, "Нужно 100–4000 символов. Добавьте деталей (сроки, результат, особенности).")
+        return
+    await state.update_data(situation=txt)
+    d = await state.get_data()
+    if d.get("edit_field") == "situation":
+        await _return_to_summary(message, state)
+    else:
+        await ui_reply(message, ASK_STYLE, kb_style(), state=state)
+        await state.set_state(FeedbackStates.waiting_style)
+
+
+async def handle_style(callback: CallbackQuery, state: FSMContext):
+    data = callback.data
+    if data == "style.info":
+        await ui_reply(callback, STYLE_INFO, kb_style(), state=state)
+        await callback.answer()
+        return
+    if not data.startswith("style."):
+        await callback.answer()
+        return
+    style = data.split(".", 1)[1]
+    await state.update_data(style=style)
+    d = await state.get_data()
+    await ui_reply(callback, _summary_text(d), kb_summary(), state=state)
+    await state.set_state(FeedbackStates.showing_summary)
+    await callback.answer()
+
+
+async def open_edit_menu(callback: CallbackQuery, state: FSMContext):
+    await ui_reply(callback, "Что изменить?", kb_edit_menu(), state=state)
+    await callback.answer()
+
+
+async def edit_field_router(callback: CallbackQuery, state: FSMContext):
+    data = callback.data
+    await callback.answer()
+    if data == "edit.client":
+        await state.update_data(edit_field="client")
+        await ui_reply(callback, ASK_CLIENT_NAME, kb_only_cancel(), state=state)
+        await state.set_state(FeedbackStates.waiting_client)
+    elif data == "edit.agent":
+        await state.update_data(edit_field="agent")
+        await ui_reply(callback, ASK_AGENT_NAME, kb_only_cancel(), state=state)
+        await state.set_state(FeedbackStates.waiting_agent)
+    elif data == "edit.company":
+        await state.update_data(edit_field="company")
+        await ui_reply(callback, ASK_COMPANY, kb_with_skip("company.skip"), state=state)
+        await state.set_state(FeedbackStates.waiting_company)
+    elif data == "edit.city":
+        await state.update_data(edit_field="city")
+        await ui_reply(callback, ASK_CITY, kb_cities(), state=state)
+        await state.set_state(FeedbackStates.waiting_city_mode)
+    elif data == "edit.addr":
+        await state.update_data(edit_field="address")
+        await ui_reply(callback, ASK_ADDRESS, kb_with_skip("addr.skip"), state=state)
+        await state.set_state(FeedbackStates.waiting_address)
+    elif data == "edit.deal":
+        await state.update_data(edit_field="deal")
+        await ui_reply(callback, ASK_DEAL_TYPE, kb_deal_types(), state=state)
+        await state.set_state(FeedbackStates.waiting_deal_type)
+    elif data == "edit.sit":
+        await state.update_data(edit_field="situation")
+        await ui_reply(callback, ASK_SITUATION, kb_situation_hints(), state=state)
+        await state.set_state(FeedbackStates.waiting_situation)
+    elif data == "edit.style":
+        await state.update_data(edit_field="style")
+        await ui_reply(callback, ASK_STYLE, kb_style(), state=state)
+        await state.set_state(FeedbackStates.waiting_style)
+    elif data == "edit.done":
+        d = await state.get_data()
+        await ui_reply(callback, _summary_text(d), kb_summary(), state=state)
+        await state.set_state(FeedbackStates.showing_summary)
+
+
 async def start_generation(callback: CallbackQuery, state: FSMContext, bot: Bot):
     d = await state.get_data()
     try:
         payload = _payload_from_state(d)
     except Exception:
-        await callback.message.answer("Не все поля заполнены. Вернитесь и заполните обязательные поля.")
+        await ui_reply(callback, "Не все поля заполнены. Вернитесь и заполните обязательные поля.", state=state)
         await callback.answer()
         return
 
+    # Показываем "генерирую…" (редактируем текущий якорь)
+    await ui_reply(callback, GENERATING, state=state)
+
     chat_id = callback.message.chat.id
-    gen_msg = await callback.message.answer(GENERATING)
-    new_anchor_id = gen_msg.message_id
-    await state.update_data(anchor_id=new_anchor_id)
 
     async def _do():
         return await _request_generate(payload, num_variants=3)
@@ -676,36 +840,20 @@ async def start_generation(callback: CallbackQuery, state: FSMContext, bot: Bot)
         variants: List[str] = await run_long_operation_with_action(
             bot=bot, chat_id=chat_id, action=ChatAction.TYPING, coro=_do()
         )
-        # Save variants to state
         await state.update_data(variants=variants)
 
-        # Show each with its own keyboard
+        # Первый вариант — заменяем (редактируем якорь), хвосты — докидываем новыми
         for idx, text in enumerate(variants, start=1):
             parts = _split_for_telegram(text)
-            head = f"Вариант {idx}\n\n" + parts[0]
-            try:
-                await bot.edit_message_text(chat_id=chat_id, message_id=new_anchor_id, text=head, reply_markup=kb_variant(idx))
-            except TelegramBadRequest:
-                await callback.message.answer(head, reply_markup=kb_variant(idx))
-            # tail
+            head = VARIANT_HEAD.format(idx=idx) + parts[0]
+            await ui_reply(callback, head, kb_variant(idx), state=state, bot=bot)
             for p in parts[1:]:
-                await callback.message.answer(p)
-        # common footer
-        await callback.message.answer("Выберите подходящий вариант или измените его.", reply_markup=kb_variants_common())
+                await send_text(callback.message, p)
+
+        await send_text(callback.message, "Выберите подходящий вариант или измените его.", kb_variants_common())
         await state.set_state(FeedbackStates.browsing_variants)
     except Exception as e:
-        try:
-            await bot.edit_message_text(chat_id=chat_id,
-                                        message_id=new_anchor_id,
-                                        text=f"{ERROR_TEXT}\n\n{e}",
-                                        reply_markup=InlineKeyboardMarkup(
-                                            inline_keyboard=
-                                            [[InlineKeyboardButton(text="Попробовать ещё раз", callback_data="gen.start")]]))
-        except TelegramBadRequest:
-            await callback.message.answer(f"{ERROR_TEXT}\n\n{e}",
-                                          reply_markup=InlineKeyboardMarkup(
-                                              inline_keyboard=
-                                              [[InlineKeyboardButton(text="Попробовать ещё раз",callback_data="gen.start")]]))
+        await ui_reply(callback, f"{ERROR_TEXT}\n\n{e}", kb_try_again_gen(), state=state, bot=bot)
         await state.set_state(FeedbackStates.showing_summary)
     finally:
         await callback.answer()
@@ -730,53 +878,43 @@ async def mutate_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
     payload = _payload_from_state(d)
 
     if op == "style":
-        # switch to style select, but remember which idx to mutate
         await state.update_data(mutating_idx=idx)
-        await _edit_text_or_caption(callback.message, ASK_STYLE, kb_style())
+        await ui_reply(callback, ASK_STYLE, kb_style(), state=state)
         await state.set_state(FeedbackStates.waiting_style)
         await callback.answer()
         return
 
     operation = "short" if op == "short" else "long"
 
+    await ui_reply(callback, MUTATING, state=state)  # редактируем якорь
     chat_id = callback.message.chat.id
-    gen_msg = await callback.message.answer("Меняю вариант…")
-    new_anchor_id = gen_msg.message_id
-    await state.update_data(anchor_id=new_anchor_id)
 
     async def _do():
         return await _request_mutate(base_text, operation=operation, style=None, payload=payload)
 
     try:
-        new_text: str = await run_long_operation_with_action(bot=bot, chat_id=chat_id, action=ChatAction.TYPING, coro=_do())
+        new_text: str = await run_long_operation_with_action(
+            bot=bot, chat_id=chat_id, action=ChatAction.TYPING, coro=_do()
+        )
         variants[idx - 1] = new_text
         await state.update_data(variants=variants)
         parts = _split_for_telegram(new_text)
-        head = f"Вариант {idx} (обновлён)\n\n" + parts[0]
-        try:
-            await bot.edit_message_text(chat_id=chat_id, message_id=new_anchor_id, text=head, reply_markup=kb_variant(idx))
-        except TelegramBadRequest:
-            await callback.message.answer(head, reply_markup=kb_variant(idx))
+        head = VARIANT_HEAD_UPDATED.format(idx=idx) + parts[0]
+        await ui_reply(callback, head, kb_variant(idx), state=state, bot=bot)
         for p in parts[1:]:
-            await callback.message.answer(p)
+            await send_text(callback.message, p)
     except Exception as e:
-        await callback.message.answer(f"{ERROR_TEXT}\n\n{e}")
+        await ui_reply(callback, f"{ERROR_TEXT}\n\n{e}", state=state)
     finally:
         await callback.answer()
 
 
-async def apply_style_after_mutate(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """If user selected 'mutate.{idx}.style' we ask style, then we come back here via style selection handler."""
-    # This is handled by handle_style if mutating_idx exists in state while in waiting_style.
-    await callback.answer()
-
-
 async def handle_style_after_mutate(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """Called from handle_style when mutating specific variant's style."""
+    """Если ранее выбрали mutate.{idx}.style, сюда попадём после выбора стиля."""
     d = await state.get_data()
     mut_idx = d.get("mutating_idx")
     if not mut_idx:
-        return  # normal style flow handled elsewhere
+        return
 
     style = d.get("style")
     variants: List[str] = d.get("variants", [])
@@ -786,62 +924,54 @@ async def handle_style_after_mutate(callback: CallbackQuery, state: FSMContext, 
         return
 
     base_text = variants[mut_idx - 1]
-    payload = _payload_from_state(d)
-
+    await ui_reply(callback, MUTATING_STYLE, state=state)
     chat_id = callback.message.chat.id
-    gen_msg = await callback.message.answer("Меняю стиль…")
-    new_anchor_id = gen_msg.message_id
-    await state.update_data(anchor_id=new_anchor_id)
 
     async def _do():
+        payload = _payload_from_state(d)
         return await _request_mutate(base_text, operation="style", style=style, payload=payload)
 
     try:
-        new_text: str = await run_long_operation_with_action(bot=bot, chat_id=chat_id, action=ChatAction.TYPING, coro=_do())
+        new_text: str = await run_long_operation_with_action(
+            bot=bot, chat_id=chat_id, action=ChatAction.TYPING, coro=_do()
+        )
         variants[mut_idx - 1] = new_text
         await state.update_data(variants=variants, mutating_idx=None)
         parts = _split_for_telegram(new_text)
-        head = f"Вариант {mut_idx} (обновлён)\n\n" + parts[0]
-        try:
-            await bot.edit_message_text(chat_id=chat_id, message_id=new_anchor_id, text=head, reply_markup=kb_variant(mut_idx))
-        except TelegramBadRequest:
-            await callback.message.answer(head, reply_markup=kb_variant(mut_idx))
+        head = VARIANT_HEAD_UPDATED.format(idx=mut_idx) + parts[0]
+        await ui_reply(callback, head, kb_variant(mut_idx), state=state, bot=bot)
         for p in parts[1:]:
-            await callback.message.answer(p)
+            await send_text(callback.message, p)
     except Exception as e:
-        await callback.message.answer(f"{ERROR_TEXT}\n\n{e}")
+        await ui_reply(callback, f"{ERROR_TEXT}\n\n{e}", state=state)
 
 
 async def gen_more_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    # Ask microservice for one more variant
     d = await state.get_data()
     payload = _payload_from_state(d)
 
+    await ui_reply(callback, ONE_MORE, state=state)
     chat_id = callback.message.chat.id
-    gen_msg = await callback.message.answer("Ещё вариант…")
-    new_anchor_id = gen_msg.message_id
-    await state.update_data(anchor_id=new_anchor_id)
 
     async def _do():
         lst = await _request_generate(payload, num_variants=1)
         return lst[0]
 
     try:
-        new_text: str = await run_long_operation_with_action(bot=bot, chat_id=chat_id, action=ChatAction.TYPING, coro=_do())
+        new_text: str = await run_long_operation_with_action(
+            bot=bot, chat_id=chat_id, action=ChatAction.TYPING, coro=_do()
+        )
         variants: List[str] = d.get("variants", [])
         variants.append(new_text)
         await state.update_data(variants=variants)
         idx = len(variants)
         parts = _split_for_telegram(new_text)
-        head = f"Вариант {idx}\n\n" + parts[0]
-        try:
-            await bot.edit_message_text(chat_id=chat_id, message_id=new_anchor_id, text=head, reply_markup=kb_variant(idx))
-        except TelegramBadRequest:
-            await callback.message.answer(head, reply_markup=kb_variant(idx))
+        head = VARIANT_HEAD.format(idx=idx) + parts[0]
+        await ui_reply(callback, head, kb_variant(idx), state=state, bot=bot)
         for p in parts[1:]:
-            await callback.message.answer(p)
+            await send_text(callback.message, p)
     except Exception as e:
-        await callback.message.answer(f"{ERROR_TEXT}\n\n{e}")
+        await ui_reply(callback, f"{ERROR_TEXT}\n\n{e}", state=state)
     finally:
         await callback.answer()
 
@@ -862,15 +992,19 @@ async def pick_variant(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(picked_idx=idx)
-    await _edit_text_or_caption(callback.message, f"Вы выбрали вариант {idx}. Готово к выдаче?", InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Готово", callback_data="done.final")],
-        [InlineKeyboardButton(text="Вернуться к вариантам", callback_data="gen.back")],
-    ]))
+    await ui_reply(callback, PICKED_TEMPLATE.format(idx=idx),
+                   InlineKeyboardMarkup(
+                       inline_keyboard=[
+                           [InlineKeyboardButton(text="Готово", callback_data="done.final")],
+                           [InlineKeyboardButton(text="Вернуться к вариантам", callback_data="gen.back")],
+                       ]
+                   ),
+                   state=state)
     await callback.answer()
 
 
 async def back_to_variants(callback: CallbackQuery, state: FSMContext):
-    await _edit_text_or_caption(callback.message, "Вернитесь к вариантам выше или запросите ещё один.", kb_variants_common())
+    await ui_reply(callback, RETURN_TO_VARIANTS, kb_variants_common(), state=state)
     await state.set_state(FeedbackStates.browsing_variants)
     await callback.answer()
 
@@ -886,10 +1020,10 @@ async def finalize_choice(callback: CallbackQuery, state: FSMContext):
     final_text = variants[idx - 1]
     payload = _payload_from_state(d)
 
-    # Save to history
+    # save to history
     _history_add(callback.from_user.id, payload, final_text)
 
-    await _edit_text_or_caption(callback.message, READY_FINAL, kb_final())
+    await ui_reply(callback, READY_FINAL, kb_final(), state=state)
     await state.update_data(final_text=final_text)
     await callback.answer()
 
@@ -907,7 +1041,6 @@ async def export_text(callback: CallbackQuery, state: FSMContext):
         text = d.get("final_text") or ""
         filename = f"review_final.{fmt}"
     else:
-        # scope is index
         try:
             idx = int(scope)
         except Exception:
@@ -926,29 +1059,36 @@ async def export_text(callback: CallbackQuery, state: FSMContext):
 
 
 async def clone_from_final(callback: CallbackQuery, state: FSMContext):
-    # Re-open summary with same fields
     d = await state.get_data()
-    await _edit_text_or_caption(callback.message, _summary_text(d), kb_summary())
+    await ui_reply(callback, _summary_text(d), kb_summary(), state=state)
     await state.set_state(FeedbackStates.showing_summary)
     await callback.answer()
 
 
-# ==========================
-# History handlers (basic)
-# ==========================
+# =============================================================================
+# History
+# =============================================================================
 
 async def open_history(callback: CallbackQuery, state: FSMContext):
     items = _HISTORY.get(callback.from_user.id, [])
     if not items:
-        await _edit_text_or_caption(callback.message, HISTORY_EMPTY, InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="В меню", callback_data="nav.menu")]]))
+        await ui_reply(
+            callback,
+            HISTORY_EMPTY,
+            InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="В меню", callback_data="nav.menu")]]
+            ),
+            state=state,
+        )
         await callback.answer()
         return
-    text_lines = ["Недавние черновики:"]
+
+    text_lines = [RECENT_DRAFTS_TITLE]
     for it in items[:10]:
         text_lines.append(
             f"#{it.item_id} · {it.created_at.strftime('%Y-%m-%d %H:%M')} · {it.payload.city} · {it.payload.deal_type} · {it.payload.client_name}"
         )
-    await _edit_text_or_caption(callback.message, "\n".join(text_lines), kb_history(items))
+    await ui_reply(callback, "\n".join(text_lines), kb_history(items), state=state)
     await callback.answer()
 
 
@@ -975,19 +1115,23 @@ async def history_open_item(callback: CallbackQuery, state: FSMContext):
         + item.final_text
     )
     parts = _split_for_telegram(header + "\n\n" + body)
-    try:
-        await _edit_text_or_caption(
-            callback.message, parts[0],
-            InlineKeyboardMarkup(inline_keyboard=
-                  [[InlineKeyboardButton(text="Создать похожий", callback_data=f"hist.{item.item_id}.clone")],
-                  [InlineKeyboardButton(text="Экспорт .txt", callback_data=f"hist.{item.item_id}.export.txt"),
-                  InlineKeyboardButton(text="Экспорт .md", callback_data=f"hist.{item.item_id}.export.md")],
-                  [InlineKeyboardButton(text="В историю", callback_data="hist.back")]]))
-
-    except TelegramBadRequest:
-        await callback.message.answer(parts[0])
+    await ui_reply(
+        callback,
+        parts[0],
+        InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="Создать похожий", callback_data=f"hist.{item.item_id}.clone")],
+                [
+                    InlineKeyboardButton(text="Экспорт .txt", callback_data=f"hist.{item.item_id}.export.txt"),
+                    InlineKeyboardButton(text="Экспорт .md", callback_data=f"hist.{item.item_id}.export.md"),
+                ],
+                [InlineKeyboardButton(text="В историю", callback_data="hist.back")],
+            ]
+        ),
+        state=state,
+    )
     for ptxt in parts[1:]:
-        await callback.message.answer(ptxt)
+        await send_text(callback.message, ptxt)
     await callback.answer()
 
 
@@ -1024,7 +1168,7 @@ async def history_clone(callback: CallbackQuery, state: FSMContext):
         return
 
     await state.update_data(**asdict(item.payload))
-    await _edit_text_or_caption(callback.message, _summary_text(asdict(item.payload)), kb_summary())
+    await ui_reply(callback, _summary_text(asdict(item.payload)), kb_summary(), state=state)
     await state.set_state(FeedbackStates.showing_summary)
     await callback.answer()
 
@@ -1033,22 +1177,19 @@ async def history_back(callback: CallbackQuery, state: FSMContext):
     await open_history(callback, state)
 
 
-# ==========================
-# Navigation helpers
-# ==========================
+# =============================================================================
+# Navigation
+# =============================================================================
 
 async def go_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await _edit_text_or_caption(callback.message, "Главное меню:",
-                                InlineKeyboardMarkup(inline_keyboard=
-                                                     [[InlineKeyboardButton(text="Создать отзыв", callback_data="nav.feedback_start")],
-                                                      [InlineKeyboardButton(text="История", callback_data="hist.open")]]))
+    await ui_reply(callback, MAIN_MENU_TITLE, kb_menu_main(), state=state)
     await callback.answer()
 
 
-# ==========================
-# Router registration
-# ==========================
+# =============================================================================
+# Router
+# =============================================================================
 
 def router(rt: Router):
     # start & cancel & menu
@@ -1073,6 +1214,10 @@ def router(rt: Router):
 
     # style selection
     rt.callback_query.register(handle_style, F.data.startswith("style."))
+    # style after mutate (тот же handler вызовет, если в state есть mutating_idx)
+    # вызывать вручную не нужно; он используется из handle_style при наличии mutating_idx
+    # но оставляем регистрацию для совместимости (если захотите дергать напрямую)
+    rt.callback_query.register(handle_style_after_mutate, F.data == "style.apply.after_mutate")
 
     # edit menu
     rt.callback_query.register(open_edit_menu, F.data == "edit.open")
@@ -1099,11 +1244,11 @@ def router(rt: Router):
     rt.callback_query.register(history_clone, F.data.contains(".clone"))
     rt.callback_query.register(history_back, F.data == "hist.back")
 
-    # TEXT INPUTS
-    rt.message.register(handle_client_name, FeedbackStates.waiting_client, F.text)
-    rt.message.register(handle_agent_name, FeedbackStates.waiting_agent, F.text)
-    rt.message.register(handle_company_name, FeedbackStates.waiting_company, F.text)
-    rt.message.register(handle_city_input, FeedbackStates.waiting_city_input, F.text)
-    rt.message.register(handle_address, FeedbackStates.waiting_address, F.text)
-    rt.message.register(handle_deal_custom, FeedbackStates.waiting_deal_custom, F.text)
-    rt.message.register(handle_situation, FeedbackStates.waiting_situation, F.text)
+    # TEXT INPUTS — обязательно через StateFilter(...)
+    rt.message.register(handle_client_name, StateFilter(FeedbackStates.waiting_client), F.text)
+    rt.message.register(handle_agent_name, StateFilter(FeedbackStates.waiting_agent), F.text)
+    rt.message.register(handle_company_name, StateFilter(FeedbackStates.waiting_company), F.text)
+    rt.message.register(handle_city_input, StateFilter(FeedbackStates.waiting_city_input), F.text)
+    rt.message.register(handle_address, StateFilter(FeedbackStates.waiting_address), F.text)
+    rt.message.register(handle_deal_custom, StateFilter(FeedbackStates.waiting_deal_custom), F.text)
+    rt.message.register(handle_situation, StateFilter(FeedbackStates.waiting_situation), F.text)

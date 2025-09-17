@@ -12,11 +12,11 @@ from . import (
 )
 
 def register_routers(rt: Router):
+    feedback_playbook.router(rt)
     handler_manager.router(rt)
     design_planes.router(rt)
     interior_redesign.router(rt)
     zero_design.router(rt)
     description_playbook.router(rt)
     objection_playbook.router(rt)
-    feedback_playbook.router(rt)
     rt.include_router(admin.router)
