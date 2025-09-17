@@ -81,7 +81,7 @@ def _kb_from_map(m: Dict[str, str], prefix: str, columns: int = 1) -> InlineKeyb
     if row:
         rows.append(row)
     # Кнопка «Назад» (если нужна единая навигация по боту)
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="ai_tools")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def kb_type()    -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_TYPES,   "desc_type_",   1)
@@ -97,7 +97,7 @@ def kb_skip_comment() -> InlineKeyboardMarkup:
 def kb_retry() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔁 Ещё раз", callback_data="description")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="ai_tools")]
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")]
     ])
 
 # ==========================

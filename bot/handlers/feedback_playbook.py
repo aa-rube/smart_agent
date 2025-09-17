@@ -104,11 +104,17 @@ def _length_limit(code: Optional[str]) -> Optional[int]:
 # Чекбоксы
 CHECK_OFF = "⬜"
 CHECK_ON  = "✅"
+
 # Коды типов сделки и их подписи
-DEAL_CHOICES = [("sale", "Продажа"), ("buy", "Покупка"), ("rent", "Аренда"), ("lease", "Лизинг")]
-
-# История теперь хранится в БД (см. utils/database.py)
-
+DEAL_CHOICES = [
+    ("sale", "Продажа"),
+    ("buy", "Покупка"),
+    ("rent", "Аренда"),
+    ("mortgage", "Ипотека"),
+    ("social_mortgage", "Гос. поддержка"),
+    ("maternity_capital", "Мат. капитал)"),
+    ("custom", "Другое")
+]
 
 # =============================================================================
 # UI Helpers
@@ -283,7 +289,7 @@ def _ensure_deal_types(d: Dict[str, Any]) -> List[str]:
 # =============================================================================
 def kb_only_cancel() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")]]
+        inline_keyboard=[[InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.ai_tools")]]
     )
 
 
@@ -1334,7 +1340,6 @@ async def go_menu(callback: CallbackQuery, state: FSMContext):
 def router(rt: Router):
     # start & cancel & menu
     rt.callback_query.register(start_feedback_flow, F.data == "nav.feedback_start")
-    rt.callback_query.register(cancel_flow, F.data == "nav.cancel")
     rt.callback_query.register(go_menu, F.data == "nav.menu")
 
     # company skip / address skip

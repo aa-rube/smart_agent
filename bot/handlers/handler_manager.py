@@ -176,7 +176,7 @@ def router(rt: Router):
     rt.message.register(help_cmd, Command("support"))
 
     # callbacks (все редактируют текущее сообщение)
-    rt.callback_query.register(ai_tools, F.data == 'ai_tools')
+    rt.callback_query.register(ai_tools, F.data == 'nav.ai_tools')
     rt.callback_query.register(design_start, F.data == 'design_start')
     rt.callback_query.register(check_subscribe_retry, F.data == 'start_retry')
     rt.callback_query.register(skip_subscribe, F.data == 'skip_subscribe')
