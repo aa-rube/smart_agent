@@ -40,7 +40,7 @@ ai_tools_inline = InlineKeyboardMarkup(
         [InlineKeyboardButton(text="📐 Генератор красивых планировок",         callback_data="floor_plan"), ],
         [InlineKeyboardButton(text="🛋️ Генератор дизайна интерьера",           callback_data="design_start"), ],
         [InlineKeyboardButton(text="🤖 ИИ для закрытия возражений",            callback_data="objection_start"), ],
-        [InlineKeyboardButton(text="✍️ ИИ для написания отзывов от клиентов",  callback_data="nav.feedback_start"), ],
+        [InlineKeyboardButton(text="✍️ ИИ для написания отзывов от клиентов",  callback_data="nav.feedback_home"), ],
         [InlineKeyboardButton(text="✨ Саммари диалога с клиентом",            callback_data=" "), ],
         [InlineKeyboardButton(text="💎 Генератор продающих описаний объектов", callback_data="description"), ],
         [InlineKeyboardButton(text="⬅️ Назад",                                 callback_data="start_retry")]

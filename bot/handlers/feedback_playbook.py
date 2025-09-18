@@ -75,7 +75,7 @@ SUMMARY_TITLE = "Проверьте данные перед генерацией
 BTN_GENERATE = "Сгенерировать"
 BTN_EDIT = "Изменить поле"
 BTN_CANCEL = "Закрыть"
-BTN_BACK = "Назад"
+BTN_BACK = "⬅️ Назад"
 BTN_NEXT = "Дальше"
 BTN_SKIP = "Пропустить"
 GENERATING = "Генерирую варианты…"
@@ -89,7 +89,7 @@ READY_FINAL = (
 )
 HISTORY_EMPTY = "История пуста. Сгенерируйте первый черновик."
 RECENT_DRAFTS_TITLE = "Недавние черновики:"
-MAIN_MENU_TITLE = "Главное меню:"
+MAIN_MENU_TITLE = "Отзывы · выберите действие:"
 PICKED_TEMPLATE = "Вы выбрали вариант {idx}. Готово к выдаче?"
 RETURN_TO_VARIANTS = "Вернитесь к вариантам выше или запросите ещё один."
 VARIANT_HEAD = "Вариант {idx}\n\n"
@@ -306,7 +306,7 @@ def _ensure_deal_types(d: Dict[str, Any]) -> List[str]:
 # =============================================================================
 def kb_only_cancel() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.ai_tools")]]
+        inline_keyboard=[[InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.feedback_home")]]
     )
 
 
@@ -314,7 +314,7 @@ def kb_with_skip(skip_cb: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=BTN_SKIP, callback_data=skip_cb)],
-            [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
+            [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.feedback_home")],
         ]
     )
 
@@ -335,7 +335,7 @@ def kb_cities() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="Указать адрес (опц.)", callback_data="loc.addr"),
         ]
     )
-    rows.append([InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")])
+    rows.append([InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.feedback_home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -353,7 +353,7 @@ def kb_city_addr_question() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Да, указать адрес", callback_data="loc.addr")],
             [InlineKeyboardButton(text=BTN_NEXT, callback_data="loc.next")],
-            [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
+            [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.feedback_home")],
         ]
     )
 
@@ -400,7 +400,7 @@ def kb_deal_types_ms(d: Dict[str, Any]) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text=BTN_NEXT, callback_data="deal.next"),
     ])
     # Отмена
-    rows.append([InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")])
+    rows.append([InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.feedback_home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -414,7 +414,7 @@ def kb_tone() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="Официальный", callback_data="tone.formal"),
         ],
         [InlineKeyboardButton(text="О тоне", callback_data="tone.info")],
-        [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
+        [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.feedback_home")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -428,7 +428,7 @@ def kb_length() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="Развернутый (≤1200)", callback_data="length.long"),
         ],
         [InlineKeyboardButton(text="О длине", callback_data="length.info")],
-        [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
+        [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.feedback_home")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -437,7 +437,7 @@ def kb_summary() -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text=BTN_GENERATE, callback_data="gen.start")],
         [InlineKeyboardButton(text=BTN_EDIT, callback_data="edit.open")],
-        [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
+        [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.feedback_home")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -498,7 +498,7 @@ def kb_variant(index: int, total: int) -> InlineKeyboardMarkup:
 def kb_variants_common() -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="Показать все поля", callback_data="summary.show")],
-        [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
+        [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.feedback_home")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -523,7 +523,7 @@ def kb_history(items: List[Any]) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text=label, callback_data=f"hist.open.{it.id}")])
     rows.append(
         [
-            InlineKeyboardButton(text="Поиск", callback_data="hist.search"),
+            # InlineKeyboardButton(text="Поиск", callback_data="hist.search"),
             InlineKeyboardButton(text="В меню", callback_data="nav.menu"),
         ]
     )
@@ -535,6 +535,7 @@ def kb_menu_main() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="Создать отзыв", callback_data="nav.feedback_start")],
             [InlineKeyboardButton(text="История", callback_data="hist.open")],
+            [InlineKeyboardButton(text=BTN_BACK, callback_data="nav.ai_tools")],
         ]
     )
 
@@ -562,7 +563,7 @@ def kb_situation_insert_btn(draft: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="Вставить текст", switch_inline_query_current_chat=_inline_prefill_text(draft))],
-            [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
+            [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.feedback_home")],
         ]
     )
 
@@ -717,11 +718,7 @@ async def start_feedback_flow(callback: CallbackQuery, state: FSMContext):
     await feedback_repo.set_stage(callback.from_user.id, "waiting_client")
 
 
-async def cancel_flow(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await ui_reply(callback, "Операция отменена. Чем займёмся?", None, state=state)
-    await callback.answer()
-    await feedback_repo.set_fields(callback.from_user.id, {"status": "cancelled"})
+# (cancel_flow больше не нужен — выходим через глобальный nav.feedback_home)
 
 
 async def handle_client_name(message: Message, state: FSMContext):
@@ -1489,7 +1486,7 @@ async def history_back(callback: CallbackQuery, state: FSMContext):
 
 
 # =============================================================================
-# Navigation
+# Navigation (внутреннее меню «Отзывы»)
 # =============================================================================
 async def go_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear()
@@ -1504,6 +1501,8 @@ def router(rt: Router):
     # start & cancel & menu
     rt.callback_query.register(start_feedback_flow, F.data == "nav.feedback_start")
     rt.callback_query.register(go_menu, F.data == "nav.menu")
+    # Также можно повесить отдельный вход в модуль «Отзывы»:
+    rt.callback_query.register(go_menu, F.data == "nav.feedback_home")
 
     # company skip / address skip
     rt.callback_query.register(handle_company_skip, F.data == "company.skip")
