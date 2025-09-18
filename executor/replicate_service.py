@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import logging
 import tempfile
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Tuple
 
 import replicate
 from replicate.exceptions import ReplicateError, ModelError
@@ -32,7 +32,7 @@ DEFAULT_FLOOR_PLAN_REF = "openai/gpt-image-1"
 DEFAULT_INTERIOR_IMAGE_PARAM = "image"
 DEFAULT_FLOOR_IMAGE_PARAM = "input_images"  # в старом коде именно так
 DEFAULT_INTERIOR_NEEDS_OPENAI = False
-DEFAULT_FLOOR_NEEDS_OPENAI = True          # gpt-image-1 требует ключ
+DEFAULT_FLOOR_NEEDS_OPENAI = True  # gpt-image-1 требует ключ
 
 
 class ReplicateService:
@@ -61,9 +61,10 @@ class ReplicateService:
             if MODEL_FLOOR_PLAN_NEEDS_OPENAI_KEY is None
             else bool(MODEL_FLOOR_PLAN_NEEDS_OPENAI_KEY)
         )
-        # Подстраховка: для openai/* всегда тащим ключ
+        # Подстраховка: для openai/* всегда тащим ключ и стартуем с input_images
         if self._floor_ref.startswith("openai/") or "gpt-image" in self._floor_ref:
             self._floor_needs_openai = True
+            self._floor_img_param = "input_images"
 
     # ---------- public ----------
 
@@ -76,7 +77,7 @@ class ReplicateService:
         tmp_path = None
         try:
             tmp_path = self._bytes_to_tempfile(img_bytes, suffix=".png")
-            input_dict = self._build_input_dict(
+            input_dict, fhs = self._build_input_dict(
                 prompt=prompt,
                 image_param=self._interior_img_param,
                 img_path=tmp_path,
@@ -92,6 +93,11 @@ class ReplicateService:
                 raise RuntimeError(f"Unexpected output for design: {out!r}")
             return url
         finally:
+            # закрываем дескрипторы и чистим временный файл
+            try:
+                self._close_fhs(fhs if 'fhs' in locals() else [])
+            except Exception:
+                pass
             self._safe_unlink(tmp_path)
 
     def run_floor_plan(self, img_bytes: bytes, prompt: str) -> str:
@@ -107,7 +113,7 @@ class ReplicateService:
                 model_ref=self._floor_ref,
                 img_path=tmp_path,
                 prompt=prompt,
-                image_param=self._floor_img_param,      # старт: input_images
+                image_param=self._floor_img_param,  # старт: input_images
                 needs_openai_key=self._floor_needs_openai,
                 openai_api_key=OPENAI_API_KEY,
             )
@@ -134,15 +140,20 @@ class ReplicateService:
         last_err: Optional[Exception] = None
 
         for param in order:
+            input_dict: Dict[str, Any] = {}
+            fhs: List[Any] = []
             try:
-                input_dict = self._build_input_dict(
+                input_dict, fhs = self._build_input_dict(
                     prompt=prompt,
                     image_param=param,
                     img_path=img_path,
                     needs_openai_key=needs_openai_key,
                     openai_api_key=openai_api_key,
                 )
-                LOG.info("Replicate run (plan). try param=%s, model=%s, keys=%s", param, model_ref, list(input_dict.keys()))
+                LOG.info(
+                    "Replicate run (plan). try param=%s, model=%s, keys=%s",
+                    param, model_ref, list(input_dict.keys())
+                )
                 out = replicate.run(model_ref, input=input_dict)
                 url = self._extract_url(out)
                 if url:
@@ -163,6 +174,12 @@ class ReplicateService:
                 raise
             except Exception as e:
                 last_err = e
+            finally:
+                # всегда закрываем открытые дескрипторы
+                try:
+                    self._close_fhs(fhs)
+                except Exception:
+                    pass
 
         if last_err:
             raise last_err
@@ -176,16 +193,19 @@ class ReplicateService:
         img_path: str,
         needs_openai_key: bool,
         openai_api_key: Optional[str],
-    ) -> Dict[str, Any]:
+    ) -> Tuple[Dict[str, Any], List[Any]]:
         """
         Формирует input для replicate.run.
         Картинка — файловый дескриптор; для input_images — список из одного файла.
+        Возвращает (input_dict, [fh1, fh2...]) — чтобы корректно закрывать файлы.
         """
         if not img_path or not os.path.exists(img_path) or os.path.getsize(img_path) == 0:
             raise RuntimeError(f"Image file not found or empty: {img_path}")
 
         fh = open(img_path, "rb")  # ВАЖНО: передаём именно file-like
         input_dict: Dict[str, Any] = {"prompt": prompt}
+        fhs: List[Any] = [fh]
+
         if needs_openai_key and openai_api_key:
             input_dict["openai_api_key"] = openai_api_key
 
@@ -193,7 +213,16 @@ class ReplicateService:
             input_dict["input_images"] = [fh]
         else:
             input_dict[image_param] = fh
-        return input_dict
+
+        return input_dict, fhs
+
+    @staticmethod
+    def _close_fhs(fhs: List[Any]) -> None:
+        for fh in fhs or []:
+            try:
+                fh.close()
+            except Exception:
+                pass
 
     @staticmethod
     def _extract_url(output: Any) -> Optional[str]:
@@ -201,13 +230,11 @@ class ReplicateService:
         Универсальный парсер результата replicate.run (как в старом коде).
         """
         try:
-            # вариант: список объектов с .url
+            # вариант: список объектов/строк
             if isinstance(output, list):
-                # список строк
                 for item in output:
                     if isinstance(item, str) and item.startswith("http"):
                         return item
-                # список объектов с .url
                 for item in output:
                     url = getattr(item, "url", None)
                     if isinstance(url, str) and url.startswith("http"):
@@ -242,9 +269,19 @@ class ReplicateService:
         return path
 
     @staticmethod
+    def _safe_unlink(path: Optional[str]) -> None:
+        if not path:
+            return
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            LOG.warning("Temp image not removed: %s (%s)", path, e)
+
+    @staticmethod
     def _log_replicate_error(ctx: str, exc: Exception) -> None:
         try:
-            # аккуратно распечатаем детали prediction, если есть
             pred = getattr(exc, "prediction", None)
             metrics = getattr(pred, "metrics", {}) if pred else {}
             LOG.warning("%s: %s | metrics=%s", ctx, exc, metrics)
