@@ -152,7 +152,7 @@ async def my_profile(callback: CallbackQuery):
         await _edit_text_safe(callback, "Профиль не найден.")
 
 
-async def design_start(callback: CallbackQuery, state: FSMContext, bot: Bot):
+async def design_home(callback: CallbackQuery, state: FSMContext, bot: Bot):
     await init_user_event(callback)
 
     user_id = callback.from_user.id
@@ -189,7 +189,7 @@ def router(rt: Router):
 
     # callbacks (все редактируют текущее сообщение)
     rt.callback_query.register(ai_tools, F.data == 'nav.ai_tools')
-    rt.callback_query.register(design_start, F.data == 'design_start')
+    rt.callback_query.register(design_home, F.data == 'nav.design_home')
     rt.callback_query.register(check_subscribe_retry, F.data == 'start_retry')
     rt.callback_query.register(skip_subscribe, F.data == 'skip_subscribe')
     rt.callback_query.register(show_rates, F.data == 'show_rates')

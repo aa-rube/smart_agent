@@ -74,7 +74,7 @@ async def start_zero_design_flow(callback: CallbackQuery, state: FSMContext, bot
             msg=callback.message,
             photo_path=get_file_path('img/bot/create.jpg'),
             caption=TEXT_GET_FILE_ZERO_DESIGN,
-            kb=design_start_inline,
+            kb=design_home_inline,
         )
         await state.set_state(ZeroDesignStates.waiting_for_file)
     else:
@@ -165,13 +165,13 @@ async def handle_style(callback: CallbackQuery, state: FSMContext, bot: Bot):
                 await _edit_text_or_caption(
                     callback.message,
                     unsuccessful_try_later,
-                    kb=design_start_inline
+                    kb=design_home_inline
                 )
         else:
             await _edit_text_or_caption(
                 callback.message,
                 we_are_so_sorry_try_again,
-                kb=design_start_inline
+                kb=design_home_inline
              )
 
     finally:

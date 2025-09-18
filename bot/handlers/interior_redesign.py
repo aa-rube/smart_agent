@@ -79,7 +79,7 @@ async def start_redesign_flow(callback: CallbackQuery, state: FSMContext, bot: B
             msg=callback.message,
             photo_path=get_file_path('data/img/bot/int.jpg'),
             caption=text_get_photo_redesign(user_id),  # функция из texts, подставит {tokens_text}
-            kb=design_start_inline
+            kb=design_home_inline
         )
         await state.set_state(RedesignStates.waiting_for_photo)
     else:
@@ -165,13 +165,13 @@ async def handle_style(callback: CallbackQuery, state: FSMContext, bot: Bot):
                 await _edit_text_or_caption(
                     callback.message,
                     unsuccessful_try_later,
-                    kb=design_start_inline
+                    kb=design_home_inline
                 )
         else:
             await _edit_text_or_caption(
                 callback.message,
                 we_are_so_sorry_try_again,
-                kb=design_start_inline
+                kb=design_home_inline
             )
 
     finally:

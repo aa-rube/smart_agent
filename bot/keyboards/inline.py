@@ -12,9 +12,9 @@ start_ai_tools_inline = InlineKeyboardMarkup(
     ]
 )
 
-design_start_inline = InlineKeyboardMarkup(
+design_home_inline = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="design_start")]
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")]
     ]
 )
 
@@ -38,10 +38,10 @@ frst_kb_inline = InlineKeyboardMarkup(
 ai_tools_inline = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="📐 Генератор красивых планировок",         callback_data="floor_plan"), ],
-        [InlineKeyboardButton(text="🛋️ Генератор дизайна интерьера",           callback_data="design_start"), ],
+        [InlineKeyboardButton(text="🛋️ Генератор дизайна интерьера",           callback_data="nav.design_home"), ],
         [InlineKeyboardButton(text="🤖 ИИ для закрытия возражений",            callback_data="nav.objection_start"), ],
         [InlineKeyboardButton(text="✍️ ИИ для написания отзывов от клиентов",  callback_data="nav.feedback_home"), ],
-        [InlineKeyboardButton(text="✨ Саммари диалога с клиентом",            callback_data=" "), ],
+        [InlineKeyboardButton(text="✨ Summary диалога с клиентом",            callback_data="nav.summary_home"), ],
         [InlineKeyboardButton(text="💎 Генератор продающих описаний объектов", callback_data="description"), ],
         [InlineKeyboardButton(text="⬅️ Назад",                                 callback_data="start_retry")]
     ]
