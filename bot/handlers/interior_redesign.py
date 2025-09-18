@@ -141,7 +141,10 @@ async def handle_style(callback: CallbackQuery, state: FSMContext, bot: Bot):
             image_bytes = await download_image_from_url(image_url)
             if image_bytes:
                 # временно сохраним, затем заменим текущий экран на фото-результат
-                tmp_path = get_file_path(f"/img/tmp/redesign_{user_id}.png")
+                # лучше без начального слэша, но get_file_path умеет и так
+                tmp_path = get_file_path(f"img/tmp/redesign_{user_id}.png")
+                # гарантируем, что каталог существует
+                os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
                 with open(tmp_path, "wb") as f:
                     f.write(image_bytes)
 

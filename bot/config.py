@@ -16,6 +16,9 @@ WORKSPACE    = PROJECT_DIR.parent               # .../super_bot
 DEFAULT_DB_DIR = WORKSPACE / f"{PROJECT_DIR.name}_bd"
 DATA_DIR = Path(os.getenv("DATA_DIR", str(PROJECT_DIR / "data"))).resolve()
 
+# Важно: чтобы записи в data/ не падали
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 # Можно переопределить через переменную окружения DB_DIR
 DB_DIR = Path(os.getenv("DB_DIR", str(DEFAULT_DB_DIR))).resolve()
 DB_DIR.mkdir(parents=True, exist_ok=True)

@@ -183,7 +183,7 @@ def build_description_request_from_fields(
     }
 
 
-# ===================== NEW: FEEDBACK / REVIEW =====================
+# ===================== FEEDBACK / REVIEW =====================
 _DEAL_TITLES = {
     "sale":              "Продажа",
     "buy":               "Покупка",
