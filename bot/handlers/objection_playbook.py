@@ -19,7 +19,7 @@ from bot.text.texts import *
 
 back_btn = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="objection_start")]
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.objection_start")]
     ]
 )
 

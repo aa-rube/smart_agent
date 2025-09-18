@@ -195,4 +195,4 @@ def router(rt: Router):
     rt.callback_query.register(show_rates, F.data == 'show_rates')
     rt.callback_query.register(my_profile, F.data == 'my_profile')
     rt.callback_query.register(smm_content, F.data == 'smm_content')
-    rt.callback_query.register(objection_start, F.data == 'objection_start')
+    rt.callback_query.register(objection_start, F.data == 'nav.objection_start')
