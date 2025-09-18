@@ -17,6 +17,11 @@ from bot.utils.chat_actions import run_long_operation_with_action
 from bot.keyboards.inline import *
 from bot.text.texts import *
 
+back_btn = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="objection_start")]
+    ]
+)
 
 # ==========================
 # Утилиты редактирования
@@ -102,7 +107,7 @@ async def start_objection_flow(callback: CallbackQuery, state: FSMContext):
     """
     anchor_id = callback.message.message_id
     await state.update_data(anchor_id=anchor_id)
-    await _edit_text_or_caption(callback.message, ASK_OBJECTION, start_ai_tools_inline)
+    await _edit_text_or_caption(callback.message, ASK_OBJECTION, back_btn)
     await state.set_state(ObjectionStates.waiting_for_question)
     await callback.answer()
 
@@ -113,7 +118,7 @@ async def retry_objection(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     if not data.get("anchor_id"):
         await state.update_data(anchor_id=callback.message.message_id)
-    await _edit_text_or_caption(callback.message, ASK_OBJECTION, start_ai_tools_inline)
+    await _edit_text_or_caption(callback.message, ASK_OBJECTION, back_btn)
     await state.set_state(ObjectionStates.waiting_for_question)
     await callback.answer()
 
