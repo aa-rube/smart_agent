@@ -7,7 +7,7 @@ from bot.text.texts import *
 from bot.config import *
 import bot.utils.tokens as tk
 import bot.utils.admin_db as adb
-import bot.utils.database as db  # <-- важно! используем БД
+import bot.utils.database as db
 import logging
 from pathlib import Path
 
