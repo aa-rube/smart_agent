@@ -99,7 +99,9 @@ def create_floor_plan_prompt(visualization_style: str, interior_style: str) -> s
 #OPEN AI - ОТРАБОТКА ВОЗРАЖЕНИЙ КЛИЕНТОВ
 def build_objection_request(
     question: str,
-    model: Optional[str] = None) -> Dict[str, Any]:
+    model: Optional[str] = None,
+    temperature: float = 0.3,
+    max_tokens: int = 700) -> Dict[str, Any]:
     """
     Единственное место, где формируется payload для OpenAI Chat Completion.
     """
@@ -163,6 +165,8 @@ def build_description_request_from_fields(
     *,
     fields: Dict[str, Optional[str]],
     model: Optional[str] = None,
+    temperature: float = 0.7,
+    max_tokens: int = 1200,
 ) -> Dict[str, Any]:
     """
     ЕДИНОЕ место сборки payload из сырых полей.

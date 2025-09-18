@@ -116,6 +116,8 @@ The buyer should see the layout, fall in love with it, and want to buy this home
 
 
 #OPEN AI - ОТРАБОТКА ВОЗРАЖЕНИЙ КЛИЕНТОВ
+# (в этом блоке и ниже задаём модели через ENV с качественными дефолтами)
+import os
 # ================================================================
 #     НАСТРОЙКИ НЕЙРОСЕТИ ДЛЯ ОТРАБОТКИ ВОЗРАЖЕНИЙ КЛИЕНТОВ
 #
@@ -126,7 +128,7 @@ The buyer should see the layout, fall in love with it, and want to buy this home
 #        на сервере командой: systemctl restart furniture_bot
 # ================================================================
 # Модель для сценариев отработки возражений.
-OBJECTION_MODEL = 'gpt-5'
+OBJECTION_MODEL = os.getenv('OBJECTION_MODEL', 'gpt-4.1')
 OBJECTION_PROMPT_DEFAULT_EN = '''
 You are a world-class expert in real estate sales, negotiation psychology, and training real estate agents.
 Your task is to help sellers and real estate agents handle client objections in ways that increase trust, engagement, and the likelihood of closing a deal.
@@ -210,7 +212,7 @@ OBJECTION_PROMPT_DEFAULT_RU='''
 #        на сервере командой: systemctl restart furniture_bot
 # ================================================================
 
-DESCRIPTION_MODEL = 'gpt-5'
+DESCRIPTION_MODEL = os.getenv('DESCRIPTION_MODEL', 'gpt-4.1')
 DESCRIPTION_PROMPT_DEFAULT_RU = '''
 Гайд для агента как писать продающие описания по ХПВ
 
@@ -282,7 +284,7 @@ DESCRIPTION_AREA = {
 # ================================================================
 
 
-FEEDBACK_MODEL = 'gpt-5'
+FEEDBACK_MODEL = os.getenv('FEEDBACK_MODEL', 'gpt-4.1')
 
 # --- Мэппинги «тон оф войс» и «длина» (расширяемые) ---
 FEEDBACK_TONES = {

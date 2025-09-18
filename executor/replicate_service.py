@@ -16,6 +16,14 @@ from executor.config import (
     MODEL_FLOOR_PLAN_IMAGE_PARAM,
     MODEL_FLOOR_PLAN_NEEDS_OPENAI_KEY,
 )
+
+# Надёжные дефолты, совпадающие со «старым» кодом
+DEFAULT_INTERIOR_DESIGN_REF = "adirik/interior-design:76604baddc85b1b4616e1c6475eca080da339c8875bd4996705440484a6eac38"
+DEFAULT_FLOOR_PLAN_REF = "openai/gpt-image-1"
+DEFAULT_INTERIOR_IMAGE_PARAM = "image"
+DEFAULT_FLOOR_IMAGE_PARAM = "input_images"  # всё равно есть фолбэк по именам
+DEFAULT_INTERIOR_NEEDS_OPENAI = False
+DEFAULT_FLOOR_NEEDS_OPENAI = True
 from executor.helpers import (
     extract_url,
     build_replicate_payload,
@@ -32,22 +40,25 @@ def run_design(img_bytes: bytes, prompt: str) -> str:
     Редизайн / дизайн с нуля — прямой вызов модели (без фолбэка имени поля).
     Возвращает URL результата или бросает исключение.
     """
-    if not MODEL_INTERIOR_DESIGN_REF:
-        raise RuntimeError("MODEL_INTERIOR_DESIGN_REF is empty")
+    model_ref = MODEL_INTERIOR_DESIGN_REF or DEFAULT_INTERIOR_DESIGN_REF
+    image_param = MODEL_INTERIOR_DESIGN_IMAGE_PARAM or DEFAULT_INTERIOR_IMAGE_PARAM
+    needs_openai = (MODEL_INTERIOR_DESIGN_NEEDS_OPENAI_KEY
+                    if MODEL_INTERIOR_DESIGN_NEEDS_OPENAI_KEY is not None
+                    else DEFAULT_INTERIOR_NEEDS_OPENAI)
 
     payload = build_replicate_payload(
         img_bytes=img_bytes,
         prompt=prompt,
-        image_param=MODEL_INTERIOR_DESIGN_IMAGE_PARAM,
-        needs_openai_key=MODEL_INTERIOR_DESIGN_NEEDS_OPENAI_KEY,
+        image_param=image_param,
+        needs_openai_key=needs_openai,
         openai_api_key=OPENAI_API_KEY,
     )
 
     logging.getLogger(__name__).info(
         "Replicate run (design). model=%s, keys=%s",
-        MODEL_INTERIOR_DESIGN_REF, list(payload.keys())
+        model_ref, list(payload.keys())
     )
-    output = replicate.run(MODEL_INTERIOR_DESIGN_REF, input=payload)
+    output = replicate.run(model_ref, input=payload)
 
     url = extract_url(output)
     if not url:
@@ -116,14 +127,17 @@ def run_floor_plan(img_bytes: bytes, prompt: str) -> str:
     Генерация планировок — с фолбэком имени поля изображения.
     Возвращает URL результата или бросает исключение.
     """
-    if not MODEL_FLOOR_PLAN_REF:
-        raise RuntimeError("MODEL_FLOOR_PLAN_REF is empty")
+    model_ref = MODEL_FLOOR_PLAN_REF or DEFAULT_FLOOR_PLAN_REF
+    image_param = MODEL_FLOOR_PLAN_IMAGE_PARAM or DEFAULT_FLOOR_IMAGE_PARAM
+    needs_openai = (MODEL_FLOOR_PLAN_NEEDS_OPENAI_KEY
+                    if MODEL_FLOOR_PLAN_NEEDS_OPENAI_KEY is not None
+                    else DEFAULT_FLOOR_NEEDS_OPENAI)
 
     return _run_with_image_param_fallback(
-        model_ref=MODEL_FLOOR_PLAN_REF,
+        model_ref=model_ref,
         img_bytes=img_bytes,
         prompt=prompt,
-        image_param=MODEL_FLOOR_PLAN_IMAGE_PARAM,
-        needs_openai_key=MODEL_FLOOR_PLAN_NEEDS_OPENAI_KEY,
+        image_param=image_param,
+        needs_openai_key=needs_openai,
         openai_api_key=OPENAI_API_KEY,
     )
