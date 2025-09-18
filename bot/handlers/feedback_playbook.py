@@ -19,12 +19,14 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     BufferedInputFile,
+    # ForceReply не нужен в этом варианте
 )
 
 from bot.config import EXECUTOR_BASE_URL
 from bot.handlers.feedback.model.review_payload import ReviewPayload
 from bot.utils.database import history_add, history_list, history_get
 from bot.states.states import FeedbackStates
+from bot.utils.redis_repo import feedback_repo
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +95,10 @@ RETURN_TO_VARIANTS = "Вернитесь к вариантам выше или �
 VARIANT_HEAD = "Вариант {idx}\n\n"
 VARIANT_HEAD_UPDATED = "Вариант {idx} (обновлён)\n\n"
 
-DEFAULT_CITIES = ["Москва", "Санкт-Петербург", "Тбилиси", "Баку", "Ереван", "Алматы"]
+DEFAULT_CITIES = ["Москва", "Санкт-Петербург", "Тамбов"]
+
+# лимит длины inline-запроса в Telegram (приблизительно)
+INLINE_QUERY_MAXLEN = 256
 
 # длины
 LENGTH_CHOICES = [("short", "Короткий ≤250"), ("medium", "Средний ≤450"), ("long", "Развернутый ≤1200")]
@@ -120,6 +125,18 @@ DEAL_CHOICES = [
 # UI Helpers
 # =============================================================================
 Event = Union[Message, CallbackQuery]
+
+async def _safe_cb_answer(cq: CallbackQuery, text: str | None = None, *,
+                         show_alert: bool = False, cache_time: int = 0) -> None:
+    """
+    Безопасный ACK для callback-query: не падаем, если уже поздно или уже отвечали.
+    """
+    try:
+        await cq.answer(text=text, show_alert=show_alert, cache_time=cache_time)
+    except TelegramBadRequest:
+        pass
+    except Exception:
+        pass
 
 
 async def send_text(
@@ -449,22 +466,33 @@ def kb_edit_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def kb_variant(index: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Выбрать этот", callback_data=f"pick.{index}")],
-            [
-                InlineKeyboardButton(text="Сделать короче", callback_data=f"mutate.{index}.short"),
-                InlineKeyboardButton(text="Сделать длиннее", callback_data=f"mutate.{index}.long"),
-            ],
-            [InlineKeyboardButton(text="Изменить тон", callback_data=f"mutate.{index}.style")],
-            [InlineKeyboardButton(text="Ещё вариант", callback_data=f"gen.more.{index}")],
-            [
-                InlineKeyboardButton(text="Экспорт .txt", callback_data=f"export.{index}.txt"),
-                InlineKeyboardButton(text="Экспорт .md", callback_data=f"export.{index}.md"),
-            ],
-        ]
-    )
+def kb_variant(index: int, total: int) -> InlineKeyboardMarkup:
+    """
+    Клавиатура варианта с навигацией 'Посмотреть N' над кнопкой 'Выбрать этот'.
+    """
+    rows: List[List[InlineKeyboardButton]] = []
+    # Навигация
+    nav: List[InlineKeyboardButton] = []
+    if total > 1:
+        if index > 1:
+            nav.append(InlineKeyboardButton(text=f"Посмотреть {index-1} вариант", callback_data=f"view.{index-1}"))
+        if index < total:
+            nav.append(InlineKeyboardButton(text=f"Посмотреть {index+1} вариант", callback_data=f"view.{index+1}"))
+    if nav:
+        rows.append(nav)
+    # Действия
+    rows.append([InlineKeyboardButton(text="Выбрать этот", callback_data=f"pick.{index}")])
+    rows.append([
+        InlineKeyboardButton(text="Сделать короче", callback_data=f"mutate.{index}.short"),
+        InlineKeyboardButton(text="Сделать длиннее", callback_data=f"mutate.{index}.long"),
+    ])
+    rows.append([InlineKeyboardButton(text="Изменить тон", callback_data=f"mutate.{index}.style")])
+    rows.append([InlineKeyboardButton(text="Ещё вариант", callback_data=f"gen.more.{index}")])
+    rows.append([
+        InlineKeyboardButton(text="Экспорт .txt", callback_data=f"export.{index}.txt"),
+        InlineKeyboardButton(text="Экспорт .md", callback_data=f"export.{index}.md"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def kb_variants_common() -> InlineKeyboardMarkup:
@@ -522,17 +550,40 @@ def kb_situation_hints() -> InlineKeyboardMarkup:
         inline_keyboard=[[InlineKeyboardButton(text="Показать подсказки", callback_data="sit.hints")]]
     )
 
+def _inline_prefill_text(src: str) -> str:
+    # убираем переводы строк/лишние пробелы и обрезаем до лимита
+    s = " ".join((src or "").split())
+    if len(s) > INLINE_QUERY_MAXLEN:
+        s = s[: INLINE_QUERY_MAXLEN - 1].rstrip() + "…"
+    return s
+
+def kb_situation_insert_btn(draft: str) -> InlineKeyboardMarkup:
+    # Кнопка вставит @bot <draft> в поле ввода текущего чата
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Вставить текст", switch_inline_query_current_chat=_inline_prefill_text(draft))],
+            [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.cancel")],
+        ]
+    )
+
 
 # =============================================================================
 # HTTP client (microservice)
 # =============================================================================
 async def _request_generate(
-    payload: ReviewPayload, *, num_variants: int = 3, timeout_sec: int = 90
+    payload: ReviewPayload,
+    *,
+    num_variants: int = 3,
+    timeout_sec: int = 90,
+    **extra: Any,  # прокидываем новые поля (tone, length_hint и т.п.)
 ) -> List[str]:
     url = f"{EXECUTOR_BASE_URL.rstrip('/')}/api/v1/review/generate"
     t = aiohttp.ClientTimeout(total=timeout_sec)
     body = asdict(payload)
     body.update({"num_variants": num_variants})
+    if extra:
+        # добавляем только непустые значения
+        body.update({k: v for k, v in extra.items() if v is not None})
     async with aiohttp.ClientSession(timeout=t) as session:
         async with session.post(url, json=body) as resp:
             if resp.status != 200:
@@ -549,12 +600,25 @@ async def _request_generate(
 
 
 async def _request_mutate(
-    base_text: str, *, operation: str, style: Optional[str], payload: ReviewPayload, timeout_sec: int = 60
+    base_text: str,
+    *,
+    operation: str,
+    style: Optional[str],
+    payload: ReviewPayload,
+    timeout_sec: int = 60,
+    **extra: Any,  # на будущее: tone/length_hint и т.п.
 ) -> str:
     """operation: 'short' | 'long' | 'style'"""
     url = f"{EXECUTOR_BASE_URL.rstrip('/')}/api/v1/review/mutate"
     t = aiohttp.ClientTimeout(total=timeout_sec)
-    body = {"base_text": base_text, "operation": operation, "style": style, "context": asdict(payload)}
+    body = {
+        "base_text": base_text,
+        "operation": operation,
+        "style": style,
+        "context": asdict(payload),
+    }
+    if extra:
+        body.update({k: v for k, v in extra.items() if v is not None})
     async with aiohttp.ClientSession(timeout=t) as session:
         async with session.post(url, json=body) as resp:
             if resp.status != 200:
@@ -645,12 +709,19 @@ async def start_feedback_flow(callback: CallbackQuery, state: FSMContext):
     await ui_reply(callback, ASK_CLIENT_NAME, kb_only_cancel(), state=state)
     await state.set_state(FeedbackStates.waiting_client)
     await callback.answer()
+    # Redis: старт сессии
+    await feedback_repo.start(
+        callback.from_user.id,
+        meta={"chat_id": callback.message.chat.id, "flow": "review"},
+    )
+    await feedback_repo.set_stage(callback.from_user.id, "waiting_client")
 
 
 async def cancel_flow(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await ui_reply(callback, "Операция отменена. Чем займёмся?", None, state=state)
     await callback.answer()
+    await feedback_repo.set_fields(callback.from_user.id, {"status": "cancelled"})
 
 
 async def handle_client_name(message: Message, state: FSMContext):
@@ -659,6 +730,7 @@ async def handle_client_name(message: Message, state: FSMContext):
         await reply_plain(message, "Имя должно быть 2–60 символов. Попробуйте снова.")
         return
     await state.update_data(client_name=name)
+    await feedback_repo.set_fields(message.from_user.id, {"client_name": name, "stage": "waiting_agent"})
     d = await state.get_data()
     if d.get("edit_field") == "client":
         await _return_to_summary(message, state)
@@ -673,6 +745,7 @@ async def handle_agent_name(message: Message, state: FSMContext):
         await reply_plain(message, "Имя должно быть 2–60 символов. Попробуйте снова.")
         return
     await state.update_data(agent_name=name)
+    await feedback_repo.set_fields(message.from_user.id, {"agent_name": name})
     d = await state.get_data()
     if d.get("edit_field") == "agent":
         await _return_to_summary(message, state)
@@ -683,6 +756,7 @@ async def handle_agent_name(message: Message, state: FSMContext):
 
 async def handle_company_skip(callback: CallbackQuery, state: FSMContext):
     await state.update_data(company=None)
+    await feedback_repo.set_fields(callback.from_user.id, {"company": None})
     d = await state.get_data()
     if d.get("edit_field") == "company":
         await _return_to_summary(callback, state)
@@ -698,6 +772,7 @@ async def handle_company_name(message: Message, state: FSMContext):
         await reply_plain(message, "Название компании 2–80 символов или пропустите.")
         return
     await state.update_data(company=company or None)
+    await feedback_repo.set_fields(message.from_user.id, {"company": company or None})
     d = await state.get_data()
     if d.get("edit_field") == "company":
         await _return_to_summary(message, state)
@@ -723,6 +798,7 @@ async def handle_city_choice(callback: CallbackQuery, state: FSMContext):
     if data.startswith("loc.city."):
         city = data.split(".", 2)[2]
         await state.update_data(city=city)
+        await feedback_repo.set_fields(callback.from_user.id, {"city": city})
         await ui_reply(
             callback,
             f"Город: {city}.\n\nНужно указать адрес?",
@@ -750,6 +826,7 @@ async def handle_city_input(message: Message, state: FSMContext):
         await reply_plain(message, "Слишком короткое название города. Попробуйте снова.")
         return
     await state.update_data(city=city)
+    await feedback_repo.set_fields(message.from_user.id, {"city": city})
     await send_text(message, f"Город: {city}.", kb_city_next_or_addr())
     await state.set_state(FeedbackStates.waiting_city_mode)
 
@@ -757,6 +834,7 @@ async def handle_city_input(message: Message, state: FSMContext):
 async def handle_address(message: Message, state: FSMContext):
     addr = (message.text or "").strip()
     await state.update_data(address=addr or None)
+    await feedback_repo.set_fields(message.from_user.id, {"address": addr or None})
     d = await state.get_data()
     if d.get("edit_field") in ("address", "city"):
         await _return_to_summary(message, state)
@@ -767,6 +845,7 @@ async def handle_address(message: Message, state: FSMContext):
 
 async def handle_address_skip(callback: CallbackQuery, state: FSMContext):
     await state.update_data(address=None)
+    await feedback_repo.set_fields(callback.from_user.id, {"address": None})
     d = await state.get_data()
     if d.get("edit_field") in ("address", "city"):
         await _return_to_summary(callback, state)
@@ -792,6 +871,7 @@ async def handle_deal_type(callback: CallbackQuery, state: FSMContext):
         else:
             selected.add(code)
         await state.update_data(deal_types=list(selected))
+        await feedback_repo.set_fields(callback.from_user.id, {"deal_types": list(selected)})
         # перерисовываем клавиатуру
         d = await state.get_data()
         await ui_reply(callback, ASK_DEAL_TYPE, kb_deal_types_ms(d), state=state)
@@ -800,6 +880,7 @@ async def handle_deal_type(callback: CallbackQuery, state: FSMContext):
     # Очистить весь выбор
     if data == "deal.clear":
         await state.update_data(deal_types=[], deal_custom=None)
+        await feedback_repo.set_fields(callback.from_user.id, {"deal_types": [], "deal_custom": None})
         d = await state.get_data()
         await ui_reply(callback, ASK_DEAL_TYPE, kb_deal_types_ms(d), state=state)
         return await callback.answer("Выбор очищен")
@@ -812,6 +893,7 @@ async def handle_deal_type(callback: CallbackQuery, state: FSMContext):
 
     if data == "deal.custom.clear":
         await state.update_data(deal_custom=None)
+        await feedback_repo.set_fields(callback.from_user.id, {"deal_custom": None})
         d = await state.get_data()
         await ui_reply(callback, ASK_DEAL_TYPE, kb_deal_types_ms(d), state=state)
         return await callback.answer("Очищено")
@@ -839,6 +921,7 @@ async def handle_deal_custom(message: Message, state: FSMContext):
     d = await state.get_data()
     deal_types = _ensure_deal_types(d)
     await state.update_data(deal_custom=custom, deal_types=deal_types)
+    await feedback_repo.set_fields(message.from_user.id, {"deal_custom": custom, "deal_types": deal_types})
     # Возвращаемся к мультивыбору типов
     d = await state.get_data()
     await ui_reply(message, ASK_DEAL_TYPE, kb_deal_types_ms(d), state=state)
@@ -854,9 +937,15 @@ async def handle_situation_hints(callback: CallbackQuery, state: FSMContext):
 async def handle_situation(message: Message, state: FSMContext):
     txt = (message.text or "").strip()
     if len(txt) < 100 or len(txt) > 4000:
-        await reply_plain(message, "Нужно 100–4000 символов. Добавьте деталей (сроки, результат, особенности).")
+        await state.update_data(situation_draft=txt)
+        await feedback_repo.set_fields(message.from_user.id, {"status": "validation_error", "situation_draft": txt})
+        await message.answer(
+            "Нужно 100–4000 символов. Добавьте деталей (сроки, результат, особенности).",
+            reply_markup=kb_situation_insert_btn(txt),
+        )
         return
     await state.update_data(situation=txt)
+    await feedback_repo.set_fields(message.from_user.id, {"situation": txt, "stage": "waiting_tone"})
     d = await state.get_data()
     if d.get("edit_field") == "situation":
         await _return_to_summary(message, state)
@@ -866,17 +955,22 @@ async def handle_situation(message: Message, state: FSMContext):
         await state.set_state(FeedbackStates.waiting_tone)
 
 
+
+
 async def handle_tone(callback: CallbackQuery, state: FSMContext, bot: Optional[Bot] = None):
+    # ранний ACK (ветка со сменой тона может быть долгой)
+    await _safe_cb_answer(callback)
     data = callback.data
     if data == "tone.info":
         await ui_reply(callback, TONE_INFO, kb_tone(), state=state)
-        await callback.answer()
+        await _safe_cb_answer(callback)
         return
     if not data.startswith("tone."):
-        await callback.answer()
+        await _safe_cb_answer(callback)
         return
     tone = data.split(".", 1)[1]
     await state.update_data(tone=tone)
+    await feedback_repo.set_fields(callback.from_user.id, {"tone": tone})
     d = await state.get_data()
 
     # Если мы выбирали тон в режиме мутации варианта — сразу меняем текст
@@ -898,18 +992,22 @@ async def handle_tone(callback: CallbackQuery, state: FSMContext, bot: Optional[
                 await state.update_data(variants=variants, mutating_idx=None)
                 parts = _split_for_telegram(new_text)
                 head = VARIANT_HEAD_UPDATED.format(idx=mut_idx) + parts[0]
-                await ui_reply(callback, head, kb_variant(mut_idx), state=state)
+                total = len(variants)
+                await ui_reply(callback, head, kb_variant(mut_idx, total), state=state)
                 for p in parts[1:]:
                     await send_text(callback.message, p)
+                await state.update_data(viewer_idx=mut_idx)
+                await feedback_repo.set_fields(callback.from_user.id, {"viewer_idx": mut_idx})
             except Exception as e:
                 await ui_reply(callback, f"{ERROR_TEXT}\n\n{e}", state=state)
-        await callback.answer()
+        await _safe_cb_answer(callback)
         return
 
     # Иначе — после тона спрашиваем длину
     await ui_reply(callback, ASK_LENGTH, kb_length(), state=state)
     await state.set_state(FeedbackStates.waiting_length)
-    await callback.answer()
+    await _safe_cb_answer(callback)
+    await feedback_repo.set_stage(callback.from_user.id, "waiting_length")
 
 async def handle_length(callback: CallbackQuery, state: FSMContext):
     data = callback.data
@@ -922,10 +1020,12 @@ async def handle_length(callback: CallbackQuery, state: FSMContext):
     if length_code not in {"short", "medium", "long"}:
         return await callback.answer()
     await state.update_data(length=length_code)
+    await feedback_repo.set_fields(callback.from_user.id, {"length": length_code})
     d = await state.get_data()
     await ui_reply(callback, _summary_text(d), kb_summary(), state=state)
     await state.set_state(FeedbackStates.showing_summary)
     await callback.answer()
+    await feedback_repo.set_stage(callback.from_user.id, "summary")
 
 
 async def open_edit_menu(callback: CallbackQuery, state: FSMContext):
@@ -980,6 +1080,9 @@ async def edit_field_router(callback: CallbackQuery, state: FSMContext):
 
 
 async def start_generation(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    # ACK РАНО, чтобы не словить "query is too old"
+    await _safe_cb_answer(callback)
+
     d = await state.get_data()
     try:
         payload = _payload_from_state(d)
@@ -996,6 +1099,11 @@ async def start_generation(callback: CallbackQuery, state: FSMContext, bot: Bot)
     async def _do():
         # передаём пожелание по длине
         length_hint = _length_limit((await state.get_data()).get("length"))
+        # Redis: сохраняем запрос перед отправкой
+        await feedback_repo.set_fields(
+            callback.from_user.id,
+            {"status": "generating", "payload": asdict(payload), "length_hint": length_hint},
+        )
         return await _request_generate(payload, num_variants=3, length_hint=length_hint)
 
     try:
@@ -1003,25 +1111,35 @@ async def start_generation(callback: CallbackQuery, state: FSMContext, bot: Bot)
             bot=bot, chat_id=chat_id, action=ChatAction.TYPING, coro=_do()
         )
         await state.update_data(variants=variants)
+        await feedback_repo.set_fields(callback.from_user.id, {"status": "variants_ready", "variants_json": variants})
 
-        # Первый вариант — заменяем (редактируем якорь), хвосты — докидываем новыми
-        for idx, text in enumerate(variants, start=1):
-            parts = _split_for_telegram(text)
-            head = VARIANT_HEAD.format(idx=idx) + parts[0]
-            await ui_reply(callback, head, kb_variant(idx), state=state, bot=bot)
-            for p in parts[1:]:
-                await send_text(callback.message, p)
-
-        await send_text(callback.message, "Выберите подходящий вариант или измените его.", kb_variants_common())
+        # Показываем только первый вариант + навигация
+        total = len(variants)
+        idx = 1
+        parts = _split_for_telegram(variants[0])
+        head = VARIANT_HEAD.format(idx=idx) + parts[0]
+        await ui_reply(callback, head, kb_variant(idx, total), state=state, bot=bot)
+        for p in parts[1:]:
+            await send_text(callback.message, p)
+        # Позиция зрителя и якорь в Redis
+        anchor_id = (await state.get_data()).get("anchor_id")
+        await state.update_data(viewer_idx=idx)
+        await feedback_repo.set_fields(
+            callback.from_user.id, {"viewer_idx": idx, "anchor_msg_id": anchor_id}
+        )
         await state.set_state(FeedbackStates.browsing_variants)
     except Exception as e:
         await ui_reply(callback, f"{ERROR_TEXT}\n\n{e}", kb_try_again_gen(), state=state, bot=bot)
         await state.set_state(FeedbackStates.showing_summary)
+        await feedback_repo.set_error(callback.from_user.id, str(e))
     finally:
-        await callback.answer()
+        # повторный ACK не обязателен; на всякий случай — безопасно
+        await _safe_cb_answer(callback)
 
 
 async def mutate_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    # ранний ACK
+    await _safe_cb_answer(callback)
     data = callback.data  # mutate.{index}.short|long|style
     try:
         _, idx_str, op = data.split(".")
@@ -1043,12 +1161,13 @@ async def mutate_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
         await state.update_data(mutating_idx=idx)
         await ui_reply(callback, ASK_TONE, kb_tone(), state=state)
         await state.set_state(FeedbackStates.waiting_tone)
-        await callback.answer()
+        await _safe_cb_answer(callback)
         return
 
     operation = "short" if op == "short" else "long"
 
     await ui_reply(callback, MUTATING, state=state)  # редактируем якорь
+    await feedback_repo.set_fields(callback.from_user.id, {"status": "mutating", "operation": operation, "idx": idx})
     chat_id = callback.message.chat.id
 
     async def _do():
@@ -1060,23 +1179,32 @@ async def mutate_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
         )
         variants[idx - 1] = new_text
         await state.update_data(variants=variants)
+        await feedback_repo.set_fields(callback.from_user.id, {"status": "variants_ready", "variants_json": variants})
         parts = _split_for_telegram(new_text)
         head = VARIANT_HEAD_UPDATED.format(idx=idx) + parts[0]
-        await ui_reply(callback, head, kb_variant(idx), state=state, bot=bot)
+        total = len(variants)
+        await ui_reply(callback, head, kb_variant(idx, total), state=state, bot=bot)
         for p in parts[1:]:
             await send_text(callback.message, p)
+        # если редактировали текущий — фиксируем viewer_idx
+        await state.update_data(viewer_idx=idx)
+        await feedback_repo.set_fields(callback.from_user.id, {"viewer_idx": idx})
     except Exception as e:
         await ui_reply(callback, f"{ERROR_TEXT}\n\n{e}", state=state)
+        await feedback_repo.set_error(callback.from_user.id, str(e))
     finally:
-        await callback.answer()
+        await _safe_cb_answer(callback)
 
 
 # (обработчик изменения тона для мутации теперь встроен в handle_tone)
 async def gen_more_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    # ранний ACK
+    await _safe_cb_answer(callback)
     d = await state.get_data()
     payload = _payload_from_state(d)
 
     await ui_reply(callback, ONE_MORE, state=state)
+    await feedback_repo.set_fields(callback.from_user.id, {"status": "generating_more"})
     chat_id = callback.message.chat.id
 
     async def _do():
@@ -1091,16 +1219,46 @@ async def gen_more_variant(callback: CallbackQuery, state: FSMContext, bot: Bot)
         variants: List[str] = d.get("variants", [])
         variants.append(new_text)
         await state.update_data(variants=variants)
+        await feedback_repo.set_fields(callback.from_user.id, {"status": "variants_ready", "variants_json": variants})
         idx = len(variants)
+        total = len(variants)
         parts = _split_for_telegram(new_text)
         head = VARIANT_HEAD.format(idx=idx) + parts[0]
-        await ui_reply(callback, head, kb_variant(idx), state=state, bot=bot)
+        # Показываем новый (последний) вариант и запоминаем позицию
+        await ui_reply(callback, head, kb_variant(idx, total), state=state, bot=bot)
         for p in parts[1:]:
             await send_text(callback.message, p)
+        await state.update_data(viewer_idx=idx)
+        await feedback_repo.set_fields(callback.from_user.id, {"viewer_idx": idx})
     except Exception as e:
         await ui_reply(callback, f"{ERROR_TEXT}\n\n{e}", state=state)
+        await feedback_repo.set_error(callback.from_user.id, str(e))
     finally:
-        await callback.answer()
+        await _safe_cb_answer(callback)
+
+
+async def view_variant(callback: CallbackQuery, state: FSMContext, bot: Optional[Bot] = None):
+    """Показать другой вариант по кнопке 'Посмотреть N'."""
+    await _safe_cb_answer(callback)
+    data = callback.data  # view.{index}
+    try:
+        _, idx_str = data.split(".")
+        idx = int(idx_str)
+    except Exception:
+        return
+    d = await state.get_data()
+    variants: List[str] = d.get("variants", [])
+    total = len(variants)
+    if idx < 1 or idx > total:
+        return
+    parts = _split_for_telegram(variants[idx - 1])
+    head = VARIANT_HEAD.format(idx=idx) + parts[0]
+    await ui_reply(callback, head, kb_variant(idx, total), state=state, bot=bot or callback.bot)
+    for p in parts[1:]:
+        await send_text(callback.message, p)
+    await state.update_data(viewer_idx=idx)
+    await feedback_repo.set_fields(callback.from_user.id, {"viewer_idx": idx})
+    await _safe_cb_answer(callback)
 
 
 async def pick_variant(callback: CallbackQuery, state: FSMContext):
@@ -1153,6 +1311,11 @@ async def finalize_choice(callback: CallbackQuery, state: FSMContext):
     await ui_reply(callback, READY_FINAL, kb_final(), state=state)
     await state.update_data(final_text=final_text)
     await callback.answer()
+    await feedback_repo.set_fields(
+        callback.from_user.id,
+        {"status": "finalized", "final_idx": idx, "final_text": final_text},
+    )
+    await feedback_repo.finish(callback.from_user.id)
 
 
 async def export_text(callback: CallbackQuery, state: FSMContext):
@@ -1376,6 +1539,7 @@ def router(rt: Router):
     # mutations & pick & more
     rt.callback_query.register(mutate_variant, F.data.startswith("mutate."))
     rt.callback_query.register(gen_more_variant, F.data.startswith("gen.more."))
+    rt.callback_query.register(view_variant, F.data.startswith("view."))
     rt.callback_query.register(pick_variant, F.data.startswith("pick."))
     rt.callback_query.register(back_to_variants, F.data == "gen.back")
 

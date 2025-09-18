@@ -121,8 +121,6 @@ def build_description_request(*, question: str, model: Optional[str] = None,
     use_model = model or ai_config.DESCRIPTION_MODEL
     return {
         "model": use_model,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": question},
@@ -257,8 +255,6 @@ def build_feedback_generate_request(*,
     use_model = model or ai_config.FEEDBACK_MODEL
     payload = {
         "model": use_model,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
         "n": max(1, int(num_variants)),
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -324,8 +320,6 @@ def build_feedback_mutate_request(*,
     use_model = model or ai_config.FEEDBACK_MODEL
     payload = {
         "model": use_model,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
