@@ -1,9 +1,6 @@
 import asyncio
 import logging
 
-import utils.database as db
-import utils.tokens as tk
-
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.enums import ParseMode
@@ -12,6 +9,9 @@ from aiohttp import web
 
 from bot import setup
 from bot.config import TOKEN
+import bot.utils.database as db
+import bot.utils.tokens as tk
+
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
 dp = Dispatcher(storage=MemoryStorage())
