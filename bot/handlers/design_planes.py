@@ -94,7 +94,7 @@ async def start_design_flow(callback: CallbackQuery, state: FSMContext, bot: Bot
             msg=callback.message,
             file_path=get_file_path('img/bot/plan.jpg'),
             caption=text_get_file(user_id),  # функция из texts, подставит инфо о токенах
-            kb=start_retry_inline  # ваша исходная клавиатура
+            kb=start_ai_tools_inline  # ваша исходная клавиатура
         )
     else:
         # показываем оффер пополнить/подписаться в том же сообщении

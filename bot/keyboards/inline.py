@@ -6,7 +6,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.utils import youmoney
 
 # кнопки для шага назад
-start_retry_inline = InlineKeyboardMarkup(
+start_ai_tools_inline = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")]
     ]

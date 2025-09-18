@@ -102,7 +102,7 @@ async def start_objection_flow(callback: CallbackQuery, state: FSMContext):
     """
     anchor_id = callback.message.message_id
     await state.update_data(anchor_id=anchor_id)
-    await _edit_text_or_caption(callback.message, ASK_OBJECTION)
+    await _edit_text_or_caption(callback.message, ASK_OBJECTION, start_ai_tools_inline)
     await state.set_state(ObjectionStates.waiting_for_question)
     await callback.answer()
 
@@ -113,7 +113,7 @@ async def retry_objection(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     if not data.get("anchor_id"):
         await state.update_data(anchor_id=callback.message.message_id)
-    await _edit_text_or_caption(callback.message, ASK_OBJECTION)
+    await _edit_text_or_caption(callback.message, ASK_OBJECTION, start_ai_tools_inline)
     await state.set_state(ObjectionStates.waiting_for_question)
     await callback.answer()
 
