@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import io
 import logging
 import tempfile
 from typing import Any, Dict, Optional, List
