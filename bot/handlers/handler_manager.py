@@ -8,6 +8,8 @@ from bot.config import *
 import bot.utils.tokens as tk
 import bot.utils.admin_db as adb
 import bot.utils.database as db  # <-- важно! используем БД
+import logging
+from pathlib import Path
 
 from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart, Command
@@ -76,7 +78,17 @@ async def frst_msg(message: Message, state: FSMContext, bot: Bot):
         if not await ensure_partner_subs(bot, message, retry_callback_data="start_retry", columns=2):
             return
 
-    await message.answer_photo(FSInputFile(get_file_path('/img/bot/logo1.jpg')))
+    # Отправка логотипа: путь внутри DATA_DIR (без ведущего слэша).
+    logo_rel = "img/bot/logo1.jpg"
+    logo_path = get_file_path(logo_rel)
+    try:
+        if Path(logo_path).exists():
+            await message.answer_photo(FSInputFile(logo_path))
+        else:
+            logging.warning("Logo not found: %s (resolved from %s)", logo_path, logo_rel)
+    except Exception as e:
+        # Не блокируем сценарий приветствия, просто логируем проблему.
+        logging.exception("Failed to send logo photo: %s", e)
     await message.answer(frst_text, reply_markup=inline.frst_kb_inline)
 
 

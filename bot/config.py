@@ -51,9 +51,10 @@ def get_file_path(relative_path: str) -> str:
     if not relative_path:
         raise ValueError("relative_path must be a non-empty string")
 
-    # if user passed an absolute path -> return it resolved
+    # Если передали абсолютный путь и он существует — уважаем его.
+    # Если абсолютный, но файла нет — трактуем как путь внутри DATA_DIR.
     p = Path(relative_path)
-    if p.is_absolute():
+    if p.is_absolute() and p.exists():
         return str(p.resolve())
 
     # normalize separators and strip leading slashes
