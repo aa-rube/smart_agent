@@ -385,77 +385,72 @@ FEEDBACK_MUTATE_USER_TEMPLATE_RU = '''
 
 
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\executor\ai_config.py
-# === Универсальные шаблоны для ассистента (текст + задача) ===
-# === Подсказки для ассистента (риелтор ↔ потенциальный клиент) =================
+# === Подсказки для ассистента (риэлтор ↔ потенциальный клиент) =================
 
 # Чек-лист качественного прозвона/встречи
 REALTY_CHECKLIST = (
-    "- Budget / price range & payment method (mortgage pre-approval, cash)\n"
-    "- Decision makers & authority (who else decides?)\n"
-    "- Timeline & urgency (move-in date, sale deadline)\n"
-    "- Location & micro-location (districts, commute, schools)\n"
-    "- Property type & size (apt/house, rooms, sqm, floor, parking, balcony)\n"
-    "- Condition & renovation tolerance\n"
-    "- Must-haves / nice-to-haves / deal-breakers\n"
-    "- Constraints (pets, children, remote work, accessibility)\n"
-    "- Motivation & current status (why now? prior viewings)\n"
-    "- Communication preferences & availability\n"
-    "- Follow-up commitment (next meeting/showing, documents, due dates)\n"
+    "- Бюджет / ценовой диапазон и способ оплаты (ипотека/кэш, одобрение)\n"
+    "- Лица, принимающие решение (кто ещё влияет?)\n"
+    "- Сроки и срочность (когда въезд/продажа, дедлайны)\n"
+    "- Локация и микрорайон (районы, транспорт, школы/садики)\n"
+    "- Тип и метраж объекта (кв./дом, комнаты, м², этаж, парковка, балкон/лоджия)\n"
+    "- Состояние и готовность к ремонту\n"
+    "- Обязательные критерии / желательные / стоп-факторы\n"
+    "- Ограничения (питомцы, дети, удалённая работа, доступность)\n"
+    "- Мотивация и текущий статус (почему сейчас? были ли показы)\n"
+    "- Предпочтения по коммуникации и время на связь\n"
+    "- Итоги и договорённости (следующие шаги, документы, сроки)\n"
 )
 
 # 1) Задача: «Сделай саммари и анализ» (строгий JSON)
 REALTY_SUMMARY_TASK_TMPL = (
-    "You are a real-estate sales coach analyzing a conversation between a realtor and a prospective client.\n"
-    "Use the checklist below to evaluate the conversation. If any item is missing or vague, flag it.\n"
+    "Ты — коуч по продажам в недвижимости. Проанализируй диалог риэлтора с потенциальным клиентом.\n"
+    "Используй чек-лист ниже для оценки разговора. Если пункт не раскрыт или расплывчат, отметь это.\n"
     "{CHECKLIST}\n"
-    "Output STRICT JSON that matches this schema:\n"
+    "Верни СТРОГИЙ JSON, соответствующий этой схеме:\n"
     "{SCHEMA}\n"
-    "Rules: be specific, avoid guessing, prefer short bullets; when pointing out a discovery gap, prefix with 'MISSING:'. "
-    "Write in {LANGUAGE}. Output JSON only."
+    "Правила: будь конкретен, без догадок, используй короткие пункты; при указании на пробел начинай пункт с 'MISSING:'. "
+    "Пиши {LANGUAGE}. Выводи только JSON."
 )
 
-# Схема для саммари/анализа (совместима с summary_playbook ожиданиями)
+# Схема для саммари/анализа (ключи оставляем английские — их ждёт код)
 REALTY_SUMMARY_JSON_SCHEMA = (
     "{\n"
-    '  "summary": "2–5 crisp sentences",\n'
-    '  "strengths": ["short bullet of good behaviors/moments"],\n'
-    '  "mistakes": ["short bullet: issue + how to improve; use MISSING:<item> for gaps"],\n'
-    '  "decisions": ["owner – action – due/date if any"]\n'
+    '  "summary": "2–5 коротких предложений по сути",\n'
+    '  "strengths": ["краткий пункт о сильной стороне/хорошем моменте"],\n'
+    '  "mistakes": ["кратко: проблема + как улучшить; пробелы помечай как MISSING:<item>"],\n'
+    '  "decisions": ["кто — действие — срок/дата, если есть"]\n'
     "}"
 )
 
-# 2) Задача: «Клиентский recap» (свободный текст — сообщение, которое риелтор может отправить клиенту)
+# 2) «Клиентский recap» (свободный текст — сообщение для клиента)
 REALTY_RECAP_TASK_TMPL = (
-    "Write a client-friendly recap message the realtor can send after the call:\n"
-    "- 2–4 sentence recap of needs (location, budget, timing, key criteria)\n"
-    "- bullet list of agreed next steps with dates and owners\n"
-    "- courteous closing and when you'll follow up next\n"
-    "Avoid internal notes or criticism; keep it concise and practical. Write in {LANGUAGE}."
+    "Составь дружелюбное сообщение-резюме для клиента после звонка/встречи:\n"
+    "- 2–4 предложения о потребностях (локация, бюджет, сроки, ключевые критерии)\n"
+    "- маркированный список согласованных следующих шагов с датами и ответственными\n"
+    "- вежливое завершение и когда ты свяжешься вновь\n"
+    "Не включай внутренние комментарии и критику; будь краток и практичен. Пиши {LANGUAGE}."
 )
 
-# 3) Задача: «Найди пробелы и сформулируй вопросы» (строгий JSON)
+# 3) «Найди пробелы и сформулируй вопросы» (строгий JSON)
 REALTY_GAPS_TASK_TMPL = (
-    "Identify discovery gaps in the realtor–client conversation using the checklist below. "
-    "For each gap provide why it matters and a better follow-up question.\n"
+    "Определи пробелы в уточнении потребностей в диалоге риэлтора и клиента, опираясь на чек-лист ниже. "
+    "Для каждого пробела укажи, почему это важно, и предложи лучший уточняющий вопрос.\n"
     "{CHECKLIST}\n"
-    "Return STRICT JSON matching this schema:\n"
+    "Верни СТРОГИЙ JSON по схеме:\n"
     "{SCHEMA}\n"
-    "Write in {LANGUAGE}. Output JSON only."
+    "Пиши {LANGUAGE}. Выводи только JSON."
 )
 
 REALTY_GAPS_JSON_SCHEMA = (
     "{\n"
     '  "unasked_questions": [\n'
-    '    {"gap": "missing budget range", "why_it_matters": "…", "suggested_question": "…"}\n'
+    '    {"gap": "например: не уточнён бюджет", "why_it_matters": "почему важно", "suggested_question": "как правильно спросить"}\n'
     "  ],\n"
-    '  "risks": ["short bullets of risks if gaps stay unresolved"],\n'
-    '  "opportunities": ["short bullets of upsell/cross-sell or service opportunities"]\n'
+    '  "risks": ["краткие пункты рисков, если пробелы не закрыть"],\n'
+    '  "opportunities": ["краткие пункты возможностей (upsell/cross-sell, сервис)"]\n'
     "}"
 )
 
-# --- Шаблон для user-сообщения анализа (используется в фабрике) ---
-SUMMARY_ANALYZE_USER_TMPL = "CONVERSATION TRANSCRIPT:\n{TEXT}"
-
-# --- Модели (если ещё не заданы выше) ---
-# SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "gpt-4o-mini")
-# WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-1")
+# Шаблон для user-сообщения анализа (используется в фабрике)
+SUMMARY_ANALYZE_USER_TMPL = "ТРАНСКРИПТ РАЗГОВОРА:\n{TEXT}"
