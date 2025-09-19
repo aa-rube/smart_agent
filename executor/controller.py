@@ -330,3 +330,54 @@ def review_mutate():
         if debug_flag:
             body["debug"] = {"model": FEEDBACK_MODEL}
         return jsonify(body), 502
+
+
+@api.post("/summary/analyze")
+def summary_analyze():
+    """
+    Принимает payload:
+      { "user_id": ..., "source": {...}, "created_at": "...",
+        "input": { "type": "text", "text": "..."} | { "type": "audio", "local_path": "..." } }
+    Возвращает:
+      { "summary": "...", "strengths": [...], "mistakes": [...], "decisions": [...] }
+    """
+    if _config_issues:
+        return jsonify({"error": "config", "detail": "; ".join(_config_issues)}), 500
+
+    if not request.is_json:
+        return jsonify({"error": "bad_request", "detail": "JSON body required"}), 400
+    data = request.get_json(silent=True) or {}
+    debug_flag = request.args.get("debug") == "1"
+
+    input_obj = data.get("input") or {}
+    in_type = (input_obj.get("type") or "").strip().lower()
+    if in_type not in ("text", "audio"):
+        return jsonify({"error": "bad_request", "detail": "input.type must be 'text' or 'audio'"}), 400
+
+    try:
+        result_dict, used_model, debug_meta = summarize_from_input(input_obj, allow_fallback=True)
+
+        body = {
+            "summary":   result_dict.get("summary", "") or "",
+            "strengths": result_dict.get("strengths", []) or [],
+            "mistakes":  result_dict.get("mistakes", []) or [],
+            "decisions": result_dict.get("decisions", []) or [],
+        }
+        if debug_flag:
+            body["debug"] = {"model_used": used_model, **debug_meta}
+        return jsonify(body), 200
+
+    except FileNotFoundError as e:
+        return jsonify({"error": "bad_request", "detail": str(e)}), 400
+    except ValueError as e:
+        return jsonify({"error": "bad_request", "detail": str(e)}), 400
+    except Exception as e:
+        LOG.exception("Unhandled error (summary_analyze)")
+        body = {"error": "internal_error", "detail": str(e)}
+        if debug_flag:
+            try:
+                from executor.ai_config import SUMMARY_MODEL as _SUMMARY_MODEL
+                body["debug"] = {"model": _SUMMARY_MODEL}
+            except Exception:
+                body["debug"] = {"model": "summary"}
+        return jsonify(body), 500

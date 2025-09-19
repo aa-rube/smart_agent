@@ -24,6 +24,25 @@ PROMPT_ZERO_DESIGN = "{base_prompt} of an empty {room_type}, redesigned as a {fu
 PROMPT_PLAN_DESIGN = "Apply the style from the second image to the floor plan. The plan is {plan_type}. The style is {style_text}."
 
 
+ROOM_TYPE_PROMPTS = {
+    "🍳 Кухня": "kitchen",
+    "🛏 Спальня": "bedroom",
+    "🛋 Гостиная": "living room",
+    "🚿 Ванная": "bathroom",
+    "🚪 Прихожая": "hallway"
+}
+
+FURNITURE_PROMPTS = {
+    "furniture_yes": "fully furnished with appropriate furniture",
+    "furniture_no": "as an empty room, unfurnished"
+}
+
+PLAN_TYPE_PROMPTS = {
+    "plan_2d": "a stylish 2d floor plan",
+    "plan_3d": "a 3d floor plan with furniture"
+}
+
+
 # --- 2.3 Детализация стилей ---
 # Здесь вы можете "объяснить" нейросети, что вы имеете в виду под каждым стилем.
 # Это ключевая настройка, сильно влияющая на результат.
@@ -286,6 +305,10 @@ DESCRIPTION_AREA = {
 
 FEEDBACK_MODEL = os.getenv('FEEDBACK_MODEL', 'gpt-4.1')
 
+# Модели для анализа транскриптов и транскрибации
+SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "gpt-4o-mini")
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-1")
+
 # --- Мэппинги «тон оф войс» и «длина» (расширяемые) ---
 FEEDBACK_TONES = {
     "friendly": "дружелюбный, тёплый, поддерживающий",
@@ -359,3 +382,80 @@ FEEDBACK_MUTATE_USER_TEMPLATE_RU = '''
 
 Верни только исправленный текст, без пояснений.
 '''
+
+
+#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\executor\ai_config.py
+# === Универсальные шаблоны для ассистента (текст + задача) ===
+# === Подсказки для ассистента (риелтор ↔ потенциальный клиент) =================
+
+# Чек-лист качественного прозвона/встречи
+REALTY_CHECKLIST = (
+    "- Budget / price range & payment method (mortgage pre-approval, cash)\n"
+    "- Decision makers & authority (who else decides?)\n"
+    "- Timeline & urgency (move-in date, sale deadline)\n"
+    "- Location & micro-location (districts, commute, schools)\n"
+    "- Property type & size (apt/house, rooms, sqm, floor, parking, balcony)\n"
+    "- Condition & renovation tolerance\n"
+    "- Must-haves / nice-to-haves / deal-breakers\n"
+    "- Constraints (pets, children, remote work, accessibility)\n"
+    "- Motivation & current status (why now? prior viewings)\n"
+    "- Communication preferences & availability\n"
+    "- Follow-up commitment (next meeting/showing, documents, due dates)\n"
+)
+
+# 1) Задача: «Сделай саммари и анализ» (строгий JSON)
+REALTY_SUMMARY_TASK_TMPL = (
+    "You are a real-estate sales coach analyzing a conversation between a realtor and a prospective client.\n"
+    "Use the checklist below to evaluate the conversation. If any item is missing or vague, flag it.\n"
+    "{CHECKLIST}\n"
+    "Output STRICT JSON that matches this schema:\n"
+    "{SCHEMA}\n"
+    "Rules: be specific, avoid guessing, prefer short bullets; when pointing out a discovery gap, prefix with 'MISSING:'. "
+    "Write in {LANGUAGE}. Output JSON only."
+)
+
+# Схема для саммари/анализа (совместима с summary_playbook ожиданиями)
+REALTY_SUMMARY_JSON_SCHEMA = (
+    "{\n"
+    '  "summary": "2–5 crisp sentences",\n'
+    '  "strengths": ["short bullet of good behaviors/moments"],\n'
+    '  "mistakes": ["short bullet: issue + how to improve; use MISSING:<item> for gaps"],\n'
+    '  "decisions": ["owner – action – due/date if any"]\n'
+    "}"
+)
+
+# 2) Задача: «Клиентский recap» (свободный текст — сообщение, которое риелтор может отправить клиенту)
+REALTY_RECAP_TASK_TMPL = (
+    "Write a client-friendly recap message the realtor can send after the call:\n"
+    "- 2–4 sentence recap of needs (location, budget, timing, key criteria)\n"
+    "- bullet list of agreed next steps with dates and owners\n"
+    "- courteous closing and when you'll follow up next\n"
+    "Avoid internal notes or criticism; keep it concise and practical. Write in {LANGUAGE}."
+)
+
+# 3) Задача: «Найди пробелы и сформулируй вопросы» (строгий JSON)
+REALTY_GAPS_TASK_TMPL = (
+    "Identify discovery gaps in the realtor–client conversation using the checklist below. "
+    "For each gap provide why it matters and a better follow-up question.\n"
+    "{CHECKLIST}\n"
+    "Return STRICT JSON matching this schema:\n"
+    "{SCHEMA}\n"
+    "Write in {LANGUAGE}. Output JSON only."
+)
+
+REALTY_GAPS_JSON_SCHEMA = (
+    "{\n"
+    '  "unasked_questions": [\n'
+    '    {"gap": "missing budget range", "why_it_matters": "…", "suggested_question": "…"}\n'
+    "  ],\n"
+    '  "risks": ["short bullets of risks if gaps stay unresolved"],\n'
+    '  "opportunities": ["short bullets of upsell/cross-sell or service opportunities"]\n'
+    "}"
+)
+
+# --- Шаблон для user-сообщения анализа (используется в фабрике) ---
+SUMMARY_ANALYZE_USER_TMPL = "CONVERSATION TRANSCRIPT:\n{TEXT}"
+
+# --- Модели (если ещё не заданы выше) ---
+# SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "gpt-4o-mini")
+# WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-1")

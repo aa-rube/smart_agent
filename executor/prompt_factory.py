@@ -3,25 +3,7 @@
 import random
 from typing import Optional, Dict, Any, List, Tuple
 
-from executor import ai_config
-
-ROOM_TYPE_PROMPTS = {
-    "🍳 Кухня": "kitchen",
-    "🛏 Спальня": "bedroom",
-    "🛋 Гостиная": "living room",
-    "🚿 Ванная": "bathroom",
-    "🚪 Прихожая": "hallway"
-}
-
-FURNITURE_PROMPTS = {
-    "furniture_yes": "fully furnished with appropriate furniture",
-    "furniture_no": "as an empty room, unfurnished"
-}
-
-PLAN_TYPE_PROMPTS = {
-    "plan_2d": "a stylish 2d floor plan",
-    "plan_3d": "a 3d floor plan with furniture"
-}
+from executor.ai_config import *
 
 
 def create_prompt(
@@ -30,22 +12,22 @@ def create_prompt(
         furniture: str | None = None,
         plan_type: str | None = None
 ) -> str:
-    base_prompt = ai_config.PROMPT_INTERIOR_BASE
+    base_prompt = PROMPT_INTERIOR_BASE
 
     # Обработка случайного стиля
     if style == "🔥 Случайный выбор ИИ":
-        available_styles = {k: v for k, v in ai_config.STYLES_DETAIL.items() if v != "random_style"}
+        available_styles = {k: v for k, v in STYLES_DETAIL.items() if v != "random_style"}
         random_style_name = random.choice(list(available_styles.keys()))
         style_text = available_styles[random_style_name]
     else:
         # Если стиль не случайный, получаем его детализацию из конфига
-        style_text = ai_config.STYLES_DETAIL.get(style, "modern style")
+        style_text = STYLES_DETAIL.get(style, "modern style")
 
     # Сценарий "Дизайн планировок"
     if plan_type:
         plan_text = PLAN_TYPE_PROMPTS.get(plan_type, "")
         # Используем шаблон из конфига
-        final_prompt = ai_config.PROMPT_PLAN_DESIGN.format(
+        final_prompt = PROMPT_PLAN_DESIGN.format(
             plan_type=plan_text,
             style_text=style_text
         )
@@ -54,7 +36,7 @@ def create_prompt(
     elif room_type and furniture is None:
         room_text = ROOM_TYPE_PROMPTS.get(room_type, "room")
         # Используем шаблон из конфига
-        final_prompt = ai_config.PROMPT_REDESIGN.format(
+        final_prompt = PROMPT_REDESIGN.format(
             base_prompt=base_prompt,
             room_type=room_text,
             style_text=style_text
@@ -65,7 +47,7 @@ def create_prompt(
         room_text = ROOM_TYPE_PROMPTS.get(room_type, "room")
         furniture_text = FURNITURE_PROMPTS.get(furniture, "")
         # Используем шаблон из конфига
-        final_prompt = ai_config.PROMPT_ZERO_DESIGN.format(
+        final_prompt = PROMPT_ZERO_DESIGN.format(
             base_prompt=base_prompt,
             room_type=room_text,
             furniture_text=furniture_text,
@@ -80,15 +62,15 @@ def create_prompt(
 
 
 def create_floor_plan_prompt(visualization_style: str, interior_style: str) -> str:
-    base_instructions = ai_config.FLOOR_PLAN_BASE_INSTRUCTIONS
+    base_instructions = FLOOR_PLAN_BASE_INSTRUCTIONS
 
     if visualization_style == 'sketch':
-        visualization_block = ai_config.FLOOR_PLAN_VISUALIZATION_SKETCH
+        visualization_block = FLOOR_PLAN_VISUALIZATION_SKETCH
     else:
-        visualization_block = ai_config.FLOOR_PLAN_VISUALIZATION_REALISTIC
+        visualization_block = FLOOR_PLAN_VISUALIZATION_REALISTIC
 
     # ⬇️ здесь была ошибка: блок с {interior_style} не форматировался
-    final_instructions = ai_config.FLOOR_PLAN_FINAL_INSTRUCTIONS.format(
+    final_instructions = FLOOR_PLAN_FINAL_INSTRUCTIONS.format(
         interior_style=interior_style
     )
 
@@ -105,8 +87,8 @@ def build_objection_request(
     """
     Единственное место, где формируется payload для OpenAI Chat Completion.
     """
-    system_prompt = ai_config.OBJECTION_PROMPT_DEFAULT_RU
-    use_model = model or ai_config.OBJECTION_MODEL
+    system_prompt = OBJECTION_PROMPT_DEFAULT_RU
+    use_model = model or OBJECTION_MODEL
     return {
         "model": use_model,
         "messages": [
@@ -119,8 +101,8 @@ def build_objection_request(
 # --- было: build_description_request(question) — оставляем для бэкапа
 def build_description_request(*, question: str, model: Optional[str] = None,
                               temperature: float = 0.7, max_tokens: int = 1200) -> Dict[str, Any]:
-    system_prompt = ai_config.DESCRIPTION_PROMPT_DEFAULT_RU
-    use_model = model or ai_config.DESCRIPTION_MODEL
+    system_prompt = DESCRIPTION_PROMPT_DEFAULT_RU
+    use_model = model or DESCRIPTION_MODEL
     return {
         "model": use_model,
         "messages": [
@@ -145,10 +127,10 @@ def compose_description_user_message(fields: Dict[str, Optional[str]]) -> str:
     a_key  = fields.get("area")
     cmt    = (fields.get("comment") or "").strip()
 
-    t_label  = _label(ai_config.DESCRIPTION_TYPES,   t_key)
-    cls_lbl  = _label(ai_config.DESCRIPTION_CLASSES, c_key) if c_key else "—"
-    cx_label = _label(ai_config.DESCRIPTION_COMPLEX, x_key)
-    ar_label = _label(ai_config.DESCRIPTION_AREA,    a_key)
+    t_label  = _label(DESCRIPTION_TYPES,   t_key)
+    cls_lbl  = _label(DESCRIPTION_CLASSES, c_key) if c_key else "—"
+    cx_label = _label(DESCRIPTION_COMPLEX, x_key)
+    ar_label = _label(DESCRIPTION_AREA,    a_key)
     comment  = cmt or "—"
 
     return (
@@ -172,8 +154,8 @@ def build_description_request_from_fields(
     ЕДИНОЕ место сборки payload из сырых полей.
     """
     user_message = compose_description_user_message(fields)
-    system_prompt = ai_config.DESCRIPTION_PROMPT_DEFAULT_RU
-    use_model = model or ai_config.DESCRIPTION_MODEL
+    system_prompt = DESCRIPTION_PROMPT_DEFAULT_RU
+    use_model = model or DESCRIPTION_MODEL
     return {
         "model": use_model,
         "messages": [
@@ -206,10 +188,10 @@ def _humanize_deal(deal_csv: Optional[str], custom: Optional[str]) -> str:
     return ", ".join(names) if names else "—"
 
 def _tone_label(key: Optional[str]) -> str:
-    return ai_config.FEEDBACK_TONES.get(key or "", "нейтральный")
+    return FEEDBACK_TONES.get(key or "", "нейтральный")
 
 def _length_hint(key: Optional[str]) -> str:
-    return ai_config.FEEDBACK_LENGTH_HINTS.get(key or "", "до ~450 знаков")
+    return FEEDBACK_LENGTH_HINTS.get(key or "", "до ~450 знаков")
 
 def _length_target_tokens(key: Optional[str]) -> int:
     # приблизительно: 1 токен ~ 3–4 символа для RU; делаем с запасом
@@ -242,8 +224,8 @@ def build_feedback_generate_request(*,
     max_tokens   = _length_target_tokens(length_key)
     deal_human   = _humanize_deal(fields.get("deal_type"), fields.get("deal_custom"))
 
-    system_prompt = ai_config.FEEDBACK_PROMPT_SYSTEM_RU
-    user_message = ai_config.FEEDBACK_USER_TEMPLATE_RU.format(
+    system_prompt = FEEDBACK_PROMPT_SYSTEM_RU
+    user_message = FEEDBACK_USER_TEMPLATE_RU.format(
         client_name=_safe(fields.get("client_name")),
         agent_name=_safe(fields.get("agent_name")),
         company=_safe(fields.get("company")),
@@ -256,7 +238,7 @@ def build_feedback_generate_request(*,
         length_hint=length_hint,
     )
 
-    use_model = model or ai_config.FEEDBACK_MODEL
+    use_model = model or FEEDBACK_MODEL
     payload = {
         "model": use_model,
         "n": max(1, int(num_variants)),
@@ -294,7 +276,7 @@ def build_feedback_mutate_request(*,
     max_tokens  = _length_target_tokens(length_key)
     deal_human  = _humanize_deal(context.get("deal_type"), context.get("deal_custom"))
 
-    system_prompt = ai_config.FEEDBACK_MUTATE_SYSTEM_RU
+    system_prompt = FEEDBACK_MUTATE_SYSTEM_RU
 
     instruction = ""
     if operation == "short":
@@ -307,7 +289,7 @@ def build_feedback_mutate_request(*,
         instruction = "Отредактируй текст, сохранив факты и усилив убедительность."
 
     # user message
-    user_message = ai_config.FEEDBACK_MUTATE_USER_TEMPLATE_RU.format(
+    user_message = FEEDBACK_MUTATE_USER_TEMPLATE_RU.format(
         instruction=instruction,
         base_text=base_text,
         client_name=_safe(context.get("client_name")),
@@ -321,7 +303,7 @@ def build_feedback_mutate_request(*,
         length_hint=length_hint,
     )
 
-    use_model = model or ai_config.FEEDBACK_MODEL
+    use_model = model or FEEDBACK_MODEL
     payload = {
         "model": use_model,
         "messages": [
@@ -336,3 +318,54 @@ def build_feedback_mutate_request(*,
         "deal_human": deal_human,
     }
     return payload, debug
+
+
+# вспомогательный лимитер длины
+def _cut(s: str, n: int) -> str:
+    s = s or ""
+    return s if len(s) <= n else s[: n - 1]
+
+
+
+# ------------------------------------------------------------------
+# Билдер для саммари переговоров (используется в /summary/analyze)
+# ------------------------------------------------------------------
+def build_summary_analyze_request(
+    *,
+    transcript_text: str,
+    model: str,
+    prefer_language: Optional[str] = None,
+    temperature: float = 0.2,
+    max_tokens: int = 900,
+) -> Tuple[Dict[str, Any], str]:
+    """
+    Собирает payload для Chat Completions в JSON-формате.
+    Использует шаблоны из ai_config.py и конкатенирует полученный текст диалога.
+    Возвращает (payload, debug_system_prompt).
+    """
+    lang = prefer_language or "the language of the conversation"
+
+    # system: задача + чек-лист + схема JSON
+    sys_prompt = REALTY_SUMMARY_TASK_TMPL.format(
+        CHECKLIST=REALTY_CHECKLIST,
+        SCHEMA=REALTY_SUMMARY_JSON_SCHEMA,
+        LANGUAGE=lang,
+    )
+
+    # user: сам текст диалога (обрезаем, чтобы не улететь в лимиты)
+    user_prompt = SUMMARY_ANALYZE_USER_TMPL.format(
+        TEXT=_cut(transcript_text, 16000)
+    )
+
+    payload: Dict[str, Any] = {
+        "model": model,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user",   "content": user_prompt},
+        ],
+        "response_format": {"type": "json_object"},
+    }
+
+    return payload, sys_prompt
