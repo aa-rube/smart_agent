@@ -1,5 +1,4 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\executor\prompt_factory.py
-
 import random
 from typing import Optional, Dict, Any, List, Tuple
 

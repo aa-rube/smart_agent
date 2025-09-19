@@ -147,7 +147,7 @@ import os
 #        на сервере командой: systemctl restart furniture_bot
 # ================================================================
 # Модель для сценариев отработки возражений.
-OBJECTION_MODEL = os.getenv('OBJECTION_MODEL', 'gpt-4.1')
+OBJECTION_MODEL = os.getenv('OBJECTION_MODEL', 'gpt-5')
 OBJECTION_PROMPT_DEFAULT_EN = '''
 You are a world-class expert in real estate sales, negotiation psychology, and training real estate agents.
 Your task is to help sellers and real estate agents handle client objections in ways that increase trust, engagement, and the likelihood of closing a deal.
@@ -231,7 +231,7 @@ OBJECTION_PROMPT_DEFAULT_RU='''
 #        на сервере командой: systemctl restart furniture_bot
 # ================================================================
 
-DESCRIPTION_MODEL = os.getenv('DESCRIPTION_MODEL', 'gpt-4.1')
+DESCRIPTION_MODEL = os.getenv('DESCRIPTION_MODEL', 'gpt-5')
 DESCRIPTION_PROMPT_DEFAULT_RU = '''
 Гайд для агента как писать продающие описания по ХПВ
 
@@ -303,10 +303,10 @@ DESCRIPTION_AREA = {
 # ================================================================
 
 
-FEEDBACK_MODEL = os.getenv('FEEDBACK_MODEL', 'gpt-4.1')
+FEEDBACK_MODEL = os.getenv('FEEDBACK_MODEL', 'gpt-5')
 
 # Модели для анализа транскриптов и транскрибации
-SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "gpt-4o-mini")
+SUMMARY_MODEL = os.getenv("SUMMARY_MODEL", "gpt-5")
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-1")
 
 # --- Мэппинги «тон оф войс» и «длина» (расширяемые) ---

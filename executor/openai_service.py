@@ -30,7 +30,7 @@ def _client_or_init() -> OpenAI:
     return _client
 
 # сначала полноразмерные, потом мини
-_FALLBACK_MODELS: List[str] = ["gpt-4o", "gpt-4.1", "gpt-4o-mini", "gpt-4.1-mini"]
+_FALLBACK_MODELS: List[str] = ["gpt-5", "gpt-4o", "gpt-4.1", "gpt-4o-mini", "gpt-4.1-mini"]
 
 def _log_request(payload: Dict[str, Any]) -> None:
     if HTTP_DEBUG:
