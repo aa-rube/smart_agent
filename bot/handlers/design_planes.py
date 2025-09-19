@@ -3,13 +3,7 @@ import fitz
 import aiohttp
 
 from aiogram import Router, F, Bot
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    ContentType,
-    FSInputFile,
-    InputMediaPhoto,
-)
+from aiogram.types import *
 from aiogram.fsm.context import FSMContext
 from aiogram.enums.chat_action import ChatAction
 from aiogram.exceptions import TelegramBadRequest

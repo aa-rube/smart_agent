@@ -131,5 +131,116 @@ class FeedbackRedisRepo:
         return await self.r.lrange(self._buf_key(user_id, buf_name), 0, -1)
 
 
-# Глобальный экземпляр — как в database.py (_repo)
+
+
+# === Summary (саммари переговоров) ===========================================
+class SummaryRedisRepo:
+    """
+    Хранение черновика саммари в Redis (Hash + TTL).
+    Ключи:
+      - {prefix}:sum:{user_id}              — Hash с полями:
+          status, stage, updated_at
+          input_json        — {"type":"text","text":"..."} | {"type":"audio","local_path":"...","telegram":{...}}
+          last_payload      — payload, который отправляли исполнителю
+          last_result       — финальный результат анализа
+          meta              — произвольная мета (JSON)
+      - при необходимости можно использовать списки-буферы как в FeedbackRedisRepo
+    """
+
+    def __init__(self, redis: Redis, prefix: str = "sa"):
+        self.r = redis
+        self.prefix = prefix
+
+    def _key(self, user_id: int) -> str:
+        return f"{self.prefix}:sum:{user_id}"
+
+    # ---- lifecycle ----
+    async def start(self, user_id: int, *, ttl: int = 86400, meta: Optional[Dict[str, Any]] = None) -> None:
+        k = self._key(user_id)
+        now = int(time.time())
+        mapping: Dict[str, Any] = {"status": "start", "stage": "idle", "updated_at": now}
+        if meta:
+            mapping["meta"] = json.dumps(meta, ensure_ascii=False)
+        pipe = self.r.pipeline()
+        pipe.hset(k, mapping=mapping)
+        pipe.expire(k, ttl)
+        await pipe.execute()
+
+    async def clear(self, user_id: int) -> None:
+        await self.r.delete(self._key(user_id))
+
+    async def finish(self, user_id: int, *, ttl: int = 7 * 86400) -> None:
+        # Продлим жизнь записи с результатом
+        await self.r.hset(self._key(user_id), mapping={"status": "done", "updated_at": int(time.time())})
+        await self.r.expire(self._key(user_id), ttl)
+
+    async def set_stage(self, user_id: int, stage: str) -> None:
+        await self.r.hset(self._key(user_id), mapping={"stage": stage, "updated_at": int(time.time())})
+
+    # ---- input: text / audio ----
+    async def set_input_text(self, user_id: int, text: str, *, append: bool = False) -> None:
+        k = self._key(user_id)
+        cur_raw = await self.r.hget(k, "input_json")
+        if append and cur_raw:
+            try:
+                cur = json.loads(cur_raw)
+            except Exception:
+                cur = {}
+            prev = (cur.get("text") or "") if (cur.get("type") == "text") else ""
+            text = ((prev + "\n" + (text or "")).strip()) if prev else (text or "")
+        input_obj = {"type": "text", "text": text or ""}
+        await self.r.hset(k, mapping={"input_json": json.dumps(input_obj, ensure_ascii=False), "updated_at": int(time.time())})
+
+    async def set_input_audio(self, user_id: int, *, local_path: str, telegram_meta: Optional[Dict[str, Any]] = None) -> None:
+        input_obj = {"type": "audio", "local_path": local_path}
+        if telegram_meta:
+            input_obj["telegram"] = telegram_meta
+        await self.r.hset(self._key(user_id), mapping={
+            "input_json": json.dumps(input_obj, ensure_ascii=False),
+            "updated_at": int(time.time())
+        })
+
+    # ---- payload/result ----
+    async def set_last_payload(self, user_id: int, payload: Dict[str, Any]) -> None:
+        await self.r.hset(self._key(user_id), mapping={
+            "last_payload": json.dumps(payload, ensure_ascii=False),
+            "updated_at": int(time.time())
+        })
+
+    async def set_last_result(self, user_id: int, result: Dict[str, Any]) -> None:
+        await self.r.hset(self._key(user_id), mapping={
+            "last_result": json.dumps(result, ensure_ascii=False),
+            "updated_at": int(time.time())
+        })
+
+    async def set_error(self, user_id: int, error: str) -> None:
+        await self.r.hset(self._key(user_id), mapping={"status": "error", "error": error, "updated_at": int(time.time())})
+
+    # ---- чтение ----
+    async def get_draft(self, user_id: int) -> Dict[str, Any]:
+        """
+        Возвращает нормализованный dict с декодированными JSON-полями.
+        """
+        h = await self.r.hgetall(self._key(user_id))
+        if not h:
+            return {}
+        out: Dict[str, Any] = {
+            "status": h.get("status"),
+            "stage": h.get("stage"),
+            "updated_at": int(h.get("updated_at") or 0) if h.get("updated_at") else None,
+        }
+        for f, dst in (("input_json", "input"), ("last_payload", "last_payload"), ("last_result", "last_result"), ("meta", "meta")):
+            if f in h and h[f]:
+                try:
+                    out[dst] = json.loads(h[f])
+                except Exception:
+                    out[dst] = h[f]
+        # совместимость: если нет input_json, вернём пустой input
+        if "input" not in out:
+            out["input"] = {}
+        return out
+
+
+# Глобальные экземпляры
 feedback_repo = FeedbackRedisRepo(_redis, prefix=os.getenv("REDIS_PREFIX", "sa"))
+summary_repo  = SummaryRedisRepo(_redis,  prefix=os.getenv("REDIS_PREFIX", "sa"))

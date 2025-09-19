@@ -13,15 +13,7 @@ from aiogram.enums.chat_action import ChatAction
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    BufferedInputFile,
-    # ForceReply не нужен в этом варианте
-)
-
+from aiogram.types import *
 from bot.config import EXECUTOR_BASE_URL
 from bot.handlers.feedback.model.review_payload import ReviewPayload
 from bot.utils.database import history_add, history_list, history_get
@@ -950,8 +942,6 @@ async def handle_situation(message: Message, state: FSMContext):
         # Переходим к выбору тона
         await ui_reply(message, ASK_TONE, kb_tone(), state=state)
         await state.set_state(FeedbackStates.waiting_tone)
-
-
 
 
 async def handle_tone(callback: CallbackQuery, state: FSMContext, bot: Optional[Bot] = None):

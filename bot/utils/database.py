@@ -14,6 +14,7 @@ from sqlalchemy.orm import (
 )
 
 from bot.config import DB_PATH
+import json
 
 
 # =========================
@@ -58,6 +59,12 @@ class User(Base):
     )
     # удобная связь для истории
     history: Mapped[list["ReviewHistory"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
+    # история саммари переговоров
+    summaries: Mapped[list["SummaryHistory"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
         lazy="selectin",
@@ -110,6 +117,32 @@ class ReviewHistory(Base):
     final_text:  Mapped[str] = mapped_column(Text, nullable=False)
 
     user: Mapped[User] = relationship(back_populates="history")
+
+
+class SummaryHistory(Base):
+    """
+    История саммари переговоров (универсальные JSON-поля).
+    """
+    __tablename__ = "summary_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # метаданные запроса
+    source_type: Mapped[str] = mapped_column(String, nullable=False)  # "text" | "audio" | "unknown"
+    options_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+    # данные
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)   # вход/контекст
+    result_json:  Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # результат анализа
+
+    user: Mapped[User] = relationship(back_populates="summaries")
 
 
 # =========================
@@ -234,6 +267,54 @@ class UserRepository:
                 return None
             return rec
 
+    # --- SUMMARY: CRUD-методы в удобном формате dict ---
+    def summary_add_entry(self, user_id: int, *, source_type: str, options: dict, payload: dict, result: Optional[dict]) -> int:
+        with self._session() as s, s.begin():
+            if s.get(User, user_id) is None:
+                s.add(User(user_id=user_id))
+            rec = SummaryHistory(
+                user_id=user_id,
+                source_type=source_type or "unknown",
+                options_json=json.dumps(options or {}, ensure_ascii=False),
+                payload_json=json.dumps(payload or {}, ensure_ascii=False),
+                result_json=json.dumps(result, ensure_ascii=False) if result is not None else None,
+            )
+            s.add(rec)
+            s.flush()
+            return rec.id
+
+    def summary_list_entries(self, user_id: int, limit: int = 10) -> list[dict]:
+        with self._session() as s:
+            q = (
+                s.query(SummaryHistory)
+                .filter(SummaryHistory.user_id == user_id)
+                .order_by(SummaryHistory.id.desc())
+                .limit(limit)
+            )
+            items: list[dict] = []
+            for rec in q:
+                items.append({
+                    "id": rec.id,
+                    "created_at": rec.created_at.isoformat(timespec="seconds"),
+                    "source_type": rec.source_type,
+                    "options": json.loads(rec.options_json or "{}"),
+                })
+            return items
+
+    def summary_get_entry(self, user_id: int, entry_id: int) -> Optional[dict]:
+        with self._session() as s:
+            rec = s.get(SummaryHistory, entry_id)
+            if rec is None or rec.user_id != user_id:
+                return None
+            return {
+                "id": rec.id,
+                "created_at": rec.created_at.isoformat(timespec="seconds"),
+                "source_type": rec.source_type,
+                "options": json.loads(rec.options_json or "{}"),
+                "payload": json.loads(rec.payload_json or "{}"),
+                "result": json.loads(rec.result_json or "null") if rec.result_json else None,
+            }
+
 
 # Глобальный «репозиторий» для обратной совместимости
 _repo = UserRepository(SessionLocal)
@@ -291,3 +372,17 @@ def history_list(user_id: int, limit: int = 10) -> list[ReviewHistory]:
 
 def history_get(user_id: int, item_id: int) -> Optional[ReviewHistory]:
     return _repo.history_get(user_id, item_id)
+
+# -------- Summary (новые обёртки под прежний контракт) --------
+def summary_add_entry(*, user_id: int, source_type: str, options: dict, payload: dict, result: Optional[dict]) -> int:
+    return _repo.summary_add_entry(user_id, source_type=source_type, options=options, payload=payload, result=result)
+
+def summary_list_entries(user_id: int, limit: int = 10) -> list[dict]:
+    return _repo.summary_list_entries(user_id, limit=limit)
+
+def summary_get_entry(user_id: int, entry_id: int) -> Optional[dict]:
+    return _repo.summary_get_entry(user_id, entry_id)
+
+
+
+#summary

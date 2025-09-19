@@ -277,7 +277,7 @@ async def handle_comment_skip(cb: CallbackQuery, state: FSMContext, bot: Bot):
 # ==========================
 def router(rt: Router):
     # старт
-    rt.callback_query.register(start_description_flow, F.data == "description")
+    rt.callback_query.register(start_description_flow, F.data == "nav.descr_home")
     rt.callback_query.register(start_description_flow, F.data == "desc_start")
 
     # пошаговые выборы

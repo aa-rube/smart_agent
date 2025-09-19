@@ -1,5 +1,4 @@
 # smart_agent/bot/handlers/subscribe_partner_manager.py
-
 from __future__ import annotations
 
 import logging

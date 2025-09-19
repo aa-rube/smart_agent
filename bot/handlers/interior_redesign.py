@@ -1,18 +1,9 @@
 # C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\interior_redesign.py
-
 import aiohttp
-import os
-
 import bot.utils.tokens as tk
 
 from aiogram import Router, F, Bot
-from aiogram.types import (
-    Message,
-    CallbackQuery,
-    ContentType,
-    FSInputFile,
-    InputMediaPhoto,
-)
+from aiogram.types import *
 from aiogram.fsm.context import FSMContext
 from aiogram.enums.chat_action import ChatAction
 from aiogram.exceptions import TelegramBadRequest
@@ -29,7 +20,6 @@ from bot.utils.file_utils import safe_remove
 
 
 # ===== helpers: редактирование текущего сообщения =====
-
 async def _edit_text_or_caption(msg: Message, text: str, kb=None) -> None:
     """Обновить текст/подпись и клавиатуру текущего сообщения."""
     try:
@@ -68,7 +58,6 @@ async def _edit_or_replace_with_photo(bot: Bot, msg: Message, photo_path: str, c
 
 
 # ===== callbacks =====
-
 async def start_redesign_flow(callback: CallbackQuery, state: FSMContext, bot: Bot):
     user_id = callback.message.chat.id
 
@@ -185,7 +174,6 @@ async def handle_style(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
 
 # ===== message (upload stage) =====
-
 async def handle_photo(message: Message, state: FSMContext, bot: Bot):
     await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     user_id = message.from_user.id

@@ -53,3 +53,8 @@ class FeedbackStates(StatesGroup):
     history_search = State()
     waiting_tone = State()
     waiting_length = State()
+
+class SummaryStates(StatesGroup):
+    waiting_for_text = State()
+    waiting_for_audio = State()
+    ready_to_generate = State()
