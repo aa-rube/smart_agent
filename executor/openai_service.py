@@ -251,12 +251,12 @@ def summarize_from_input(input_obj: Dict[str, Any],
         local_path = input_obj.get("local_path")
         if not local_path or not os.path.exists(local_path):
             raise FileNotFoundError("audio.local_path not found")
-        transcript_text, detected_lang = transcribe_audio_from_path(local_path)#???
+        transcript_text, detected_lang = transcribe_audio_from_path(local_path)
         if not transcript_text or len(transcript_text.strip()) < 5:
             raise ValueError("empty transcript")
 
     # 2) анализ
-    result_dict, used_model, debug_prompt = send_summary_analyze_request(#???
+    result_dict, used_model, debug_prompt = send_summary_analyze_request(
         transcript_text=transcript_text,
         prefer_language=detected_lang,
         allow_fallback=allow_fallback,
