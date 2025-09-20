@@ -1,4 +1,4 @@
-# C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\design_planes.py
+    # C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\design_planes.py
 from __future__ import annotations
 
 import os
@@ -83,6 +83,20 @@ def text_get_file_redesign(user_id: int) -> str:
     return _TEXT_GET_FILE_REDESIGN_TPL.format(tokens_text=_format_tokens_text(user_id))
 
 
+# Экран «загрузи фото» для Zero-Design — с показом остатка генераций
+_TEXT_GET_FILE_ZERO_TPL = """
+1️⃣ Загрузи *фото интерьера* (jpeg, jpg, png) или отправь ссылку на изображение.
+
+2️⃣ Получи готовый интерьер за 1–2 минуты 💡
+
+{tokens_text}
+
+Готов? Загружай файл прямо сюда 👇
+""".strip()
+
+def text_get_file_zero(user_id: int) -> str:
+    return _TEXT_GET_FILE_ZERO_TPL.format(tokens_text=_format_tokens_text(user_id))
+
 TEXT_GET_STYLE = "Отлично! Теперь выбери стиль оформления 🖼️"
 TEXT_FINAL = "✅ Готово!\nТвоя обновленная визуализация теперь готова влюблять в себя покупателей!"
 ERROR_WRONG_INPUT = "❌ Пожалуйста, отправь фото, PDF (1 страница) или ссылку на изображение."
@@ -91,7 +105,6 @@ ERROR_LINK = "❌ Не удалось загрузить изображение 
 SORRY_TRY_AGAIN = "😔 К сожалению, не удалось сгенерировать изображение. Попробуйте ещё раз."
 UNSUCCESSFUL_TRY_LATER = "😔 Не удалось скачать сгенерированное изображение. Попробуйте позже."
 
-TEXT_GET_FILE_ZERO = "Загрузи фото помещения — подойдёт ссылка или фото в jpeg, jpg, png или PDF."
 TEXT_PHOTO_UPLOADED = "Отлично! 📸\nТеперь выбери, какое это помещение:"
 TEXT_GET_FURNITURE_OPTION = """
 Хочешь дизайн с мебелью или без?
@@ -439,7 +452,8 @@ async def start_zero_design_flow(callback: CallbackQuery, state: FSMContext, bot
             bot=bot,
             msg=callback.message,
             file_path=get_file_path('img/bot/zero_design.jpg'),
-            caption=TEXT_GET_FILE_ZERO,
+            # показываем такой же «умный» экран ожидания, как в редизайне — с остатком генераций
+            caption=text_get_file_zero(user_id),
             kb=InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")]]
             ),

@@ -84,6 +84,22 @@ def text_get_photo_redesign(user_id) -> str:
     return TEXT_GET_PHOTO_REDESIGN_TPL.format(tokens_text=format_tokens_text(user_id))
 
 
+# ---------- ZERO-DESIGN: шаблон «загрузи фото» с токенами ----------
+
+# Многострочный шаблон со вставкой количества доступных генераций
+TEXT_GET_FILE_ZERO_TPL = """
+1️⃣ Загрузи *фото интерьера* (jpeg, jpg, png) или отправь ссылку на изображение.
+
+2️⃣ Получи готовый интерьер за 1–2 минуты 💡
+
+{tokens_text}
+
+Готов? Загружай файл прямо сюда 👇
+"""
+
+def text_get_file_zero(user_id) -> str:
+    return TEXT_GET_FILE_ZERO_TPL.format(tokens_text=format_tokens_text(user_id))
+
 # ---------- ПРОЧИЕ ТЕКСТЫ ----------
 
 TEXT_GET_PLAN_TYPE = """
