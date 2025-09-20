@@ -1,96 +1,125 @@
 # smart_agent/bot/handlers/handler_manager.py
 from __future__ import annotations
 
-import bot.keyboards.inline as inline
-from bot.keyboards.inline import *
-from bot.text.texts import *
-from bot.config import *
-import bot.utils.tokens as tk
-import bot.utils.admin_db as adb
-import bot.utils.database as db
 import logging
 from pathlib import Path
+from typing import Union
 
 from aiogram import Router, F, Bot
-from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, FSInputFile, CallbackQuery
-from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import CommandStart, Command
+from aiogram.fsm.context import FSMContext
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    FSInputFile,
+    InputMediaPhoto,
+)
 
+import bot.utils.admin_db as adb
+import bot.utils.database as db
+import bot.utils.tokens as tk
+from bot.config import get_file_path
+import bot.keyboards.inline as inline  # для inline.sub() и inline.help()
 from bot.utils.subscribe_partner_manager import ensure_partner_subs
 
 
-frst_text = '''
-👋 Привет!
-Добро пожаловать в *ИНСТРУМЕНТЫ РИЭЛТОРА*.
-Ты получил доступ к сервисам, которые помогают экономить время и привлекать больше клиентов.
+# =============================================================================
+# Тексты
+# =============================================================================
+frst_text = (
+    "👋 Привет!\n"
+    "Добро пожаловать в *ИНСТРУМЕНТЫ РИЭЛТОРА*.\n"
+    "Ты получил доступ к сервисам, которые помогают экономить время и привлекать больше клиентов.\n\n"
+    "Выбери нужный инструмент 👇\n\n"
+    "🏡 *Контент для соцсетей риелтора* — готовые публикации и идеи по подписке, чтобы регулярно вести свои соцсети.\n\n"
+    "🧠 *Продвинутые инструменты* для лучших продаж и привлечения клиентов.\n\n"
+    "✨ А так же наше закрытое сообщество для обсуждения, поддержки и обмена опытом."
+)
 
-Выбери нужный инструмент 👇
+ai_tools_text = (
+    "📐 *Генератор красивых планировок* (*β-версия*) — создавай наглядные схемы квартир и домов.\n\n"
+    "🛋️ *Генератор дизайна интерьера* — быстрые визуализации стиля и меблировки.\n\n"
+    "🤖 *ИИ для закрытия возражений* — готовые аргументы и ответы на частые сомнения клиентов.\n\n"
+    "✍️ *ИИ для написания отзывов от клиентов* — шаблоны благодарственных сообщений."
+)
 
-🏡 *Контент для соцсетей риелтора* — готовые публикации и идеи по подписке, чтобы регулярно вести свои соцсети.
+smm_description = (
+    "📲 Наша SMM-команда ежедневно готовит профессиональный контент, который остаётся только опубликовать.\n"
+    "Никакого ИИ — только опытные маркетологи с практикой в недвижимости.\n\n"
+    "В течение месяца ты получишь:\n\n"
+    "26 готовых тем для соцсетей и мессенджеров.\n\n"
+    "Посты для ВКонтакте, Telegram, Instagram, Одноклассники.\n\n"
+    "Сторис и истории для WhatsApp, Telegram, ВКонтакте, Instagram.\n\n"
+    "Короткие ролики для WhatsApp, Telegram, Shorts, Reels, TikTok, ВКонтакте.\n\n"
+    "💼 Всё создано, чтобы ты экономил время и получал заявки из своих соцсетей.\n\n"
+    "🔐 Доступ только для подписчиков.\n"
+    "Нажми «Оформить подписку» и пользуйся Всеми Инструментами Риэлтора без ограничений!"
+)
 
-🧠 *Продвинутые инструменты* для лучших продаж и привлечения клиентов.
+HELP = "🆘 Нажмите на кнопку, чтобы обратиться в поддержку 👇"
+SUB_PAY = (
+    "🪫 Упс… Лимит токенов исчерпан — теперь нужно обновить подписку.\n\n"
+    "📦* Что даёт подписка:*\n"
+    " — Пакет из 100 любых генераций\n"
+    " — Доступ ко всем инструментам\n"
+    "Стоимость пакета всего 2500 рублей!"
+)
 
-✨ А так же наше закрытое сообщество для обсуждения, поддержки и обмена опытом.
-'''
-
-
-ai_tools_text = ''' 📐 *Генератор красивых планировок* (*β-версия*) — создавай наглядные схемы квартир и домов. 
-
-🛋️ *Генератор дизайна интерьера* — быстрые визуализации стиля и меблировки. 
-
-🤖 *ИИ для закрытия возражений* — готовые аргументы и ответы на частые сомнения клиентов. 
-
-✍️ *ИИ для написания отзывов от клиентов* — шаблоны благодарственных сообщений. '''
-
-smm_description = '''
-📲 Наша SMM-команда ежедневно готовит профессиональный контент, который остаётся только опубликовать.
-Никакого ИИ -  только опытные маркетологи с практикой в недвижимости.
-
-В течение месяца ты получишь:
-
-26 готовых тем для соцсетей и мессенджеров.
-
-Посты для ВКонтакте, Telegram, Instagram, Одноклассники.
-
-Сторис и истории для WhatsApp, Telegram, ВКонтакте, Instagram.
-
-Короткие ролики для WhatsApp, Telegram, Shorts, Reels, TikTok, ВКонтакте.
-
-💼 Всё создано, чтобы ты экономил время и получал заявки из своих соцсетей.
-
-🔐 Доступ только для подписчиков.
-Нажми «Оформить подписку» и пользуйся Всеми Инструментами Риэлтора без ограничений!
-'''
-
-
-
-# меню
-frst_kb_inline = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='🏡 Контент для соцсетей риелтора', callback_data='smm_content')],
-        [InlineKeyboardButton(text='🧠 Продвинутые инструменты', callback_data='nav.ai_tools')],
-
-        [InlineKeyboardButton(text='Наше сообщество', url='https://t.me/+DJfn6NyHmRAzMTdi')],
-        [InlineKeyboardButton(text='Тех. поддержка', url='https://t.me/dashaadminrealtor')],
-    ])
-
-ai_tools_inline = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📐 Генератор красивых планировок",         callback_data="floor_plan"), ],
-        [InlineKeyboardButton(text="🛋️ Генератор дизайна интерьера",           callback_data="nav.design_home"), ],
-        [InlineKeyboardButton(text="🤖 ИИ для закрытия возражений",            callback_data="nav.objection_start"), ],
-        [InlineKeyboardButton(text="✍️ ИИ для написания отзывов от клиентов",  callback_data="nav.feedback_home"), ],
-        [InlineKeyboardButton(text="✨ Summary диалога с клиентом",            callback_data="nav.summary_home"), ],
-        [InlineKeyboardButton(text="💎 Генератор продающих описаний объектов", callback_data="nav.descr_home"), ],
-        [InlineKeyboardButton(text="⬅️ Назад",                                 callback_data="start_retry")]
-    ])
+info_rates_message =  """
+Тут вы можете приобрести нашу подписку по тарифам:
+1 месяц / 2.500₽
+3 месяца / 6.500₽ (скидка 10🔥)
+6 месяцев / 12.500₽ (скидка 15🔥)
+12 месяцев / 24.000₽ (скидка 20🔥)
+"""
 
 
+# =============================================================================
+# Клавиатуры
+# =============================================================================
+frst_kb_inline = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="🏡 Контент для соцсетей риелтора", callback_data="smm_content")],
+        [InlineKeyboardButton(text="🧠 Продвинутые инструменты", callback_data="nav.ai_tools")],
+        [InlineKeyboardButton(text="Наше сообщество", url="https://t.me/+DJfn6NyHmRAzMTdi")],
+        [InlineKeyboardButton(text="Тех. поддержка", url="https://t.me/dashaadminrealtor")],
+    ]
+)
+
+ai_tools_inline = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="📐 Генератор красивых планировок", callback_data="floor_plan")],
+        [InlineKeyboardButton(text="🛋️ Генератор дизайна интерьера", callback_data="nav.design_home")],
+        [InlineKeyboardButton(text="🤖 ИИ для закрытия возражений", callback_data="nav.objection_start")],
+        [InlineKeyboardButton(text="✍️ ИИ для написания отзывов от клиентов", callback_data="nav.feedback_home")],
+        [InlineKeyboardButton(text="✨ Summary диалога с клиентом", callback_data="nav.summary_home")],
+        [InlineKeyboardButton(text="💎 Генератор продающих описаний объектов", callback_data="nav.descr_home")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")],
+    ]
+)
+
+select_rates_inline = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [
+            InlineKeyboardButton(text="1 месяц", callback_data="Rate_1"),
+            InlineKeyboardButton(text="3 месяца", callback_data="Rate_2"),
+            InlineKeyboardButton(text="6 месяцев", callback_data="Rate_3"),
+        ],
+        [InlineKeyboardButton(text="12 месяцев", callback_data="Rate_4")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="smm_content")],
+    ]
+)
 
 
-# --- единый хелпер инициализации для Message | CallbackQuery ---
+# =============================================================================
+# Инициализация пользователя
+# =============================================================================
 async def init_user_event(evt: Union[Message, CallbackQuery]) -> None:
     """
-    Гарантирует, что пользователь есть в обеих БД и имеет дефолтные значения.
+    Гарантирует, что пользователь есть в БД и имеет дефолтные значения.
     Работает и для входящих сообщений, и для callback’ов.
     """
     if isinstance(evt, CallbackQuery):
@@ -107,19 +136,19 @@ async def init_user_event(evt: Union[Message, CallbackQuery]) -> None:
 
     # основная БД
     if not db.check_and_add_user(user_id):
-        db.set_variable(user_id, 'tokens', 2)
-        db.set_variable(user_id, 'have_sub', 0)
+        db.set_variable(user_id, "tokens", 2)
+        db.set_variable(user_id, "have_sub", 0)
 
         # админская БД (подписки/уведомления)
         adb.init_notification_table()
         adb.inicialize_users(user_id, username or "")
 
 
-# --- helpers for editing current message (callbacks) ---
-async def _edit_text_safe(cb: CallbackQuery, text: str, kb=None):
-    # инициализация для callback
-    await init_user_event(cb)
-
+# =============================================================================
+# Общие хелперы UI
+# =============================================================================
+async def _edit_text_safe(cb: CallbackQuery, text: str, kb: InlineKeyboardMarkup | None = None) -> None:
+    """Безопасно редактирует текст/подпись/клавиатуру текущего сообщения."""
     try:
         await cb.message.edit_text(text, reply_markup=kb)
     except TelegramBadRequest:
@@ -133,116 +162,188 @@ async def _edit_text_safe(cb: CallbackQuery, text: str, kb=None):
     await cb.answer()
 
 
-# --- /start и основной экран ---
-async def frst_msg(message: Message, state: FSMContext, bot: Bot):
+async def _send_menu_with_logo(bot: Bot, chat_id: int) -> None:
+    """
+    Главный экран одним сообщением: фото-логотип + caption + клавиатура.
+    Фоллбэк — просто текст.
+    """
+    logo_rel = "img/bot/logo1.jpg"  # путь внутри DATA_DIR
+    logo_path = get_file_path(logo_rel)
+    if Path(logo_path).exists():
+        try:
+            await bot.send_photo(
+                chat_id=chat_id,
+                photo=FSInputFile(logo_path),
+                caption=frst_text,
+                reply_markup=frst_kb_inline,
+            )
+            return
+        except Exception as e:
+            logging.exception("Failed to send logo with caption: %s", e)
+    else:
+        logging.warning("Logo not found: %s (resolved from %s)", logo_path, logo_rel)
+
+    await bot.send_message(chat_id=chat_id, text=frst_text, reply_markup=frst_kb_inline)
+
+
+async def _replace_with_menu_with_logo(callback: CallbackQuery) -> None:
+    """Удаляет текущее сообщение и отправляет главное меню (фото + caption)."""
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    await _send_menu_with_logo(callback.bot, callback.message.chat.id)
+
+
+async def _edit_or_replace_with_photo_cb(
+    callback: CallbackQuery,
+    image_rel_path: str,
+    caption: str,
+    kb: InlineKeyboardMarkup | None = None,
+) -> None:
+    """
+    Меняет текущий экран на фото с подписью (через edit_media).
+    Если редактировать нельзя (было текстовое сообщение) — удаляет и отправляет новое фото.
+    Фоллбэк — редактирование текста.
+    """
+    img_path = get_file_path(image_rel_path)
+    if Path(img_path).exists():
+        media = InputMediaPhoto(media=FSInputFile(img_path), caption=caption)
+        try:
+            # пробуем заменить медиаконтент текущего сообщения
+            await callback.message.edit_media(media=media, reply_markup=kb)
+            await callback.answer()
+            return
+        except TelegramBadRequest:
+            # если сообщение было текстом — удаляем и отправляем новое фото
+            try:
+                await callback.message.delete()
+            except TelegramBadRequest:
+                pass
+            await callback.bot.send_photo(
+                chat_id=callback.message.chat.id,
+                photo=FSInputFile(img_path),
+                caption=caption,
+                reply_markup=kb,
+            )
+            await callback.answer()
+            return
+        except Exception as e:
+            logging.exception("Failed to edit/send photo for ai_tools: %s", e)
+
+    # если файла нет или всё упало — хотя бы текстом
+    await _edit_text_safe(callback, caption, kb)
+
+
+# =============================================================================
+# /start и основной экран
+# =============================================================================
+async def frst_msg(message: Message, state: FSMContext, bot: Bot) -> None:
     await init_user_event(message)
 
     user_id = message.chat.id
-    skip = db.get_variable(user_id, 'skip_subscribe')
+    skip = db.get_variable(user_id, "skip_subscribe")
 
     if not skip:
         # проверка партнёрских подписок (если не подписан — покажем ссылки и выйдем)
         if not await ensure_partner_subs(bot, message, retry_callback_data="start_retry", columns=2):
             return
 
-    # Отправляем логотип и текст в ОДНОМ сообщении (фото + caption).
-    # Путь внутри DATA_DIR (без ведущего слэша).
-    logo_rel = "img/bot/logo1.jpg"
-    logo_path = get_file_path(logo_rel)
-    if Path(logo_path).exists():
-        try:
-            await message.answer_photo(
-                photo=FSInputFile(logo_path),
-                caption=frst_text,
-                reply_markup=frst_kb_inline
-            )
-            return  # уже отправили единое сообщение
-        except Exception as e:
-            # Не блокируем сценарий приветствия, просто логируем проблему и упадём в фоллбэк ниже.
-            logging.exception("Failed to send logo with caption: %s", e)
-    else:
-        logging.warning("Logo not found: %s (resolved from %s)", logo_path, logo_rel)
-
-    # Фоллбэк: если логотип не отправился — просто текст.
-    await message.answer(frst_text, reply_markup=frst_kb_inline)
+    # главный экран: фото + caption в одном сообщении
+    await _send_menu_with_logo(bot, user_id)
 
 
-async def ai_tools(callback: CallbackQuery):
+# =============================================================================
+# Колбэки
+# =============================================================================
+async def ai_tools(callback: CallbackQuery) -> None:
+    """
+    Переход в раздел «Продвинутые инструменты»:
+    меняем текущий экран на картинку ai_tools.png + подпись + клавиатуру.
+    """
     await init_user_event(callback)
-    await _edit_text_safe(callback, ai_tools_text, ai_tools_inline)
+    await _edit_or_replace_with_photo_cb(
+        callback=callback,
+        image_rel_path="img/bot/ai_tools.png",  # путь внутри DATA_DIR
+        caption=ai_tools_text,
+        kb=ai_tools_inline,
+    )
 
 
-# --- callbacks (все редактируют текущее сообщение) ---
-async def check_subscribe_retry(callback: CallbackQuery, state: FSMContext, bot: Bot):
+async def check_subscribe_retry(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     await init_user_event(callback)
 
     if not await ensure_partner_subs(bot, callback, retry_callback_data="start_retry", columns=2):
         await callback.answer("Похоже, ещё не на все каналы подписаны 🤏", show_alert=True)
         return
 
-    await _edit_text_safe(callback, frst_text, frst_kb_inline)
+    await _replace_with_menu_with_logo(callback)
 
 
-async def skip_subscribe(callback: CallbackQuery, state: FSMContext, bot: Bot):
+async def skip_subscribe(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     await init_user_event(callback)
 
     user_id = callback.from_user.id
-    db.set_variable(user_id, 'tokens', 0)
-    db.set_variable(user_id, 'skip_subscribe', True)
+    db.set_variable(user_id, "tokens", 0)
+    db.set_variable(user_id, "skip_subscribe", True)
 
-    await _edit_text_safe(callback, frst_text, frst_kb_inline)
+    await _replace_with_menu_with_logo(callback)
 
 
-async def show_rates(evt: Message | CallbackQuery):
+async def show_rates(evt: Message | CallbackQuery) -> None:
     if isinstance(evt, CallbackQuery):
         await init_user_event(evt)
         await _edit_text_safe(evt, info_rates_message, select_rates_inline)
     else:
         await init_user_event(evt)
-        await evt.answer(info_rates_message, reply_markup=select_rates_inline)
+        await evt.answer(info_rates_message,reply_markup=select_rates_inline)
 
 
-async def smm_content(callback: CallbackQuery):
+async def smm_content(callback: CallbackQuery) -> None:
     await init_user_event(callback)
-    await _edit_text_safe(callback, smm_description, get_smm_subscribe_inline)
+    await _edit_text_safe(callback, smm_description, inline.get_smm_subscribe_inline)
 
 
-async def my_profile(callback: CallbackQuery):
+async def my_profile(callback: CallbackQuery) -> None:
     await init_user_event(callback)
 
     info = adb.get_my_info(callback.from_user.id)
     if info:
         text = (
             f'Подписка: {"YES" if info[0] else "NO"}\n'
-            f'Дата оплаты подписки: {info[1] or "-"}\n'
-            f'Дата окончания подписки: {info[2] or "-"}'
+            f"Дата оплаты подписки: {info[1] or '-'}\n"
+            f"Дата окончания подписки: {info[2] or '-'}"
         )
         await _edit_text_safe(callback, text)
     else:
         await _edit_text_safe(callback, "Профиль не найден.")
 
 
-# --- commands (messages) ---
-
-async def sub_cmd(message: Message, state: FSMContext, bot: Bot):
+# =============================================================================
+# Команды
+# =============================================================================
+async def sub_cmd(message: Message, state: FSMContext, bot: Bot) -> None:
     await init_user_event(message)
     user_id = message.chat.id
     await message.answer(SUB_PAY, reply_markup=inline.sub(user_id))
 
 
-async def help_cmd(message: Message, state: FSMContext, bot: Bot):
+async def help_cmd(message: Message, state: FSMContext, bot: Bot) -> None:
     await init_user_event(message)
     await message.answer(HELP, reply_markup=inline.help())
 
 
-async def add_tokens(message: Message, state: FSMContext, bot: Bot):
+async def add_tokens(message: Message, state: FSMContext, bot: Bot) -> None:
     await init_user_event(message)
     user_id = message.chat.id
     tk.add_tokens(user_id, 100)
     await message.answer("Added 100 tokens, be happy")
 
 
-def router(rt: Router):
+# =============================================================================
+# Router
+# =============================================================================
+def router(rt: Router) -> None:
     # messages
     rt.message.register(frst_msg, CommandStart())
     rt.message.register(sub_cmd, Command("sub"))
@@ -250,10 +351,10 @@ def router(rt: Router):
     rt.message.register(frst_msg, Command("main"))
     rt.message.register(help_cmd, Command("support"))
 
-    # callbacks (все редактируют текущее сообщение)
-    rt.callback_query.register(ai_tools, F.data == 'nav.ai_tools')
-    rt.callback_query.register(check_subscribe_retry, F.data == 'start_retry')
-    rt.callback_query.register(skip_subscribe, F.data == 'skip_subscribe')
-    rt.callback_query.register(show_rates, F.data == 'show_rates')
-    rt.callback_query.register(my_profile, F.data == 'my_profile')
-    rt.callback_query.register(smm_content, F.data == 'smm_content')
+    # callbacks
+    rt.callback_query.register(ai_tools, F.data == "nav.ai_tools")
+    rt.callback_query.register(check_subscribe_retry, F.data == "start_retry")
+    rt.callback_query.register(skip_subscribe, F.data == "skip_subscribe")
+    rt.callback_query.register(show_rates, F.data == "show_rates")
+    rt.callback_query.register(my_profile, F.data == "my_profile")
+    rt.callback_query.register(smm_content, F.data == "smm_content")
