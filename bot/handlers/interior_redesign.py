@@ -72,7 +72,7 @@ async def start_redesign_flow(callback: CallbackQuery, state: FSMContext, bot: B
         await _edit_or_replace_with_photo(
             bot=bot,
             msg=callback.message,
-            photo_path=get_file_path('data/img/bot/int.jpg'),
+            photo_path=get_file_path('data/img/bot/design.jpg'),
             caption=text_get_photo_redesign(user_id),  # функция из texts, подставит {tokens_text}
             kb=design_home_inline
         )

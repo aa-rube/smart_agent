@@ -6,15 +6,6 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.utils import youmoney
 
 
-design_inline = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="🛋 Редизайн интерьера", callback_data="redesign")],
-        [InlineKeyboardButton(text="🆕 Дизайн с нуля", callback_data="0design")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")]
-    ]
-)
-
-
 # платежка
 def sub(user_id):
     payment_url = youmoney.create_pay(user_id)

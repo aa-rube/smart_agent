@@ -167,7 +167,7 @@ async def _send_menu_with_logo(bot: Bot, chat_id: int) -> None:
     Главный экран одним сообщением: фото-логотип + caption + клавиатура.
     Фоллбэк — просто текст.
     """
-    logo_rel = "img/bot/logo1.jpg"  # путь внутри DATA_DIR
+    logo_rel = "img/bot/logo.jpg"  # путь внутри DATA_DIR
     logo_path = get_file_path(logo_rel)
     if Path(logo_path).exists():
         try:
