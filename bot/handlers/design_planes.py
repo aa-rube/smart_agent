@@ -32,8 +32,6 @@ floor_plan_inline = InlineKeyboardMarkup(inline_keyboard=[
     ])
 
 
-
-
 # ===== helpers: редактирование текущего сообщения =====
 
 async def _edit_text_or_caption(msg: Message, text: str, kb=None) -> None:
@@ -256,14 +254,11 @@ async def handle_file(message: Message, state: FSMContext, bot: Bot):
 
 def router(rt: Router):
     rt.callback_query.register(design_home, F.data == 'nav.design_home')
-
     rt.callback_query.register(start_design_flow, F.data == "floor_plan")
-
     rt.message.register(
         handle_file,
         DesignStates.waiting_for_file,
         F.content_type.in_({ContentType.PHOTO, ContentType.DOCUMENT, ContentType.TEXT})
-    )
-
+        )
     rt.callback_query.register(handle_visualization_style, DesignStates.waiting_for_visualization_style)
     rt.callback_query.register(handle_style, DesignStates.waiting_for_style)

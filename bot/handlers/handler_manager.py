@@ -145,17 +145,25 @@ async def frst_msg(message: Message, state: FSMContext, bot: Bot):
         if not await ensure_partner_subs(bot, message, retry_callback_data="start_retry", columns=2):
             return
 
-    # Отправка логотипа: путь внутри DATA_DIR (без ведущего слэша).
+    # Отправляем логотип и текст в ОДНОМ сообщении (фото + caption).
+    # Путь внутри DATA_DIR (без ведущего слэша).
     logo_rel = "img/bot/logo1.jpg"
     logo_path = get_file_path(logo_rel)
-    try:
-        if Path(logo_path).exists():
-            await message.answer_photo(FSInputFile(logo_path))
-        else:
-            logging.warning("Logo not found: %s (resolved from %s)", logo_path, logo_rel)
-    except Exception as e:
-        # Не блокируем сценарий приветствия, просто логируем проблему.
-        logging.exception("Failed to send logo photo: %s", e)
+    if Path(logo_path).exists():
+        try:
+            await message.answer_photo(
+                photo=FSInputFile(logo_path),
+                caption=frst_text,
+                reply_markup=frst_kb_inline
+            )
+            return  # уже отправили единое сообщение
+        except Exception as e:
+            # Не блокируем сценарий приветствия, просто логируем проблему и упадём в фоллбэк ниже.
+            logging.exception("Failed to send logo with caption: %s", e)
+    else:
+        logging.warning("Logo not found: %s (resolved from %s)", logo_path, logo_rel)
+
+    # Фоллбэк: если логотип не отправился — просто текст.
     await message.answer(frst_text, reply_markup=frst_kb_inline)
 
 
