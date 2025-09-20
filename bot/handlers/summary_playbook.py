@@ -9,7 +9,7 @@ import aiohttp
 from aiogram import Router, F, Bot
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-    ContentType
+    ContentType, FSInputFile, InputMediaPhoto
 )
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
@@ -102,6 +102,31 @@ async def _edit_text_or_caption(msg: Message, text: str, kb: Optional[InlineKeyb
     except TelegramBadRequest:
         pass
 
+async def _edit_or_replace_with_photo_file(
+    bot: Bot, msg: Message, file_path: str, caption: str, kb: Optional[InlineKeyboardMarkup] = None
+) -> None:
+    """
+    Поменять контент текущего сообщения на фото с подписью (из файла).
+    Если сообщение было текстовым/другим типом — удаляем и отправляем фото заново.
+    """
+    try:
+        media = InputMediaPhoto(media=FSInputFile(file_path), caption=caption, parse_mode="Markdown")
+        await msg.edit_media(media=media, reply_markup=kb)
+        return
+    except TelegramBadRequest:
+        # не получилось заменить — удаляем и отправляем новое сообщение с фото
+        try:
+            await msg.delete()
+        except TelegramBadRequest:
+            pass
+        await bot.send_photo(
+            chat_id=msg.chat.id,
+            photo=FSInputFile(file_path),
+            caption=caption,
+            reply_markup=kb,
+            parse_mode="Markdown",
+        )
+
 def _split(text: str, limit: int = 3800) -> List[str]:
     if len(text) <= limit:
         return [text]
@@ -179,10 +204,16 @@ def _render_result(res: dict) -> str:
     return "\n".join(fmt)
 
 # ============= Экраны =============
-async def summary_home(callback: CallbackQuery, state: FSMContext):
+async def summary_home(callback: CallbackQuery, state: FSMContext, bot: Bot):
     await state.clear()
     await summary_repo.clear(callback.from_user.id)
-    await _edit_text_or_caption(callback.message, HOME_TEXT, kb_home())
+    # Пытаемся показать карточку раздела с картинкой; если файла нет — фолбэк на текст
+    rel = "img/bot/summary.png"           # data/img/bot/summary.png
+    path = get_file_path(rel)
+    if os.path.exists(path):
+        await _edit_or_replace_with_photo_file(bot, callback.message, path, HOME_TEXT, kb_home())
+    else:
+        await _edit_text_or_caption(callback.message, HOME_TEXT, kb_home())
     await callback.answer()
 
 # --- Текстовый поток ---
