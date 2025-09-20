@@ -36,8 +36,11 @@ frst_text = '''
 
 
 ai_tools_text = ''' 📐 *Генератор красивых планировок* (*β-версия*) — создавай наглядные схемы квартир и домов. 
+
 🛋️ *Генератор дизайна интерьера* — быстрые визуализации стиля и меблировки. 
+
 🤖 *ИИ для закрытия возражений* — готовые аргументы и ответы на частые сомнения клиентов. 
+
 ✍️ *ИИ для написания отзывов от клиентов* — шаблоны благодарственных сообщений. '''
 
 smm_description = '''
@@ -211,13 +214,6 @@ async def my_profile(callback: CallbackQuery):
         await _edit_text_safe(callback, "Профиль не найден.")
 
 
-async def design_home(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    await init_user_event(callback)
-
-    user_id = callback.from_user.id
-    await _edit_text_safe(callback, start_plan(user_id), design_inline)
-
-
 # --- commands (messages) ---
 
 async def sub_cmd(message: Message, state: FSMContext, bot: Bot):
@@ -248,7 +244,6 @@ def router(rt: Router):
 
     # callbacks (все редактируют текущее сообщение)
     rt.callback_query.register(ai_tools, F.data == 'nav.ai_tools')
-    rt.callback_query.register(design_home, F.data == 'nav.design_home')
     rt.callback_query.register(check_subscribe_retry, F.data == 'start_retry')
     rt.callback_query.register(skip_subscribe, F.data == 'skip_subscribe')
     rt.callback_query.register(show_rates, F.data == 'show_rates')

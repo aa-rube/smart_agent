@@ -19,6 +19,12 @@ from bot.utils.ai_processor import generate_design, download_image_from_url
 from bot.utils.file_utils import safe_remove
 
 
+
+design_home_inline = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")]
+    ])
+
+
 # ===== helpers: редактирование текущего сообщения =====
 async def _edit_text_or_caption(msg: Message, text: str, kb=None) -> None:
     """Обновить текст/подпись и клавиатуру текущего сообщения."""

@@ -20,6 +20,20 @@ from bot.utils.ai_processor import generate_floor_plan
 from bot.utils.file_utils import safe_remove
 
 
+start_ai_tools_inline = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")]
+    ]
+)
+
+
+floor_plan_inline = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="floor_plan")]
+    ])
+
+
+
+
 # ===== helpers: редактирование текущего сообщения =====
 
 async def _edit_text_or_caption(msg: Message, text: str, kb=None) -> None:
@@ -176,6 +190,11 @@ async def handle_style(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
 # ===== message (upload stage) =====
 
+async def design_home(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    await _edit_text_or_caption(start_plan(user_id), design_inline)
+
+
 async def handle_file(message: Message, state: FSMContext, bot: Bot):
     await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     user_id = message.from_user.id
@@ -235,6 +254,8 @@ async def handle_file(message: Message, state: FSMContext, bot: Bot):
 # ===== router =====
 
 def router(rt: Router):
+    rt.callback_query.register(design_home, F.data == 'nav.design_home')
+
     rt.callback_query.register(start_design_flow, F.data == "floor_plan")
 
     rt.message.register(
