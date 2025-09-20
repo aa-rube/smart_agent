@@ -14,7 +14,8 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import *
-from bot.config import EXECUTOR_BASE_URL
+from pathlib import Path
+from bot.config import EXECUTOR_BASE_URL, get_file_path
 from bot.handlers.feedback.model.review_payload import ReviewPayload
 from bot.utils.database import history_add, history_list, history_get
 from bot.states.states import FeedbackStates
@@ -539,6 +540,28 @@ def kb_menu_main() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=BTN_BACK, callback_data="nav.ai_tools")],
         ]
     )
+
+# =============================================================================
+# Media helpers (edit current message to photo or send new)
+# =============================================================================
+async def _edit_or_replace_with_photo(
+    *, bot: Bot, msg: Message, photo_path: str, caption: str, kb: Optional[InlineKeyboardMarkup] = None
+) -> None:
+    """
+    Пытаемся заменить текущее сообщение на фото с подписью.
+    Если нельзя редактировать (был текст/другая медиа) — удаляем и отправляем новое фото.
+    """
+    try:
+        media = InputMediaPhoto(media=FSInputFile(photo_path), caption=caption)
+        await msg.edit_media(media=media, reply_markup=kb)
+        return
+    except TelegramBadRequest:
+        # сообщение было не-фото → отправим новое
+        try:
+            await msg.delete()
+        except TelegramBadRequest:
+            pass
+        await bot.send_photo(chat_id=msg.chat.id, photo=FSInputFile(photo_path), caption=caption, reply_markup=kb)
 
 
 def kb_try_again_gen() -> InlineKeyboardMarkup:
@@ -1489,8 +1512,32 @@ async def history_back(callback: CallbackQuery, state: FSMContext):
 # =============================================================================
 async def go_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await ui_reply(callback, MAIN_MENU_TITLE, kb_menu_main(), state=state)
-    await callback.answer()
+    # Картинка-обложка меню «Отзывы»
+    rel = "data/img/bot/feed_back.png"  # можно и "img/bot/feed_back.png" — get_file_path поймёт оба варианта
+    path = get_file_path(rel)
+    bot = callback.bot
+    try:
+        if Path(path).exists():
+            await _edit_or_replace_with_photo(
+                bot=bot,
+                msg=callback.message,
+                photo_path=path,
+                caption=MAIN_MENU_TITLE,
+                kb=kb_menu_main(),
+            )
+        else:
+            logger.warning("Menu image not found: %s (resolved from %s)", path, rel)
+            # Фолбэк на текст, если файла нет
+            await ui_reply(callback, MAIN_MENU_TITLE, kb_menu_main(), state=state)
+    except Exception as e:
+        logger.exception("Failed to display menu image: %s", e)
+        await ui_reply(callback, MAIN_MENU_TITLE, kb_menu_main(), state=state)
+    finally:
+        # Безопасный ACK
+        try:
+            await callback.answer()
+        except TelegramBadRequest:
+            pass
 
 
 # =============================================================================
