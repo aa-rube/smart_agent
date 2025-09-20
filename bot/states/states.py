@@ -58,3 +58,29 @@ class SummaryStates(StatesGroup):
     waiting_for_text = State()
     waiting_for_audio = State()
     ready_to_generate = State()
+
+
+# ====== ADMIN ======
+class PriceStates(StatesGroup):
+    waiting_for_new_price = State()
+
+
+class ChangeStartText(StatesGroup):
+    GetText = State()
+
+
+class ChangeTextOfRates(StatesGroup):
+    GetText = State()
+
+
+class CreateNewPostState(StatesGroup):
+    GetText = State()
+
+
+class CreateMailing(StatesGroup):
+    GetText = State()
+
+
+class EditPostState(StatesGroup):
+    waiting_for_new_text = State()
+    message_id = State()

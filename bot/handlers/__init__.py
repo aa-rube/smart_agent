@@ -19,4 +19,4 @@ def register_routers(rt: Router):
     description_playbook.router(rt)
     objection_playbook.router(rt)
     summary_playbook.router(rt)
-    rt.include_router(admin.router)
+    admin.router(rt)
