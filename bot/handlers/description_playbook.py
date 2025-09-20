@@ -1,15 +1,19 @@
 # C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\description_playbook.py
 from __future__ import annotations
 from typing import Optional, List, Dict
+import os
 
 import aiohttp
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
+    FSInputFile, InputMediaPhoto
+)
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.enums.chat_action import ChatAction
 
-from bot.config import EXECUTOR_BASE_URL
+from bot.config import EXECUTOR_BASE_URL, get_file_path
 from bot.states.states import DescriptionStates
 from bot.utils.chat_actions import run_long_operation_with_action
 import executor.ai_config as ai_cfg  # варианты кнопок из конфига
@@ -30,6 +34,15 @@ ASK_COMMENT = (
 GENERATING = "⏳ Генерирую описание… это займёт до минуты."
 ERROR_TEXT = "😔 Не получилось сгенерировать описание. Попробуйте ещё раз."
 
+
+# ==========================
+# Клавиатуры
+# ==========================
+def kb_type()    -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_TYPES,   "desc_type_",   1)
+def kb_class()   -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_CLASSES,"desc_class_",  1)
+def kb_complex() -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_COMPLEX,"desc_complex_",1)
+def kb_area()    -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_AREA,   "desc_area_",   1)
+
 # ==========================
 # Утилиты редактирования
 # ==========================
@@ -47,6 +60,25 @@ async def _edit_text_or_caption(msg: Message, text: str, kb: Optional[InlineKeyb
         await msg.edit_reply_markup(reply_markup=kb)
     except TelegramBadRequest:
         pass
+
+async def _edit_or_replace_with_photo_file(
+    bot: Bot, msg: Message, file_path: str, caption: str, kb: Optional[InlineKeyboardMarkup] = None
+) -> None:
+    """
+    Поменять текущее сообщение на фото с подписью и клавиатурой.
+    Если редактирование невозможно (сообщение было текстовым и т.п.) — удаляем и шлём новое фото.
+    """
+    try:
+        media = InputMediaPhoto(media=FSInputFile(file_path), caption=caption)
+        await msg.edit_media(media=media, reply_markup=kb)
+        return
+    except TelegramBadRequest:
+        # удаляем старое и отправляем новое фото (визуально как «апдейт» экрана)
+        try:
+            await msg.delete()
+        except TelegramBadRequest:
+            pass
+        await bot.send_photo(chat_id=msg.chat.id, photo=FSInputFile(file_path), caption=caption, reply_markup=kb)
 
 def _split_for_telegram(text: str, limit: int = 4000) -> List[str]:
     """Нарезает ответ на куски <= limit символов по строкам/абзацам."""
@@ -83,11 +115,6 @@ def _kb_from_map(m: Dict[str, str], prefix: str, columns: int = 1) -> InlineKeyb
     # Кнопка «Назад» (если нужна единая навигация по боту)
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-def kb_type()    -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_TYPES,   "desc_type_",   1)
-def kb_class()   -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_CLASSES,"desc_class_",  1)
-def kb_complex() -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_COMPLEX,"desc_complex_",1)
-def kb_area()    -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_AREA,   "desc_area_",   1)
 
 def kb_skip_comment() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -128,10 +155,22 @@ async def _request_description_text(fields: dict, *, timeout_sec: int = 70) -> s
 # ==========================
 # Шаги (callbacks)
 # ==========================
-async def start_description_flow(cb: CallbackQuery, state: FSMContext):
-    """Старт: редактируем текущее сообщение → ввод типа объекта."""
+DESCR_HOME_IMG_REL = "img/bot/descr_home.jpg"  # ← при необходимости поменяйте имя файла
+
+async def start_description_flow(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    """
+    Старт: пытаемся заменить текущее сообщение на картинку (главный экран раздела)
+    с подписью (DESC_INTRO + ASK_TYPE) и кнопками. Если файла нет — фолбэк на текст.
+    """
     await state.clear()
-    await _edit_text_or_caption(cb.message, f"{DESC_INTRO}\n\n{ASK_TYPE}", kb_type())
+    caption = f"{DESC_INTRO}\n\n{ASK_TYPE}"
+    img_path = get_file_path(DESCR_HOME_IMG_REL)
+
+    if os.path.exists(img_path):
+        await _edit_or_replace_with_photo_file(bot, cb.message, img_path, caption, kb_type())
+    else:
+        await _edit_text_or_caption(cb.message, caption, kb_type())
+
     await state.set_state(DescriptionStates.waiting_for_type)
     await cb.answer()
 
