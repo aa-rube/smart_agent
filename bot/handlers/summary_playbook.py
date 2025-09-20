@@ -55,7 +55,7 @@ def kb_home() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🎧 Отправить аудио", callback_data="summary.audio"),
          InlineKeyboardButton(text="📝 Вставить текст", callback_data="summary.text")],
         [InlineKeyboardButton(text="🕘 История", callback_data="summary.history")],
-        [InlineKeyboardButton(text="⬅️ Назад в инструменты", callback_data="nav.ai_tools")]
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")]
     ])
 
 def kb_back_home() -> InlineKeyboardMarkup:
