@@ -20,6 +20,70 @@ from aiogram.exceptions import TelegramBadRequest
 from bot.utils.subscribe_partner_manager import ensure_partner_subs
 
 
+frst_text = '''
+👋 Привет!
+Добро пожаловать в *ИНСТРУМЕНТЫ РИЭЛТОРА*.
+Ты получил доступ к сервисам, которые помогают экономить время и привлекать больше клиентов.
+
+Выбери нужный инструмент 👇
+
+🏡 *Контент для соцсетей риелтора* — готовые публикации и идеи по подписке, чтобы регулярно вести свои соцсети.
+
+🧠 *Продвинутые инструменты* для лучших продаж и привлечения клиентов.
+
+✨ А так же наше закрытое сообщество для обсуждения, поддержки и обмена опытом.
+'''
+
+
+ai_tools_text = ''' 📐 *Генератор красивых планировок* (*β-версия*) — создавай наглядные схемы квартир и домов. 
+🛋️ *Генератор дизайна интерьера* — быстрые визуализации стиля и меблировки. 
+🤖 *ИИ для закрытия возражений* — готовые аргументы и ответы на частые сомнения клиентов. 
+✍️ *ИИ для написания отзывов от клиентов* — шаблоны благодарственных сообщений. '''
+
+smm_description = '''
+📲 Наша SMM-команда ежедневно готовит профессиональный контент, который остаётся только опубликовать.
+Никакого ИИ -  только опытные маркетологи с практикой в недвижимости.
+
+В течение месяца ты получишь:
+
+26 готовых тем для соцсетей и мессенджеров.
+
+Посты для ВКонтакте, Telegram, Instagram, Одноклассники.
+
+Сторис и истории для WhatsApp, Telegram, ВКонтакте, Instagram.
+
+Короткие ролики для WhatsApp, Telegram, Shorts, Reels, TikTok, ВКонтакте.
+
+💼 Всё создано, чтобы ты экономил время и получал заявки из своих соцсетей.
+
+🔐 Доступ только для подписчиков.
+Нажми «Оформить подписку» и пользуйся Всеми Инструментами Риэлтора без ограничений!
+'''
+
+
+
+# меню
+frst_kb_inline = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='🏡 Контент для соцсетей риелтора', callback_data='smm_content')],
+        [InlineKeyboardButton(text='🧠 Продвинутые инструменты', callback_data='nav.ai_tools')],
+
+        [InlineKeyboardButton(text='Наше сообщество', url='https://t.me/+DJfn6NyHmRAzMTdi')],
+        [InlineKeyboardButton(text='Тех. поддержка', url='https://t.me/dashaadminrealtor')],
+    ])
+
+ai_tools_inline = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📐 Генератор красивых планировок",         callback_data="floor_plan"), ],
+        [InlineKeyboardButton(text="🛋️ Генератор дизайна интерьера",           callback_data="nav.design_home"), ],
+        [InlineKeyboardButton(text="🤖 ИИ для закрытия возражений",            callback_data="nav.objection_start"), ],
+        [InlineKeyboardButton(text="✍️ ИИ для написания отзывов от клиентов",  callback_data="nav.feedback_home"), ],
+        [InlineKeyboardButton(text="✨ Summary диалога с клиентом",            callback_data="nav.summary_home"), ],
+        [InlineKeyboardButton(text="💎 Генератор продающих описаний объектов", callback_data="nav.descr_home"), ],
+        [InlineKeyboardButton(text="⬅️ Назад",                                 callback_data="start_retry")]
+    ])
+
+
+
+
 # --- единый хелпер инициализации для Message | CallbackQuery ---
 async def init_user_event(evt: Union[Message, CallbackQuery]) -> None:
     """
@@ -89,7 +153,7 @@ async def frst_msg(message: Message, state: FSMContext, bot: Bot):
     except Exception as e:
         # Не блокируем сценарий приветствия, просто логируем проблему.
         logging.exception("Failed to send logo photo: %s", e)
-    await message.answer(frst_text, reply_markup=inline.frst_kb_inline)
+    await message.answer(frst_text, reply_markup=frst_kb_inline)
 
 
 async def ai_tools(callback: CallbackQuery):
@@ -130,11 +194,6 @@ async def show_rates(evt: Message | CallbackQuery):
 async def smm_content(callback: CallbackQuery):
     await init_user_event(callback)
     await _edit_text_safe(callback, smm_description, get_smm_subscribe_inline)
-
-
-async def objection_start(callback: CallbackQuery):
-    await init_user_event(callback)
-    await _edit_text_safe(callback, objection_description, objection_playbook_inline)
 
 
 async def my_profile(callback: CallbackQuery):
@@ -195,4 +254,3 @@ def router(rt: Router):
     rt.callback_query.register(show_rates, F.data == 'show_rates')
     rt.callback_query.register(my_profile, F.data == 'my_profile')
     rt.callback_query.register(smm_content, F.data == 'smm_content')
-    rt.callback_query.register(objection_start, F.data == 'nav.objection_start')
