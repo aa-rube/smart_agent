@@ -192,7 +192,8 @@ async def handle_style(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
 async def design_home(callback: CallbackQuery):
     user_id = callback.from_user.id
-    await _edit_text_or_caption(start_plan(user_id), design_inline)
+    # _edit_text_or_caption ожидает msg: Message, затем text и kb
+    await _edit_text_or_caption(callback.message, start_plan(user_id), design_inline)
 
 
 async def handle_file(message: Message, state: FSMContext, bot: Bot):
