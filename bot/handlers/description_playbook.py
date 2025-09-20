@@ -155,7 +155,7 @@ async def _request_description_text(fields: dict, *, timeout_sec: int = 70) -> s
 # ==========================
 # Шаги (callbacks)
 # ==========================
-DESCR_HOME_IMG_REL = "img/bot/descr_home.jpg"  # ← при необходимости поменяйте имя файла
+DESCR_HOME_IMG_REL = "img/bot/descr_home.png"
 
 async def start_description_flow(cb: CallbackQuery, state: FSMContext, bot: Bot):
     """
