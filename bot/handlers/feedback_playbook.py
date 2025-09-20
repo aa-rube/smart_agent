@@ -586,7 +586,8 @@ def kb_situation_insert_btn(draft: str) -> InlineKeyboardMarkup:
     # Кнопка вставит @bot <draft> в поле ввода текущего чата
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Продолжить редактирование", switch_inline_query_current_chat=_inline_prefill_text(draft))],
+            [InlineKeyboardButton(text="Продолжить редактирование",
+                                  switch_inline_query_current_chat=_inline_prefill_text(draft))],
             [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.feedback_home")],
         ]
     )

@@ -133,13 +133,18 @@ def kb_mailing_item_controls(mailing_id: int) -> InlineKeyboardMarkup:
     )
 
 
-BTN_TEXT_EDIT = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="✍️ Редактировать", callback_data="admin.mailing.text.edit")],
-        [InlineKeyboardButton(text="💾 Сохранить", callback_data="admin.mailing.text.save")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin.mailing.text.back")],
-    ]
-)
+def kb_text_edit_prefilled(prefill: str) -> InlineKeyboardMarkup:
+    """
+    Клавиатура редактирования текста, где «Редактировать» подгружает текст
+    в поле ввода через switch_inline_query_current_chat.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✍️ Редактировать", switch_inline_query_current_chat=prefill or "")],
+            [InlineKeyboardButton(text="💾 Сохранить", callback_data="admin.mailing.text.save")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin.mailing.text.back")],
+        ]
+    )
 
 
 # =============================================================================
@@ -397,7 +402,7 @@ async def mailing_accept(message: Message, state: FSMContext):
         await state.update_data(edit_text_buffer=txt)
         await message.answer(
             "Текст обновлён в черновике. Нажмите «Сохранить», чтобы применить.",
-            reply_markup=BTN_TEXT_EDIT,
+            reply_markup=kb_text_edit_prefilled(txt),
         )
         return
 
@@ -691,12 +696,21 @@ async def start_edit_mailing_datetime(callback: CallbackQuery, state: FSMContext
     if not m:
         await callback.answer("Не найдено", show_alert=True)
         return
-    # не очищаем view_mailing_id, только отмечаем шаг редактирования
+
+    # помечаем шаг редактирования и запоминаем id
     await state.update_data(step="edit_datetime", edit_mailing_id=mailing_id, view_mailing_id=mailing_id)
+
+    # клавиатура "Назад" к карточке редактирования этого сообщения
+    back_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin.mailing.open:{mailing_id}")]
+        ]
+    )
+
     await _edit_or_send(
         callback.message,
         text="Введите новую дату/время публикации:\n<code>YYYY-MM-DD HH:MM</code> или <code>DD.MM.YYYY HH:MM</code>",
-        kb=None,
+        kb=back_kb,
         parse_mode="HTML",
     )
     await state.set_state(CreateMailing.GetText)
@@ -728,29 +742,13 @@ async def start_edit_mailing_text(callback: CallbackQuery, state: FSMContext):
             f"<b>Комментарий:</b>\nВведите новый текст, если хотите его изменить.\n"
             f"Или нажмите «Редактировать», чтобы изменить существующий."
         )
-    await _edit_or_send(callback.message, text=msg_text, kb=BTN_TEXT_EDIT, parse_mode="HTML")
+    # Кнопка «Редактировать» подгружает текущий текст/подпись в поле ввода
+    prefill = (m.get("payload") or {}).get("text", "") if m["content_type"] == "text" else (m.get("caption") or "")
+    await _edit_or_send(callback.message, text=msg_text, kb=kb_text_edit_prefilled(prefill), parse_mode="HTML")
     await callback.answer()
 
 
-async def text_edit_load(callback: CallbackQuery, state: FSMContext):
-    # «Редактировать»: выгружаем текущий текст в чат, админ редактирует и отправляет
-    data = await state.get_data()
-    if not data or data.get("step") != "edit_text":
-        await callback.answer("Нет активного редактирования.", show_alert=True)
-        return
-    mid = int(data.get("edit_mailing_id"))
-    m = adb.get_mailing_by_id(mid)
-    if not m:
-        await callback.answer("Не найдено", show_alert=True)
-        return
-    if m["content_type"] == "text":
-        cur_text = (m.get("payload") or {}).get("text", "") or ""
-    else:
-        cur_text = m.get("caption") or ""
-    await state.update_data(step="edit_text_wait")
-    combined = (cur_text or "— (пусто)") + "\n\n<b>Комментарий:</b> Отправьте изменённый текст ответным сообщением."
-    await _edit_or_send(callback.message, text=combined, kb=BTN_TEXT_EDIT, parse_mode="HTML")
-    await callback.answer()
+
 
 
 async def text_edit_save(callback: CallbackQuery, state: FSMContext):
@@ -998,7 +996,6 @@ def router(rt: Router):
     rt.callback_query.register(preview_mailing, F.data.startswith("admin.mailing.show:"))
     rt.callback_query.register(start_edit_mailing_datetime, F.data.startswith("admin.mailing.edit_dt:"))
     rt.callback_query.register(start_edit_mailing_text, F.data.startswith("admin.mailing.text:"))
-    rt.callback_query.register(text_edit_load, F.data == "admin.mailing.text.edit")
     rt.callback_query.register(text_edit_save, F.data == "admin.mailing.text.save")
     rt.callback_query.register(text_edit_back, F.data == "admin.mailing.text.back")
     rt.callback_query.register(start_edit_mailing_content, F.data.startswith("admin.mailing.content:"))
