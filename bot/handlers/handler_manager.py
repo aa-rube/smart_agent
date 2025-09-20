@@ -187,12 +187,45 @@ async def _send_menu_with_logo(bot: Bot, chat_id: int) -> None:
 
 
 async def _replace_with_menu_with_logo(callback: CallbackQuery) -> None:
-    """Удаляет текущее сообщение и отправляет главное меню (фото + caption)."""
-    try:
-        await callback.message.delete()
-    except TelegramBadRequest:
-        pass
+    """
+    Пытаемся обновить текущее сообщение на главное меню (фото + caption) БЕЗ удаления.
+    1) edit_media (если было фото)
+    2) edit_caption (если была подпись к медиа)
+    3) edit_text (если было текстовое)
+    Фоллбэк: отправляем новое сообщение с меню, старое не трогаем.
+    """
+    logo_rel = "img/bot/logo.jpg"
+    logo_path = get_file_path(logo_rel)
+
+    # Путь к картинке существует — пробуем заменить медиа
+    if Path(logo_path).exists():
+        try:
+            media = InputMediaPhoto(media=FSInputFile(logo_path), caption=frst_text)
+            await callback.message.edit_media(media=media, reply_markup=frst_kb_inline)
+            await callback.answer()
+            return
+        except TelegramBadRequest:
+            # Сообщение могло быть не медийным — пробуем обновить подпись
+            try:
+                await callback.message.edit_caption(caption=frst_text, reply_markup=frst_kb_inline)
+                await callback.answer()
+                return
+            except TelegramBadRequest:
+                # Как минимум заменим текст и клавиатуру
+                try:
+                    await callback.message.edit_text(frst_text, reply_markup=frst_kb_inline)
+                    await callback.answer()
+                    return
+                except TelegramBadRequest:
+                    pass
+        except Exception as e:
+            logging.exception("Failed to edit current message with logo: %s", e)
+    else:
+        logging.warning("Logo not found: %s (resolved from %s)", logo_path, logo_rel)
+
+    # Финальный фоллбэк — просто отправим новое сообщение с меню, не удаляя старое
     await _send_menu_with_logo(callback.bot, callback.message.chat.id)
+    await callback.answer()
 
 
 async def _edit_or_replace_with_photo_cb(
