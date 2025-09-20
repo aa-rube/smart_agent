@@ -1,8 +1,8 @@
-from typing import List, Dict, Union, Optional
+#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\keyboards\inline.py
 
+from typing import List, Dict, Union, Optional
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-
 from bot.utils import youmoney
 
 
@@ -12,37 +12,6 @@ def sub(user_id):
     print(payment_url)
     return InlineKeyboardMarkup(inline_keyboard=
                                 [[InlineKeyboardButton(text="📦 Оформить подписку", url=payment_url)]])
-
-
-# Клавиатура выбора тарифа
-get_smm_subscribe_inline = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")]
-    ]
-)
-
-select_rates_inline = InlineKeyboardMarkup(
-    inline_keyboard=[
-    [
-        InlineKeyboardButton(text='1 месяц', callback_data='Rate_1'),
-        InlineKeyboardButton(text='3 месяца', callback_data='Rate_2'),
-        InlineKeyboardButton(text='6 месяцев', callback_data='Rate_3')
-    ],
-    [
-        InlineKeyboardButton(text='12 месяцев', callback_data='Rate_4')
-    ],
-    [
-        InlineKeyboardButton(text='⬅️ Назад', callback_data='smm_content')
-    ]
-]
-)
-
-
-def help():
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🛟 Поддержка", url="https://t.me/admrecontent")
-    return builder.as_markup()
 
 
 def get_style_kb():
@@ -81,31 +50,6 @@ def get_visualization_style_kb():
     builder.button(text="🖊️ Скетч-стиль", callback_data="viz_sketch")
     builder.button(text="📸 Реалистичный стиль", callback_data="viz_realistic")
     return builder.as_markup()
-
-
-# Клавиатура изменения цены
-change_price_btn = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text='1 месяц', callback_data='SelectRate_1')],
-    [InlineKeyboardButton(text='6 месяцев', callback_data='SelectRate_3')],
-    [InlineKeyboardButton(text='3 месяца', callback_data='SelectRate_2')],
-    [InlineKeyboardButton(text='12 месяцев', callback_data='SelectRate_4')],
-])
-
-# Стартовое меню
-start_batons = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text='Подписаться на контент', callback_data='show_rates')],
-    [InlineKeyboardButton(text='Наше сообщество', url='https://t.me/+DJfn6NyHmRAzMTdi')],
-    [InlineKeyboardButton(text='Тех. поддержка', url='https://t.me/dashaadminrealtor')],
-    [InlineKeyboardButton(text='Мой профиль', callback_data='my_profile')],
-])
-
-# Кнопки для рассылки
-btn_mailing = InlineKeyboardMarkup(inline_keyboard=[
-    [
-        InlineKeyboardButton(text='Да, начать рассылку', callback_data='go_mailing'),
-        InlineKeyboardButton(text="Изменить сообщение", callback_data='stop_mailing'),
-    ]
-])
 
 
 # Динамическая генерация клавиатуры для редактирования постов

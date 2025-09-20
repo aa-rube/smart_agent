@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Union
 
 from aiogram import Router, F, Bot
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, Command
-from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -112,6 +112,21 @@ select_rates_inline = InlineKeyboardMarkup(
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="smm_content")],
     ]
 )
+
+get_smm_subscribe_inline = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")]
+    ]
+)
+
+
+def help_kb():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🛟 Поддержка", url="https://t.me/admrecontent")
+    return builder.as_markup()
+
+
 
 
 # =============================================================================
@@ -271,7 +286,7 @@ async def _edit_or_replace_with_photo_cb(
 # =============================================================================
 # /start и основной экран
 # =============================================================================
-async def frst_msg(message: Message, state: FSMContext, bot: Bot) -> None:
+async def frst_msg(message: Message, bot: Bot) -> None:
     await init_user_event(message)
 
     user_id = message.chat.id
@@ -303,7 +318,7 @@ async def ai_tools(callback: CallbackQuery) -> None:
     )
 
 
-async def check_subscribe_retry(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+async def check_subscribe_retry(callback: CallbackQuery, bot: Bot) -> None:
     await init_user_event(callback)
 
     if not await ensure_partner_subs(bot, callback, retry_callback_data="start_retry", columns=2):
@@ -313,7 +328,7 @@ async def check_subscribe_retry(callback: CallbackQuery, state: FSMContext, bot:
     await _replace_with_menu_with_logo(callback)
 
 
-async def skip_subscribe(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+async def skip_subscribe(callback: CallbackQuery) -> None:
     await init_user_event(callback)
 
     user_id = callback.from_user.id
@@ -334,7 +349,7 @@ async def show_rates(evt: Message | CallbackQuery) -> None:
 
 async def smm_content(callback: CallbackQuery) -> None:
     await init_user_event(callback)
-    await _edit_text_safe(callback, smm_description, inline.get_smm_subscribe_inline)
+    await _edit_text_safe(callback, smm_description, get_smm_subscribe_inline)
 
 
 async def my_profile(callback: CallbackQuery) -> None:
@@ -355,18 +370,18 @@ async def my_profile(callback: CallbackQuery) -> None:
 # =============================================================================
 # Команды
 # =============================================================================
-async def sub_cmd(message: Message, state: FSMContext, bot: Bot) -> None:
+async def sub_cmd(message: Message) -> None:
     await init_user_event(message)
     user_id = message.chat.id
     await message.answer(SUB_PAY, reply_markup=inline.sub(user_id))
 
 
-async def help_cmd(message: Message, state: FSMContext, bot: Bot) -> None:
+async def help_cmd(message: Message) -> None:
     await init_user_event(message)
-    await message.answer(HELP, reply_markup=inline.help())
+    await message.answer(HELP, reply_markup=help_kb())
 
 
-async def add_tokens(message: Message, state: FSMContext, bot: Bot) -> None:
+async def add_tokens(message: Message) -> None:
     await init_user_event(message)
     user_id = message.chat.id
     tk.add_tokens(user_id, 100)
