@@ -32,22 +32,19 @@ from bot.states.states import (
 # =============================================================================
 # UX тексты (относятся к админке)
 # =============================================================================
-
 ADMIN_MENU_TEXT = (
-    "--==AdminMenu==--\n"
+    "--==admin_menu==--\n"
     "<b>Список админ-команд</b>\n\n"
-    "/ChangeStartMessages — <b>Изменить текст приветственного сообщения</b>\n"
-    "/CreateNewPost — <b>Опубликовать новый пост</b>\n"
-    "/EditPost — <b>Редактировать последние 5 постов</b>\n"
-    "/GetAllUsers — <b>Получить данные всех пользователей</b>\n"
-    "/ChangeMessageOfRates — <b>Изменить текст после «Подписаться на контент»</b>\n"
-    "/ChangePrice — <b>Изменить цены тарифов</b>\n\n"
+    "/change_start_message — <b>Изменить текст приветственного сообщения</b>\n"
+    "/create_new_post — <b>Опубликовать новый пост</b>\n"
+    "/edit_post_ — <b>Редактировать последние 5 постов</b>\n"
+    "/change_message_of_rates — <b>Изменить текст после «Подписаться на контент»</b>\n"
+    "/change_price — <b>Изменить цены тарифов</b>\n\n"
     "Напоминания:\n"
     "/show_notifications — показать\n"
     "/set_notice (days) (message) — установить\n"
     "/delete_notification (days) — удалить\n"
 )
-
 NO_ACCESS_TEXT = "У вас нет доступа к админ панели."
 ASK_RATE_TO_CHANGE_TEXT = "Выберите тариф, который хотите поменять"
 ASK_NEW_PRICE_TEXT_TPL = "Введите новую цену для тарифа №{n} (текущая: {cur} руб.)"
@@ -427,26 +424,27 @@ async def check_sub_user_and_kick_for_group(bot: Bot):
 # РОУТЕР: регистрируем все обработчики в одном месте (как в примере)
 # =============================================================================
 
+
 def router(rt: Router):
     # Admin menu
-    rt.message.register(admin_menu, Command("AdminMenu"))
+    rt.message.register(admin_menu, Command("admin_menu"))
 
     # Change price
-    rt.message.register(change_price, Command("ChangePrice"))
+    rt.message.register(change_price, Command("change_price"))
     rt.callback_query.register(select_changed_price, F.data.startswith("SelectRate_"))
     rt.message.register(process_new_price, PriceStates.waiting_for_new_price, F.text)
 
     # Change texts
-    rt.message.register(change_message_of_rates, Command("ChangeMessageOfRates"))
+    rt.message.register(change_message_of_rates, Command("change_message_of_rates"))
     rt.message.register(change_text_of_rates_set_text, ChangeTextOfRates.GetText)  # без F.text — на случай вложений
-    rt.message.register(change_start_messages_start, Command("ChangeStartMessages"))
+    rt.message.register(change_start_messages_start, Command("change_start_message"))
     rt.message.register(change_start_messages_get_text, ChangeStartText.GetText, F.text)
 
     # Posts
-    rt.message.register(list_last_posts, Command("EditPost"))
+    rt.message.register(list_last_posts, Command("edit_post"))
     rt.callback_query.register(start_post_edit, F.data.startswith("edit_post_"))
     rt.message.register(apply_post_edit, EditPostState.waiting_for_new_text, F.text)
-    rt.message.register(create_new_post_get_text, Command("CreateNewPost"))
+    rt.message.register(create_new_post_get_text, Command("create_new_post"))
     rt.message.register(create_new_post, CreateNewPostState.GetText)  # принимаем текст/фото/видео
 
     # Mailing
