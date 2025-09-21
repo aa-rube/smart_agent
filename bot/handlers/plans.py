@@ -1,4 +1,4 @@
-# C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\interior.py
+# C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\plans.py
 import aiohttp
 import bot.utils.tokens as tk
 from aiogram import Router, F, Bot
