@@ -1,3 +1,4 @@
+#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\plans.py
 from __future__ import annotations
 
 import os
@@ -130,6 +131,12 @@ def kb_style_choices() -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=f"💎 {s}", callback_data=f"style_{s}")] for s in styles]
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def kb_result_back() -> InlineKeyboardMarkup:
+    """Клавиатура на экране результата, чтобы вернуться к загрузке нового плана."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="↩️ Загрузить другой план", callback_data="plan.back_to_upload")]]
+    )
 
 
 # ===========================
@@ -318,7 +325,7 @@ async def handle_style_plan(callback: CallbackQuery, state: FSMContext, bot: Bot
         )
 
         if image_url:
-            await _edit_or_replace_with_photo_url(bot, callback.message, image_url, TEXT_FINAL, kb=None)
+            await _edit_or_replace_with_photo_url(bot, callback.message, image_url, TEXT_FINAL, kb=kb_result_back())
         else:
             await _edit_text_or_caption(callback.message, SORRY_TRY_AGAIN, kb=kb_back_to_tools())
 
@@ -329,6 +336,32 @@ async def handle_style_plan(callback: CallbackQuery, state: FSMContext, bot: Bot
             else:
                 print(f"Не удалось удалить временный файл (занят): {plan_path}")
         await state.clear()
+
+
+async def handle_plan_back_to_upload(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """
+    Кнопка «Назад» с экрана результата:
+    1) убираем клавиатуру у сообщения, где нажали кнопку;
+    2) отправляем новое сообщение с экраном «загрузите план»;
+    3) переводим стейт в ожидание файла.
+    """
+    user_id = callback.from_user.id
+    # 1) убрать клавиатуру у текущего сообщения
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+
+    # 2) отправить новый экран загрузки
+    await state.set_state(FloorPlanStates.waiting_for_file)
+    await bot.send_photo(
+        chat_id=callback.message.chat.id,
+        photo=FSInputFile(get_file_path('img/bot/plan.jpg')),
+        caption=text_get_file_plan(user_id),
+        reply_markup=kb_back_to_tools(),
+    )
+
+    await callback.answer()
 
 
 # ===========================
@@ -349,3 +382,5 @@ def router(rt: Router):
     rt.callback_query.register(handle_visualization_style, FloorPlanStates.waiting_for_visualization_style)
     # Запуск генерации
     rt.callback_query.register(handle_style_plan, FloorPlanStates.waiting_for_style)
+    # Кнопка «назад к загрузке плана» с экрана результата
+    rt.callback_query.register(handle_plan_back_to_upload, F.data == "plan.back_to_upload")

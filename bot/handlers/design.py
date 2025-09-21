@@ -1,3 +1,4 @@
+#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\design.py
 from __future__ import annotations
 
 import os
@@ -150,6 +151,18 @@ def kb_furniture() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🛋 С мебелью", callback_data="furniture_yes")],
             [InlineKeyboardButton(text="▫️ Без мебели", callback_data="furniture_no")],
         ]
+    )
+
+def kb_result_back_redesign() -> InlineKeyboardMarkup:
+    """Кнопка на экране результата редизайна — вернуться к загрузке фото."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="↩️ Загрузить другое фото", callback_data="redesign.back_to_upload")]]
+    )
+
+def kb_result_back_zero() -> InlineKeyboardMarkup:
+    """Кнопка на экране результата zero-design — вернуться к загрузке фото."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="↩️ Загрузить другое фото", callback_data="zerodesign.back_to_upload")]]
     )
 
 
@@ -351,7 +364,7 @@ async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot:
                     msg=callback.message,
                     file_path=tmp_path,
                     caption=TEXT_FINAL,
-                    kb=None
+                    kb=kb_result_back_redesign()
                 )
                 try: os.remove(tmp_path)
                 except OSError: pass
@@ -517,7 +530,7 @@ async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot
                     msg=callback.message,
                     file_path=tmp_path,
                     caption=TEXT_FINAL,
-                    kb=None
+                    kb=kb_result_back_zero()
                 )
                 try: os.remove(tmp_path)
                 except OSError: pass
@@ -544,6 +557,61 @@ async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot
 
 
 # =============================================================================
+# Back buttons from result → return to upload step
+# =============================================================================
+async def handle_redesign_back_to_upload(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """
+    Кнопка «Назад» с экрана результата редизайна:
+    1) убрать клавиатуру у текущего сообщения;
+    2) отправить экран «загрузите фото»;
+    3) выставить состояние ожидания файла.
+    """
+    user_id = callback.from_user.id
+    # 1) убрать клавиатуру
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+    # 2) отправить новый экран загрузки
+    await state.set_state(RedesignStates.waiting_for_file)
+    await bot.send_photo(
+        chat_id=callback.message.chat.id,
+        photo=FSInputFile(get_file_path('img/bot/design.jpg')),
+        caption=text_get_file_redesign(user_id),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")]]
+        ),
+    )
+    await callback.answer()
+
+
+async def handle_zero_back_to_upload(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """
+    Кнопка «Назад» с экрана результата zero-design:
+    1) убрать клавиатуру у текущего сообщения;
+    2) отправить экран «загрузите фото»;
+    3) выставить состояние ожидания файла.
+    """
+    user_id = callback.from_user.id
+    # 1) убрать клавиатуру
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
+    # 2) отправить новый экран загрузки
+    await state.set_state(ZeroDesignStates.waiting_for_file)
+    await bot.send_photo(
+        chat_id=callback.message.chat.id,
+        photo=FSInputFile(get_file_path('img/bot/zero_design.jpg')),
+        caption=text_get_file_zero(user_id),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")]]
+        ),
+    )
+    await callback.answer()
+
+
+# =============================================================================
 # Router
 # =============================================================================
 
@@ -560,6 +628,8 @@ def router(rt: Router):
     )
     rt.callback_query.register(handle_room_type_redesign, RedesignStates.waiting_for_room_type)
     rt.callback_query.register(handle_style_redesign, RedesignStates.waiting_for_style)
+    # Назад с результата к загрузке (редизайн)
+    rt.callback_query.register(handle_redesign_back_to_upload, F.data == "redesign.back_to_upload")
 
     # Дизайн с нуля
     rt.callback_query.register(start_zero_design_flow, F.data == "0design")
@@ -571,3 +641,5 @@ def router(rt: Router):
     rt.callback_query.register(handle_room_type_zero, ZeroDesignStates.waiting_for_room_type)
     rt.callback_query.register(handle_furniture_zero, ZeroDesignStates.waiting_for_furniture)
     rt.callback_query.register(handle_style_zero, ZeroDesignStates.waiting_for_style)
+    # Назад с результата к загрузке (zero-design)
+    rt.callback_query.register(handle_zero_back_to_upload, F.data == "zerodesign.back_to_upload")
