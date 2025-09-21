@@ -12,10 +12,14 @@ from bot.config import TOKEN
 import bot.utils.database as db
 import bot.utils.tokens as tk
 
+from bot.handlers.subscribe_handler import process_yookassa_webhook
+
+
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
 dp = Dispatcher(storage=MemoryStorage())
 setup(dp)
+
 
 
 async def yookassa_webhook_handler(request: web.Request):
@@ -23,25 +27,11 @@ async def yookassa_webhook_handler(request: web.Request):
         data = await request.json()
         logging.info(f"YooKassa webhook received: {data}")
 
-        if data.get("object", {}).get("status") == "succeeded":
-            payment_info = data["object"]
-
-            user_id = int(payment_info["metadata"]["user_id"])
-            amount = float(payment_info["amount"]["value"])
-
-            logging.info(f"Successful payment from user_id: {user_id} for amount: {amount}")
-
-            # гарантируем существование пользователя и дефолтов
-            db.check_and_add_user(user_id)
-
-            tk.add_tokens(user_id, 100)
-            db.set_variable(user_id, "have_sub", "1")
-
-            await bot.send_message(
-                chat_id=user_id,
-                text=f"✅ Ваша оплата на сумму {amount} руб. прошла успешно!"
-            )
-        return web.Response(status=200)
+        # Централизованный вызов
+        status, msg = await process_yookassa_webhook(bot, data)
+        if status != 200:
+            logging.warning("Webhook not OK: %s", msg)
+        return web.Response(status=status)
 
     except Exception as e:
         logging.error(f"Error processing YooKassa webhook: {e}")

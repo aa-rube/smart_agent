@@ -22,8 +22,8 @@ import bot.utils.admin_db as adb
 import bot.utils.database as db
 import bot.utils.tokens as tk
 from bot.config import get_file_path
-import bot.keyboards.inline as inline  # для inline.sub() и inline.help()
 from bot.utils.subscribe_partner_manager import ensure_partner_subs
+from bot.handlers.subscribe_handler import show_rates as show_rates_handler
 
 
 # =============================================================================
@@ -60,21 +60,6 @@ smm_description = (
 )
 
 HELP = "🆘 Нажмите на кнопку, чтобы обратиться в поддержку 👇"
-SUB_PAY = (
-    "🪫 Упс… Лимит токенов исчерпан — теперь нужно обновить подписку.\n\n"
-    "📦* Что даёт подписка:*\n"
-    " — Пакет из 100 любых генераций\n"
-    " — Доступ ко всем инструментам\n"
-    "Стоимость пакета всего 2500 рублей!"
-)
-
-info_rates_message =  """
-Тут вы можете приобрести нашу подписку по тарифам:
-1 месяц / 2.500₽
-3 месяца / 6.500₽ (скидка 10🔥)
-6 месяцев / 12.500₽ (скидка 15🔥)
-12 месяцев / 24.000₽ (скидка 20🔥)
-"""
 
 
 # =============================================================================
@@ -101,17 +86,6 @@ ai_tools_inline = InlineKeyboardMarkup(
     ]
 )
 
-select_rates_inline = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [
-            InlineKeyboardButton(text="1 месяц", callback_data="Rate_1"),
-            InlineKeyboardButton(text="3 месяца", callback_data="Rate_2"),
-            InlineKeyboardButton(text="6 месяцев", callback_data="Rate_3"),
-        ],
-        [InlineKeyboardButton(text="12 месяцев", callback_data="Rate_4")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="smm_content")],
-    ]
-)
 
 get_smm_subscribe_inline = InlineKeyboardMarkup(
     inline_keyboard=[
@@ -338,15 +312,6 @@ async def skip_subscribe(callback: CallbackQuery) -> None:
     await _replace_with_menu_with_logo(callback)
 
 
-async def show_rates(evt: Message | CallbackQuery) -> None:
-    if isinstance(evt, CallbackQuery):
-        await init_user_event(evt)
-        await _edit_text_safe(evt, info_rates_message, select_rates_inline)
-    else:
-        await init_user_event(evt)
-        await evt.answer(info_rates_message,reply_markup=select_rates_inline)
-
-
 async def smm_content(callback: CallbackQuery) -> None:
     await init_user_event(callback)
     await _edit_text_safe(callback, smm_description, get_smm_subscribe_inline)
@@ -372,8 +337,8 @@ async def my_profile(callback: CallbackQuery) -> None:
 # =============================================================================
 async def sub_cmd(message: Message) -> None:
     await init_user_event(message)
-    user_id = message.chat.id
-    await message.answer(SUB_PAY, reply_markup=inline.sub(user_id))
+    # централизованный показ тарифов/оплаты
+    await show_rates_handler(message)
 
 
 async def help_cmd(message: Message) -> None:
@@ -403,6 +368,5 @@ def router(rt: Router) -> None:
     rt.callback_query.register(ai_tools, F.data == "nav.ai_tools")
     rt.callback_query.register(check_subscribe_retry, F.data == "start_retry")
     rt.callback_query.register(skip_subscribe, F.data == "skip_subscribe")
-    rt.callback_query.register(show_rates, F.data == "show_rates")
     rt.callback_query.register(my_profile, F.data == "my_profile")
     rt.callback_query.register(smm_content, F.data == "smm_content")

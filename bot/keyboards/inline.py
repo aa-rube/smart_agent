@@ -3,15 +3,6 @@
 from typing import List, Dict, Union, Optional
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from bot.utils import youmoney
-
-
-# платежка
-def sub(user_id):
-    payment_url = youmoney.create_pay(user_id)
-    print(payment_url)
-    return InlineKeyboardMarkup(inline_keyboard=
-                                [[InlineKeyboardButton(text="📦 Оформить подписку", url=payment_url)]])
 
 
 def get_style_kb():

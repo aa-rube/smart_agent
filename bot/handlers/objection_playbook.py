@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from typing import Optional, List
+import logging
+from pathlib import Path
 
 import aiohttp
 from aiogram import Router, F, Bot
@@ -13,9 +15,11 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
+    FSInputFile,
+    InputMediaPhoto,
 )
 
-from bot.config import EXECUTOR_BASE_URL
+from bot.config import EXECUTOR_BASE_URL, get_file_path
 from bot.states.states import ObjectionStates
 from bot.utils.chat_actions import run_long_operation_with_action
 
@@ -120,6 +124,54 @@ def _split_for_telegram(text: str, limit: int = 4000) -> List[str]:
     return parts
 
 # ============================================================================
+# Редактирование с картинкой (фото + caption) с фоллбэками
+# ============================================================================
+
+async def _edit_or_replace_with_photo_cb(
+    callback: CallbackQuery,
+    image_rel_path: str,
+    caption: str,
+    kb: InlineKeyboardMarkup | None = None,
+) -> None:
+    """
+    Пытаемся заменить текущий экран на фото с подписью:
+    1) edit_media (если сообщение медийное)
+    2) если было текстовым — удаляем его и отправляем новое фото
+    3) если файла нет/ошибка — хотя бы обновим текст/клавиатуру
+    """
+    img_path = get_file_path(image_rel_path)
+    if Path(img_path).exists():
+        try:
+            media = InputMediaPhoto(media=FSInputFile(img_path), caption=caption, parse_mode="Markdown")
+            await callback.message.edit_media(media=media, reply_markup=kb)
+            await callback.answer()
+            return
+        except TelegramBadRequest:
+            # Было текстовое сообщение — удаляем и отправляем новое фото
+            try:
+                await callback.message.delete()
+            except TelegramBadRequest:
+                pass
+            try:
+                await callback.bot.send_photo(
+                    chat_id=callback.message.chat.id,
+                    photo=FSInputFile(img_path),
+                    caption=caption,
+                    reply_markup=kb,
+                    parse_mode="Markdown",
+                )
+                await callback.answer()
+                return
+            except Exception as e:
+                logging.exception("Failed to send objection_home photo: %s", e)
+        except Exception as e:
+            logging.exception("Failed to edit objection_home media: %s", e)
+
+    # Фоллбэк — обновим хотя бы текст текущего сообщения
+    await _edit_text_or_caption(callback.message, caption, kb)
+    await callback.answer()
+
+# ============================================================================
 # HTTP-клиент к контроллеру
 # ============================================================================
 
@@ -156,8 +208,12 @@ async def objection_home(callback: CallbackQuery, state: FSMContext):
     Домашний экран раздела «Закрытие возражений».
     """
     await state.clear()
-    await _edit_text_or_caption(callback.message, OBJECTION_HOME_TEXT, kb_home_entry())
-    await callback.answer()
+    await _edit_or_replace_with_photo_cb(
+        callback=callback,
+        image_rel_path="img/bot/objection.png",
+        caption=OBJECTION_HOME_TEXT,
+        kb=kb_home_entry(),
+    )
 
 async def start_objection_flow(callback: CallbackQuery, state: FSMContext):
     """

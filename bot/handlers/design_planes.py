@@ -29,7 +29,6 @@ from bot.utils.ai_processor import (
     download_image_from_url,     # загрузка результата по URL (Zero-Design)
 )
 from bot.utils.file_utils import safe_remove
-from bot.utils import youmoney
 
 
 # =============================================================================
@@ -139,6 +138,11 @@ SUB_PAY = """
 # КЛАВИАТУРЫ (ТОЛЬКО ДЛЯ БЛОКА ДИЗАЙНА)
 # =============================================================================
 
+# Единая кнопка для перехода к тарифам/оплате (централизовано в subscribe_handler)
+SUBSCRIBE_KB = InlineKeyboardMarkup(
+    inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
+)
+
 def kb_design_home() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -191,12 +195,6 @@ def kb_furniture() -> InlineKeyboardMarkup:
         ]
     )
 
-
-def kb_subscribe(user_id: int) -> InlineKeyboardMarkup:
-    url = youmoney.create_pay(user_id)
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", url=url)]]
-    )
 
 
 def kb_back_to_tools() -> InlineKeyboardMarkup:
@@ -307,9 +305,9 @@ async def start_design_flow(callback: CallbackQuery, state: FSMContext, bot: Bot
         )
     else:
         if db.get_variable(user_id, 'have_sub') == '0':
-            await _edit_text_or_caption(callback.message, SUB_FREE, kb_subscribe(user_id))
+            await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
         else:
-            await _edit_text_or_caption(callback.message, SUB_PAY, kb_subscribe(user_id))
+            await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
 
     await callback.answer()
 
@@ -386,9 +384,9 @@ async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot:
     user_id = callback.from_user.id
     if tk.get_tokens(user_id) <= 0:
         if db.get_variable(user_id, 'have_sub') == '0':
-            await _edit_text_or_caption(callback.message, SUB_FREE, kb_subscribe(user_id))
+            await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
         else:
-            await _edit_text_or_caption(callback.message, SUB_PAY, kb_subscribe(user_id))
+            await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
         await state.clear()
         return
 
@@ -460,9 +458,9 @@ async def start_zero_design_flow(callback: CallbackQuery, state: FSMContext, bot
         )
     else:
         if db.get_variable(user_id, 'have_sub') == '0':
-            await _edit_text_or_caption(callback.message, SUB_FREE, kb_subscribe(user_id))
+            await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
         else:
-            await _edit_text_or_caption(callback.message, SUB_PAY, kb_subscribe(user_id))
+            await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
 
     await callback.answer()
 
@@ -542,9 +540,9 @@ async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot
 
     if tk.get_tokens(user_id) <= 0:
         if db.get_variable(user_id, 'have_sub') == '0':
-            await _edit_text_or_caption(callback.message, SUB_FREE, kb_subscribe(user_id))
+            await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
         else:
-            await _edit_text_or_caption(callback.message, SUB_PAY, kb_subscribe(user_id))
+            await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
         await state.clear()
         await callback.answer()
         return

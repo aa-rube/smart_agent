@@ -8,7 +8,8 @@ from . import (
     objection_playbook,
     description_playbook,
     feedback_playbook,
-    summary_playbook
+    summary_playbook,
+    subscribe_handler
 )
 
 def register_routers(rt: Router):
@@ -20,3 +21,4 @@ def register_routers(rt: Router):
     objection_playbook.router(rt)
     summary_playbook.router(rt)
     admin.router(rt)
+    subscribe_handler.router(rt)
