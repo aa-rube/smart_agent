@@ -1,4 +1,11 @@
 # C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\description_playbook.py
+# секрет офигенного бота: тебе не нужен якорь.
+# Пользуйся такой схемой:
+# -если callback -> обновляем сообщение, msg_id берем из update
+# -если обычный text_message, command -> отправляй новое сообщение.
+# Используй fallback если изменить не удалось.
+# Все, никаких anchors которые нужно настраивать, никаких залипаний, кучи сообщение и мисс-кликов.
+
 from __future__ import annotations
 from typing import Optional, List, Dict
 import os
