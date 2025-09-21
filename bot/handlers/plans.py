@@ -17,7 +17,7 @@ from aiogram.exceptions import TelegramBadRequest
 import bot.utils.database as db
 from bot.config import get_file_path
 from bot.utils.database import is_trial_active, trial_remaining_hours
-from bot.states.states import DesignStates  # используем как состояния для блока планировок
+from bot.states.states import FloorPlanStates
 from executor.prompt_factory import create_floor_plan_prompt
 from bot.utils.chat_actions import run_long_operation_with_action
 from bot.utils.ai_processor import generate_floor_plan
@@ -193,7 +193,7 @@ async def start_plans_flow(callback: CallbackQuery, state: FSMContext, bot: Bot)
     user_id = callback.message.chat.id
 
     if _has_access(user_id):
-        await state.set_state(DesignStates.waiting_for_file)
+        await state.set_state(FloorPlanStates.waiting_for_file)
         await _edit_or_replace_with_photo_file(
             bot=bot,
             msg=callback.message,
@@ -267,14 +267,14 @@ async def handle_plan_file(message: Message, state: FSMContext, bot: Bot):
 
         await state.update_data(plan_path=plan_path)
         await message.answer(TEXT_GET_VIZ, reply_markup=kb_visualization_style())
-        await state.set_state(DesignStates.waiting_for_visualization_style)
+        await state.set_state(FloorPlanStates.waiting_for_visualization_style)
 
 
 async def handle_visualization_style(callback: CallbackQuery, state: FSMContext):
     viz_style = "sketch" if callback.data == "viz_sketch" else "realistic"
     await state.update_data(visualization_style=viz_style)
     await callback.message.edit_text(TEXT_GET_STYLE, reply_markup=kb_style_choices())
-    await state.set_state(DesignStates.waiting_for_style)
+    await state.set_state(FloorPlanStates.waiting_for_style)
     await callback.answer()
 
 
@@ -342,10 +342,10 @@ def router(rt: Router):
     # Загрузка файла → выбор виз-стиля
     rt.message.register(
         handle_plan_file,
-        DesignStates.waiting_for_file,
+        FloorPlanStates.waiting_for_file,
         F.content_type.in_({ContentType.PHOTO, ContentType.DOCUMENT, ContentType.TEXT})
     )
     # Виз-стиль → интерьерный стиль
-    rt.callback_query.register(handle_visualization_style, DesignStates.waiting_for_visualization_style)
+    rt.callback_query.register(handle_visualization_style, FloorPlanStates.waiting_for_visualization_style)
     # Запуск генерации
-    rt.callback_query.register(handle_style_plan, DesignStates.waiting_for_style)
+    rt.callback_query.register(handle_style_plan, FloorPlanStates.waiting_for_style)

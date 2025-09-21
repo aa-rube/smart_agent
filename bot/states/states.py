@@ -1,5 +1,3 @@
-# C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\states\states.py
-
 from aiogram.fsm.state import State, StatesGroup
 
 
@@ -7,18 +5,21 @@ class States(StatesGroup):
     waiting_for_prompt = State()
 
 
-class DesignStates(StatesGroup):
-    waiting_for_file = State()
-    waiting_for_visualization_style = State()
-    waiting_for_style = State()
+# ====== ПЛАНИРОВКИ (визуализация плана/чертежа) ======
+class FloorPlanStates(StatesGroup):
+    waiting_for_file = State()                 # ждём план/чертёж (image/pdf/ссылка)
+    waiting_for_visualization_style = State()  # выбор: sketch | realistic
+    waiting_for_style = State()                # выбор интерьерного стиля
 
 
+# ====== ДИЗАЙН (редизайн по фото) ======
 class RedesignStates(StatesGroup):
-    waiting_for_photo = State()
-    waiting_for_room_type = State()
-    waiting_for_style = State()
+    waiting_for_file = State()        # было waiting_for_photo — унифицируем с ZeroDesign
+    waiting_for_room_type = State()   # выбор типа помещения
+    waiting_for_style = State()       # выбор интерьерного стиля
 
 
+# ====== ДИЗАЙН С НУЛЯ (zero-design) ======
 class ZeroDesignStates(StatesGroup):
     waiting_for_file = State()
     waiting_for_room_type = State()
@@ -26,6 +27,7 @@ class ZeroDesignStates(StatesGroup):
     waiting_for_style = State()
 
 
+# ====== ПРОЧЕЕ (как было) ======
 class ObjectionStates(StatesGroup):
     waiting_for_question = State()
 
@@ -36,6 +38,7 @@ class DescriptionStates(StatesGroup):
     waiting_for_complex = State()
     waiting_for_area = State()
     waiting_for_comment = State()
+
 
 class FeedbackStates(StatesGroup):
     waiting_client = State()
@@ -53,6 +56,7 @@ class FeedbackStates(StatesGroup):
     history_search = State()
     waiting_tone = State()
     waiting_length = State()
+
 
 class SummaryStates(StatesGroup):
     waiting_for_text = State()
@@ -84,6 +88,7 @@ class CreateMailing(StatesGroup):
 class EditPostState(StatesGroup):
     waiting_for_new_text = State()
     message_id = State()
+
 
 class CalendarStates(StatesGroup):
     Selecting = State()  # показан календарь, ждём cal.date:YYYY-MM-DD
