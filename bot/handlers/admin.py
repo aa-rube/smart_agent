@@ -1,4 +1,11 @@
 # smart_agent/bot/handlers/admin.py
+# секрет офигенного бота: тебе не нужен якорь.
+# Пользуйся такой схемой:
+# -если callback -> обновляем сообщение, msg_id берем из update
+# -если обычный text_message, command -> отправляй новое сообщение.
+# Используй fallback если изменить не удалось.
+# Все, никаких anchors которые нужно настраивать, никаких залипаний, кучи сообщение и мисс-кликов.
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -20,19 +27,20 @@ from aiogram.types import (
 import bot.config as cfg
 import bot.utils.admin_db as adb
 from bot.states.states import CreateMailing  # оставляем только рассылку
+from bot.handlers.calendar_picker import open_calendar, router as calendar_router  # КАЛЕНДАРЬ
 
 
 # =============================================================================
 # UX тексты
 # =============================================================================
 ADMIN_MENU_TEXT = (
-    "<b>Админ-меню</b>\n\n"
+    "<b>Рассылка контента по подписке.</b>\n\n"
     "Выберите действие кнопкой ниже."
 )
 NO_ACCESS_TEXT = "У вас нет доступа к админ панели."
 
 ASK_MAILING_CONTENT = (
-    "Отправьте сообщение для рассылки.\n\n"
+    "Отправьте новое сообщение для рассылки.\n\n"
     "Поддерживается: текст, фото, <u>альбом фото</u>, видео, аудио, GIF/анимация.\n"
     "Если отправляете <b>альбом</b>, загрузите все фото одним пакетом, затем нажмите «Далее». "
     "Подпись (caption) возьмём с первого медиа с подписью."
@@ -120,7 +128,13 @@ BTN_ALBUM_FLOW_EDIT = InlineKeyboardMarkup(
 )
 
 
-def kb_mailing_item_controls(mailing_id: int) -> InlineKeyboardMarkup:
+def kb_mailing_item_controls(mailing_id: int, origin: str = "list") -> InlineKeyboardMarkup:
+    """
+    origin:
+      - "list"   -> назад в список рассылок
+      - "create" -> назад на экран создания новой записи (отправка контента)
+    """
+    back_cb = "admin.mailing.list" if origin != "create" else "admin.mailing"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="👁 Показать", callback_data=f"admin.mailing.show:{mailing_id}")],
@@ -128,7 +142,7 @@ def kb_mailing_item_controls(mailing_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="✏️ Изменить текст", callback_data=f"admin.mailing.text:{mailing_id}")],
             [InlineKeyboardButton(text="🖼 Изменить контент", callback_data=f"admin.mailing.content:{mailing_id}")],
             [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"admin.mailing.delete:{mailing_id}")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin.mailing.list")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)],
         ]
     )
 
@@ -145,6 +159,30 @@ def kb_text_edit_prefilled(prefill: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin.mailing.text.back")],
         ]
     )
+
+
+def kb_content_edit_open(mailing_id: int, keep_origin: bool = False) -> InlineKeyboardMarkup:
+    """
+    Меню при открытии редактирования контента:
+    • Удалить контент
+    • Назад (без изменений)
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🗑 Удалить контент", callback_data=f"admin.mailing.content.del:{mailing_id}")],
+            [InlineKeyboardButton(
+                text="⬅️ Назад",
+                callback_data=(f"admin.mailing.open.keep:{mailing_id}" if keep_origin else f"admin.mailing.open:{mailing_id}")
+            )],
+        ]
+    )
+
+BTN_CONTENT_SAVE_BACK = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="💾 Сохранить", callback_data="admin.mailing.content.save")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin.mailing.content.back")],
+    ]
+)
 
 
 # =============================================================================
@@ -266,7 +304,7 @@ async def _edit_or_send(msg: Message, *, text: str, kb: InlineKeyboardMarkup | N
         # если редактировать нельзя — шлём новое
         await msg.answer(text, reply_markup=kb, parse_mode=parse_mode)
 
-async def _render_mailing_item(message: Message, mailing_id: int) -> None:
+async def _render_mailing_item(message: Message, mailing_id: int, origin: str = "list") -> None:
     """
     Единая отрисовка карточки рассылки (чтобы возвращаться в то же место после любых правок).
     """
@@ -286,7 +324,7 @@ async def _render_mailing_item(message: Message, mailing_id: int) -> None:
     await _edit_or_send(
         message,
         text=f"<b>ID:</b> {mailing_id}\n<b>Когда:</b> {dt}\n<b>Тип:</b> <code>{ctype}</code>\n{extra}",
-        kb=kb_mailing_item_controls(mailing_id),
+        kb=kb_mailing_item_controls(mailing_id, origin=origin),
         parse_mode="HTML",
     )
 
@@ -340,13 +378,7 @@ async def album_done(callback: CallbackQuery, state: FSMContext):
     if not items:
         await callback.answer("Альбом пуст — пришлите фото.", show_alert=True)
         return
-    # Сохраняем как контент и просим дату
-    await state.update_data(
-        step="await_datetime",
-        content_type="media_group",
-        payload={"file_ids": items},
-    )
-    # default_dt = (max publish_at from DB) + 1 day
+    # Создаём запись сразу с дефолтной датой и открываем карточку
     last = adb.get_last_publish_at()
     def_dt: datetime
     if last:
@@ -361,15 +393,19 @@ async def album_done(callback: CallbackQuery, state: FSMContext):
     else:
         def_dt = datetime.now()
     def_dt = def_dt + timedelta(days=1)
-    def_str = def_dt.strftime("%Y-%m-%d %H:%M")
-    await state.update_data(default_publish_at=def_str)
-    await _edit_or_send(
-        callback.message,
-        text=ASK_MAILING_DATETIME.format(default_dt=def_str),
-        kb=kb_use_default_dt(def_str),
-        parse_mode="HTML",
+    publish_at_iso = def_dt.isoformat(timespec="minutes")
+    caption = data.get("caption")
+    mailing_id = adb.create_scheduled_mailing(
+        content_type="media_group",
+        caption=caption,
+        payload={"file_ids": items},
+        publish_at=publish_at_iso,
+        mailing_on=True,
     )
-    await callback.answer()
+    await state.clear()
+    await state.update_data(view_mailing_id=mailing_id, view_origin="create")
+    await _render_mailing_item(callback.message, mailing_id, origin="create")
+    await callback.answer("Черновик создан. Можете изменить дату/контент в карточке.")
 
 
 async def mailing_accept(message: Message, state: FSMContext):
@@ -392,7 +428,9 @@ async def mailing_accept(message: Message, state: FSMContext):
         mid = int(data.get("edit_mailing_id"))
         adb.update_mailing_publish_at(mid, dt.isoformat(timespec="minutes"))
         await message.answer("Дата/время обновлены.")
-        await _render_mailing_item(message, mid)
+        data2 = await state.get_data()
+        origin = (data2 or {}).get("view_origin", "list")
+        await _render_mailing_item(message, mid, origin=origin)
         await state.update_data(step=None)
         return
 
@@ -408,7 +446,7 @@ async def mailing_accept(message: Message, state: FSMContext):
 
     # Редактирование: замена контента
     if step == "edit_content_wait":
-        # Альбом для редактирования?
+        # Альбом для редактирования? Копим фото, предлагаем «Сохранить/Назад».
         if message.media_group_id:
             gid = message.media_group_id
             st_gid = data.get("album_gid")
@@ -421,43 +459,39 @@ async def mailing_accept(message: Message, state: FSMContext):
                     caption = message.caption
             else:
                 await message.answer(
-                    "В альбоме допустимы только фото. Повторите отправку.",
-                    reply_markup=BTN_ALBUM_FLOW_EDIT,
+                    "В альбоме допустимы только фото. Пришлите фото либо используйте «Назад».",
+                    reply_markup=BTN_CONTENT_SAVE_BACK,
                 )
                 return
             if st_gid is None:
                 await state.update_data(album_gid=gid)
             elif st_gid != gid:
-                await message.answer(
-                    "Получен другой альбом — завершите текущий кнопкой «Далее».",
-                    reply_markup=BTN_ALBUM_FLOW_EDIT,
-                )
-                return
-            await state.update_data(album_items=items, caption=caption)
+                # новая медиагруппа — начинаем новый набор
+                await state.update_data(album_gid=gid, album_items=[], caption=None)
+                items = [fid]
+            await state.update_data(album_items=items, caption=caption, new_content=None)
             await message.answer(
-                f"Принято фото: {len(items)}. Нажмите «Далее», когда закончите.",
-                reply_markup=BTN_ALBUM_FLOW_EDIT,
+                f"Добавлено фото: {len(items)}. Нажмите «Сохранить», когда закончите.",
+                reply_markup=BTN_CONTENT_SAVE_BACK,
             )
             return
 
-        # Одиночный контент
+        # Одиночный контент — кладём в буфер, ждём «Сохранить/Назад»
         single = _extract_single_content(message)
         if not single:
-            await message.answer("Пришлите новый контент или альбом.", reply_markup=kb_back_admin())
+            await message.answer("Пришлите новый контент или используйте «Назад».", reply_markup=BTN_CONTENT_SAVE_BACK)
             return
-        mid = int(data.get("edit_mailing_id"))
-        adb.update_mailing_payload(
-            mailing_id=mid,
-            content_type=single["content_type"],
-            payload=single["payload"],
+        await state.update_data(
+            new_content=single,
+            album_gid=None,
+            album_items=[],
             caption=single.get("caption"),
         )
-        await state.update_data(step=None, album_gid=None, album_items=[], caption=None)
-        await message.answer("Контент обновлён.")
-        await _render_mailing_item(message, mid)
+        await message.answer("Новый контент загружен. Нажмите «Сохранить», чтобы применить, или «Назад».",
+                             reply_markup=BTN_CONTENT_SAVE_BACK)
         return
 
-    # 1) Сбор контента (создание)
+    # 1) Сбор контента (создание) — создаём запись сразу и открываем карточку
     if step in (None, "await_content"):
         # Альбом фото?
         if message.media_group_id:
@@ -500,13 +534,7 @@ async def mailing_accept(message: Message, state: FSMContext):
             await message.answer("Пришлите текст/медиа для рассылки.", reply_markup=kb_back_admin())
             return
 
-        await state.update_data(
-            step="await_datetime",
-            content_type=single["content_type"],
-            caption=single.get("caption"),
-            payload=single["payload"],
-        )
-        # default_dt = (max publish_at from DB) + 1 day
+        # Создаём запись сразу с дефолтной датой и открываем карточку
         last = adb.get_last_publish_at()
         def_dt: datetime
         if last:
@@ -521,13 +549,17 @@ async def mailing_accept(message: Message, state: FSMContext):
         else:
             def_dt = datetime.now()
         def_dt = def_dt + timedelta(days=1)
-        def_str = def_dt.strftime("%Y-%m-%d %H:%M")
-        await state.update_data(default_publish_at=def_str)
-        await message.answer(
-            ASK_MAILING_DATETIME.format(default_dt=def_str),
-            reply_markup=kb_use_default_dt(def_str),
-            parse_mode="HTML",
+        publish_at_iso = def_dt.isoformat(timespec="minutes")
+        mailing_id = adb.create_scheduled_mailing(
+            content_type=single["content_type"],
+            caption=single.get("caption"),
+            payload=single["payload"],
+            publish_at=publish_at_iso,
+            mailing_on=True,
         )
+        await state.clear()
+        await state.update_data(view_mailing_id=mailing_id, view_origin="create")
+        await _render_mailing_item(message, mailing_id, origin="create")
         return
 
     # 2) Ожидаем дату/время
@@ -594,7 +626,7 @@ async def go_mailing(callback: CallbackQuery, state: FSMContext):
         mailing_on=True,
     )
 
-    await callback.message.answer(f"{MAIL_SCHEDULED_OK}\nID: {mailing_id}", reply_markup=kb_back_admin())
+    await _edit_or_send(callback.message, text=f"{MAIL_SCHEDULED_OK}\nID: {mailing_id}", kb=kb_back_admin())
     await state.clear()
     await callback.answer()
 
@@ -644,7 +676,7 @@ async def open_mailing_list(callback: CallbackQuery):
         return
     items = adb.get_scheduled_mailings(limit=10)  # невыполненные
     if not items:
-        await callback.message.answer("Нет запланированных рассылок.", reply_markup=kb_back_admin())
+        await _edit_or_send(callback.message, text="Нет запланированных рассылок.", kb=kb_back_admin())
         await callback.answer()
         return
     kb_rows = []
@@ -667,12 +699,24 @@ async def open_mailing_item(callback: CallbackQuery, state: FSMContext):
         return
     # сохраняем текущий id в состоянии для возвращений "Назад"
     mailing_id = int(callback.data.split(":")[1])
+    await state.update_data(view_mailing_id=mailing_id, view_origin="list")
+    await _render_mailing_item(callback.message, mailing_id, origin="list")
+    await callback.answer()
+
+async def open_mailing_item_keep(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != cfg.ADMIN_ID:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    mailing_id = int(callback.data.split(":")[1])
+    # не трогаем view_origin, только обновляем текущий id
     await state.update_data(view_mailing_id=mailing_id)
-    await _render_mailing_item(callback.message, mailing_id)
+    data = await state.get_data()
+    origin = (data or {}).get("view_origin", "list")
+    await _render_mailing_item(callback.message, mailing_id, origin=origin)
     await callback.answer()
 
 
-async def preview_mailing(callback: CallbackQuery, bot: Bot):
+async def preview_mailing(callback: CallbackQuery, bot: Bot, state: FSMContext):
     if callback.from_user.id != cfg.ADMIN_ID:
         await callback.answer("Нет доступа", show_alert=True)
         return
@@ -682,8 +726,10 @@ async def preview_mailing(callback: CallbackQuery, bot: Bot):
         await callback.answer("Не найдено", show_alert=True)
         return
     await _preview_mailing_to_chat(m, callback.message.chat.id, bot)
-    # После превью оставляем на экране карточку с кнопками
-    await _render_mailing_item(callback.message, mailing_id)
+    # После превью оставляем карточку с нужной кнопкой «Назад»
+    data = await state.get_data()
+    origin = (data or {}).get("view_origin", "list")
+    await _render_mailing_item(callback.message, mailing_id, origin=origin)
     await callback.answer("Показано.")
 
 
@@ -703,7 +749,12 @@ async def start_edit_mailing_datetime(callback: CallbackQuery, state: FSMContext
     # клавиатура "Назад" к карточке редактирования этого сообщения
     back_kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin.mailing.open:{mailing_id}")]
+            [
+                InlineKeyboardButton(text="📅 Календарь", callback_data=f"admin.mailing.edit_dt.cal:{mailing_id}")
+            ],
+            [
+                InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin.mailing.open.keep:{mailing_id}")
+            ]
         ]
     )
 
@@ -716,6 +767,76 @@ async def start_edit_mailing_datetime(callback: CallbackQuery, state: FSMContext
     await state.set_state(CreateMailing.GetText)
     await callback.answer()
 
+async def start_edit_mailing_datetime_calendar(callback: CallbackQuery, state: FSMContext):
+    """Открыть календарик на дате текущей публикации."""
+    if callback.from_user.id != cfg.ADMIN_ID:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    mailing_id = int(callback.data.split(":")[1])
+    m = adb.get_mailing_by_id(mailing_id)
+    if not m:
+        await callback.answer("Не найдено", show_alert=True)
+        return
+    # парсим текущую дату публикации и открываем календарь на ней
+    pub = m["publish_at"].replace("T", " ")
+    base_dt = None
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            from datetime import datetime as _dt
+            base_dt = _dt.strptime(pub, fmt)
+            break
+        except Exception:
+            pass
+    from datetime import datetime as _dt
+    base_dt = base_dt or _dt.now()
+    # помним, что редактируем именно этот пост
+    await state.update_data(step="edit_datetime", edit_mailing_id=mailing_id, view_mailing_id=mailing_id)
+    # открыть календарь (он сам обработает навигацию; выбор дня вернётся как cal.date:YYYY-MM-DD)
+    await open_calendar(callback.message, base_dt.date())
+    await callback.answer()
+
+async def calendar_date_chosen(callback: CallbackQuery, state: FSMContext):
+    """
+    Поймали выбор даты из календаря: cal.date:YYYY-MM-DD
+    Обновляем дату публикации, сохраняя время (HH:MM) от текущей записи.
+    """
+    data = await state.get_data()
+    if (data or {}).get("step") != "edit_datetime":
+        # Клик не в контексте редактирования времени — игнор
+        await callback.answer("Сейчас не редактируем дату.", show_alert=False)
+        return
+    chosen = callback.data.split(":")[1]  # YYYY-MM-DD
+    mid = int((data or {}).get("edit_mailing_id", 0) or 0)
+    if not mid:
+        await callback.answer("Нет ID записи.", show_alert=True)
+        return
+    m = adb.get_mailing_by_id(mid)
+    if not m:
+        await callback.answer("Запись не найдена.", show_alert=True)
+        return
+    # сохраняем старое время (HH:MM), меняем только дату
+    old = m["publish_at"].replace("T", " ")
+    from datetime import datetime as _dt
+    old_dt = None
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            old_dt = _dt.strptime(old, fmt)
+            break
+        except Exception:
+            pass
+    if not old_dt:
+        old_dt = _dt.now()
+    hhmm = old_dt.strftime("%H:%M")
+    new_iso = f"{chosen} {hhmm}"
+    # сохраняем
+    from datetime import datetime as _dt2
+    new_dt = _dt2.strptime(new_iso, "%Y-%m-%d %H:%M")
+    adb.update_mailing_publish_at(mid, new_dt.isoformat(timespec="minutes"))
+    # перерисуем карточку
+    origin = (data or {}).get("view_origin", "list")
+    await _render_mailing_item(callback.message, mid, origin=origin)
+    await callback.answer("Дата обновлена.")
+
 
 async def start_edit_mailing_text(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != cfg.ADMIN_ID:
@@ -726,34 +847,40 @@ async def start_edit_mailing_text(callback: CallbackQuery, state: FSMContext):
     if not m:
         await callback.answer("Не найдено", show_alert=True)
         return
-    await state.update_data(step="edit_text", edit_mailing_id=mailing_id, edit_text_buffer=None, view_mailing_id=mailing_id)
+    # сразу ждём новый текст (входящие сообщения ловит mailing_accept с шагом edit_text_wait)
+    await state.update_data(
+        step="edit_text_wait",
+        edit_mailing_id=mailing_id,
+        edit_text_buffer=None,
+        view_mailing_id=mailing_id
+    )
     # Сообщение и комментарий
     if m["content_type"] == "text":
         cur_text = (m.get("payload") or {}).get("text", "") or "—"
         msg_text = (
             f"<b>Сообщение:</b>\n{cur_text}\n\n"
-            f"<b>Комментарий:</b>\nВведите новый текст, если хотите его изменить.\n"
+            f"\n\nВведите новый текст, если хотите его изменить.\n"
             f"Или нажмите «Редактировать», чтобы изменить существующий."
         )
     else:
         cur_text = m.get("caption") or "—"
         msg_text = (
             f"<b>Подпись:</b>\n{cur_text}\n\n"
-            f"<b>Комментарий:</b>\nВведите новый текст, если хотите его изменить.\n"
+            f"\n\nВведите новый текст, если хотите его изменить.\n"
             f"Или нажмите «Редактировать», чтобы изменить существующий."
         )
     # Кнопка «Редактировать» подгружает текущий текст/подпись в поле ввода
     prefill = (m.get("payload") or {}).get("text", "") if m["content_type"] == "text" else (m.get("caption") or "")
     await _edit_or_send(callback.message, text=msg_text, kb=kb_text_edit_prefilled(prefill), parse_mode="HTML")
+    # чтобы текстовый хэндлер принимал сообщение от админа
+    await state.set_state(CreateMailing.GetText)
     await callback.answer()
-
-
-
 
 
 async def text_edit_save(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    if not data or data.get("step") not in ("edit_text", "edit_text_wait"):
+    # сохраняем только из режима ожидания нового текста
+    if not data or data.get("step") != "edit_text_wait":
         await callback.answer("Нет активного редактирования.", show_alert=True)
         return
     mid = int(data.get("edit_mailing_id"))
@@ -761,7 +888,7 @@ async def text_edit_save(callback: CallbackQuery, state: FSMContext):
     if buf is None:
         await callback.answer("Сначала нажмите «Редактировать» и пришлите новый текст.", show_alert=True)
         return
-    # Обрезаем ведущий '@... '
+    # Обрезаем ведущий '@...' (особенность switch_inline_query_current_chat)
     cleaned = _clean_leading_at(buf)
     m = adb.get_mailing_by_id(mid)
     if not m:
@@ -773,7 +900,9 @@ async def text_edit_save(callback: CallbackQuery, state: FSMContext):
         adb.update_mailing_text_or_caption(mid, caption=cleaned)
     await state.update_data(step=None, edit_text_buffer=None)
     await _edit_or_send(callback.message, text="Текст сохранён.", kb=None)
-    await _render_mailing_item(callback.message, mid)
+    data2 = await state.get_data()
+    origin = (data2 or {}).get("view_origin", "list")
+    await _render_mailing_item(callback.message, mid, origin=origin)
     await callback.answer()
 
 
@@ -782,7 +911,9 @@ async def text_edit_back(callback: CallbackQuery, state: FSMContext):
     mid = int((data or {}).get("view_mailing_id", 0)) or int((data or {}).get("edit_mailing_id", 0)) or 0
     await state.update_data(step=None, edit_text_buffer=None)
     if mid:
-        await _render_mailing_item(callback.message, mid)
+        data2 = await state.get_data()
+        origin = (data2 or {}).get("view_origin", "list")
+        await _render_mailing_item(callback.message, mid, origin=origin)
     else:
         await open_mailing_list(callback)
     await callback.answer()
@@ -800,12 +931,13 @@ async def start_edit_mailing_content(callback: CallbackQuery, state: FSMContext)
         album_gid=None,
         album_items=[],
         caption=None,
+        new_content=None,  # буфер для одиночного контента
     )
     await _edit_or_send(
         callback.message,
-        text=("Пришлите новый контент (текст/фото/видео/аудио/GIF) или альбом фото. "
-              "Для альбома загрузите все фото и нажмите «Далее»."),
-        kb=BTN_ALBUM_FLOW_EDIT,
+        text=("Пришлите новый контент (текст/фото/видео/аудио/GIF) или несколько фото подряд "
+              "для альбома. Когда будете готовы — нажмите «Сохранить», либо «Назад» чтобы выйти без изменений."),
+        kb=kb_content_edit_open(mailing_id, keep_origin=True),
     )
     await state.set_state(CreateMailing.GetText)
     await callback.answer()
@@ -830,8 +962,75 @@ async def album_done_edit(callback: CallbackQuery, state: FSMContext):
     )
     await state.update_data(step=None, album_gid=None, album_items=[], caption=None)
     await _edit_or_send(callback.message, text="Контент (альбом) обновлён.", kb=None)
-    await _render_mailing_item(callback.message, mid)
+    data2 = await state.get_data()
+    origin = (data2 or {}).get("view_origin", "list")
+    await _render_mailing_item(callback.message, mid, origin=origin)
     await callback.answer()
+
+async def content_edit_save(callback: CallbackQuery, state: FSMContext):
+    """Сохранить новые медиа/текст и вернуться к карточке рассылки."""
+    data = await state.get_data()
+    if not data or data.get("step") != "edit_content_wait":
+        await callback.answer("Нет изменений для сохранения.", show_alert=True)
+        return
+    mid = int(data.get("edit_mailing_id"))
+    items: List[str] = data.get("album_items") or []
+    caption = data.get("caption")
+    single: Dict[str, Any] | None = data.get("new_content")
+
+    if items:
+        content_type = "media_group"
+        payload = {"file_ids": items}
+    elif single:
+        content_type = single["content_type"]
+        payload = single["payload"]
+        caption = single.get("caption")
+    else:
+        await callback.answer("Вы ничего не загрузили.", show_alert=True)
+        return
+
+    adb.update_mailing_payload(
+        mailing_id=mid,
+        content_type=content_type,
+        payload=payload,
+        caption=caption,
+    )
+    # очистим буферы и вернёмся к карточке
+    await state.update_data(step=None, album_gid=None, album_items=[], caption=None, new_content=None)
+    data2 = await state.get_data()
+    origin = (data2 or {}).get("view_origin", "list")
+    await _render_mailing_item(callback.message, mid, origin=origin)
+    await callback.answer("Сохранено.")
+
+async def content_edit_back(callback: CallbackQuery, state: FSMContext):
+    """Назад без сохранения — просто вернуться к карточке."""
+    data = await state.get_data()
+    mid = int((data or {}).get("view_mailing_id", 0)) or int((data or {}).get("edit_mailing_id", 0)) or 0
+    await state.update_data(step=None, album_gid=None, album_items=[], caption=None, new_content=None)
+    if mid:
+        data2 = await state.get_data()
+        origin = (data2 or {}).get("view_origin", "list")
+        await _render_mailing_item(callback.message, mid, origin=origin)
+    await callback.answer()
+
+async def content_edit_delete(callback: CallbackQuery, state: FSMContext):
+    """Удалить текущий контент у рассылки и вернуться к карточке."""
+    if callback.from_user.id != cfg.ADMIN_ID:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    mailing_id = int(callback.data.split(":")[1])
+    # «Удалить контент»: обнуляем — сохраняем пустой текст.
+    adb.update_mailing_payload(
+        mailing_id=mailing_id,
+        content_type="text",
+        payload={"text": ""},
+        caption=None,
+    )
+    await state.update_data(step=None, album_gid=None, album_items=[], caption=None, new_content=None, edit_mailing_id=mailing_id, view_mailing_id=mailing_id)
+    data2 = await state.get_data()
+    origin = (data2 or {}).get("view_origin", "list")
+    await _render_mailing_item(callback.message, mailing_id, origin=origin)
+    await callback.answer("Контент удалён.")
 
 
 async def delete_mailing(callback: CallbackQuery):
@@ -840,12 +1039,17 @@ async def delete_mailing(callback: CallbackQuery):
         return
     mailing_id = int(callback.data.split(":")[1])
     ok = adb.delete_mailing(mailing_id)
-    await _edit_or_send(
-        callback.message,
-        text="Удалено." if ok else "Не удалось удалить (возможно, не найдено).",
-        kb=kb_back_admin(),
-    )
-    await callback.answer()
+    if ok:
+        # вернуться к списку запланированных
+        await open_mailing_list(callback)
+        return  # open_mailing_list сам делает callback.answer()
+    else:
+        await _edit_or_send(
+            callback.message,
+            text="Не удалось удалить (возможно, не найдено).",
+            kb=kb_back_admin(),
+        )
+        await callback.answer()
 
 
 # =============================================================================
@@ -993,13 +1197,26 @@ def router(rt: Router):
     # Управление запланированными
     rt.callback_query.register(open_mailing_list, F.data == "admin.mailing.list")
     rt.callback_query.register(open_mailing_item, F.data.startswith("admin.mailing.open:"))
+    rt.callback_query.register(open_mailing_item_keep, F.data.startswith("admin.mailing.open.keep:"))
     rt.callback_query.register(preview_mailing, F.data.startswith("admin.mailing.show:"))
     rt.callback_query.register(start_edit_mailing_datetime, F.data.startswith("admin.mailing.edit_dt:"))
+    rt.callback_query.register(start_edit_mailing_datetime_calendar, F.data.startswith("admin.mailing.edit_dt.cal:"))
     rt.callback_query.register(start_edit_mailing_text, F.data.startswith("admin.mailing.text:"))
     rt.callback_query.register(text_edit_save, F.data == "admin.mailing.text.save")
     rt.callback_query.register(text_edit_back, F.data == "admin.mailing.text.back")
     rt.callback_query.register(start_edit_mailing_content, F.data.startswith("admin.mailing.content:"))
+    # Новое меню редактирования контента
+    rt.callback_query.register(content_edit_delete, F.data.startswith("admin.mailing.content.del:"))
+    rt.callback_query.register(content_edit_save, F.data == "admin.mailing.content.save")
+    rt.callback_query.register(content_edit_back, F.data == "admin.mailing.content.back")
+    # (опционально оставляем album_done_edit для обратной совместимости)
     rt.callback_query.register(album_done_edit, F.data == "admin.mailing.album_done_edit")
+    # Удаление самой рассылки (кнопка 🗑 Удалить в карточке)
+    rt.callback_query.register(delete_mailing, F.data.startswith("admin.mailing.delete:"))
+    # Календарь: выбор даты из виджета
+    rt.callback_query.register(calendar_date_chosen, F.data.startswith("cal.date:"))
+    # Навигация календаря (сам календарь добавляет свои хендлеры)
+    calendar_router(rt)
 
     # Оплата (если используется в проекте)
     rt.pre_checkout_query.register(pre_checkout)

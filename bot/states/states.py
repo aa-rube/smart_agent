@@ -84,3 +84,6 @@ class CreateMailing(StatesGroup):
 class EditPostState(StatesGroup):
     waiting_for_new_text = State()
     message_id = State()
+
+class CalendarStates(StatesGroup):
+    Selecting = State()  # показан календарь, ждём cal.date:YYYY-MM-DD
