@@ -18,6 +18,33 @@ from bot.states.states import DescriptionStates
 from bot.utils.chat_actions import run_long_operation_with_action
 import executor.ai_config as ai_cfg  # варианты кнопок из конфига
 
+# ====== Доступ / подписка (как в plans/design) ======
+import bot.utils.database as db
+from bot.utils.database import is_trial_active, trial_remaining_hours
+
+def _is_sub_active(user_id: int) -> bool:
+    raw = db.get_variable(user_id, "sub_until") or ""
+    if not raw:
+        return False
+    try:
+        from datetime import datetime
+        today = datetime.utcnow().date()
+        return today <= datetime.fromisoformat(raw).date()
+    except Exception:
+        return False
+
+def _format_access_text(user_id: int) -> str:
+    trial_hours = trial_remaining_hours(user_id)
+    if _is_sub_active(user_id):
+        sub_until = db.get_variable(user_id, "sub_until")
+        return f'✅ Подписка активна до *{sub_until}*'
+    if trial_hours > 0:
+        return f'🆓 Бесплатный доступ активен ещё *~{trial_hours} ч.*'
+    return '😢 Бесплатный период завершён. Оформи подписку, чтобы продолжить.'
+
+def _has_access(user_id: int) -> bool:
+    return is_trial_active(user_id) or _is_sub_active(user_id)
+
 # ==========================
 # Тексты
 # ==========================
@@ -127,6 +154,11 @@ def kb_retry() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")]
     ])
 
+# Кнопка к офферу подписки
+SUBSCRIBE_KB = InlineKeyboardMarkup(
+    inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
+)
+
 # ==========================
 # HTTP к контроллеру
 # ==========================
@@ -162,6 +194,13 @@ async def start_description_flow(cb: CallbackQuery, state: FSMContext, bot: Bot)
     Старт: пытаемся заменить текущее сообщение на картинку (главный экран раздела)
     с подписью (DESC_INTRO + ASK_TYPE) и кнопками. Если файла нет — фолбэк на текст.
     """
+    user_id = cb.message.chat.id
+    # Контроль доступа (как в plans/design)
+    if not _has_access(user_id):
+        await _edit_text_or_caption(cb.message, _format_access_text(user_id), SUBSCRIBE_KB)
+        await cb.answer()
+        return
+
     await state.clear()
     caption = f"{DESC_INTRO}\n\n{ASK_TYPE}"
     img_path = get_file_path(DESCR_HOME_IMG_REL)
@@ -237,6 +276,19 @@ async def _generate_and_output(
     Собираем сырые поля и шлём их в executor.
     Если reuse_anchor=True — редактируем текущее сообщение (без создания нового).
     """
+    # Повторный контроль доступа перед генерацией (на случай, если стейт «завис»)
+    user_id = message.chat.id
+    if not _has_access(user_id):
+        try:
+            await message.edit_text(_format_access_text(user_id), reply_markup=SUBSCRIBE_KB)
+        except TelegramBadRequest:
+            try:
+                await message.edit_caption(caption=_format_access_text(user_id), reply_markup=SUBSCRIBE_KB)
+            except TelegramBadRequest:
+                await message.answer(_format_access_text(user_id), reply_markup=SUBSCRIBE_KB)
+        await state.clear()
+        return
+
     data = await state.get_data()
 
     fields = {
