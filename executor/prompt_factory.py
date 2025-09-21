@@ -114,33 +114,46 @@ def build_description_request(*, question: str, model: Optional[str] = None,
 def _label(m: Dict[str, str], key: Optional[str], default: str = "—") -> str:
     return m.get(key, default) if key else default
 
+def _safe(s: Optional[str]) -> str:
+    return (s or "").strip() or "—"
+
 def compose_description_user_message(fields: Dict[str, Optional[str]]) -> str:
     """
-    Сборка пользовательского сообщения для описания на основе сырых полей.
-    Ожидаемые ключи:
-      type, apt_class (только для flat), in_complex, area, comment
+    Сборка пользовательского сообщения из сырых полей НОВОЙ анкеты.
+    Все строки/числа приводятся к безопасному виду; человекочитаемые лейблы
+    берутся из ai_config (DESCRIPTION_*).
     """
-    t_key  = fields.get("type")
-    c_key  = fields.get("apt_class") if t_key == "flat" else None
-    x_key  = fields.get("in_complex")
-    a_key  = fields.get("area")
-    cmt    = (fields.get("comment") or "").strip()
+    t_key = fields.get("type")
+    c_key = fields.get("apt_class") if t_key == "flat" else None
+    x_key = fields.get("in_complex")
+    a_key = fields.get("area")
 
-    t_label  = _label(DESCRIPTION_TYPES,   t_key)
-    cls_lbl  = _label(DESCRIPTION_CLASSES, c_key) if c_key else "—"
-    cx_label = _label(DESCRIPTION_COMPLEX, x_key)
-    ar_label = _label(DESCRIPTION_AREA,    a_key)
-    comment  = cmt or "—"
+    # Человекочитаемые подписи (для select'ов)
+    type_label       = _label(DESCRIPTION_TYPES,   t_key)
+    apt_class_label  = _label(DESCRIPTION_CLASSES, c_key) if c_key else "—"
+    in_complex_label = _label(DESCRIPTION_COMPLEX, x_key)
+    area_label       = _label(DESCRIPTION_AREA,    a_key)
 
-    return (
-        "Сгенерируй продающее, информативное описание объекта недвижимости "
-        "для объявления и презентации. Соблюдай гайд Х–П–В и заверши явным CTA.\n\n"
-        f"Тип: {t_label}\n"
-        f"Класс (если квартира): {cls_lbl}\n"
-        f"Новостройка/ЖК: {cx_label}\n"
-        f"Расположение: {ar_label}\n"
-        f"Комментарий риелтора: {comment}"
-    )
+    # Новые поля анкеты (как есть, но с безопасными значениями)
+    payload = {
+        "type_label":       type_label,
+        "apt_class_label":  apt_class_label,
+        "in_complex_label": in_complex_label,
+        "area_label":       area_label,
+        "location":         _safe(fields.get("location")),
+        "total_area":       _safe(fields.get("total_area")),
+        "kitchen_area":     _safe(fields.get("kitchen_area")),
+        "floor_number":     _safe(fields.get("floor_number")),
+        "building_floors":  _safe(fields.get("building_floors")),
+        "rooms":            _safe(fields.get("rooms")),
+        "year_state":       _safe(fields.get("year_state")),
+        "utilities":        _safe(fields.get("utilities")),   # CSV или свободный текст
+        "amenities":        _safe(fields.get("amenities")),   # CSV или свободный текст
+        "comment":          _safe(fields.get("comment")),
+    }
+
+    # Единый шаблон в ai_config — все плейсхолдеры централизованы там
+    return DESCRIPTION_USER_TEMPLATE_RU.format(**payload)
 
 def build_description_request_from_fields(
     *,
@@ -150,13 +163,16 @@ def build_description_request_from_fields(
     max_tokens: int = 1200,
 ) -> Dict[str, Any]:
     """
-    ЕДИНОЕ место сборки payload из сырых полей.
+    ЕДИНОЕ место сборки payload из сырых полей (новая анкета).
+    Контроллер остаётся тонким.
     """
     user_message = compose_description_user_message(fields)
     system_prompt = DESCRIPTION_PROMPT_DEFAULT_RU
     use_model = model or DESCRIPTION_MODEL
     return {
         "model": use_model,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},

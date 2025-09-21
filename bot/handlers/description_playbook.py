@@ -9,6 +9,7 @@
 from __future__ import annotations
 from typing import Optional, List, Dict
 import os
+import re
 
 import aiohttp
 from aiogram import Router, F, Bot
@@ -60,10 +61,17 @@ ASK_TYPE    = "1️⃣ Выберите тип недвижимости:"
 ASK_CLASS   = "2️⃣ Уточните класс квартиры:"
 ASK_COMPLEX = "3️⃣ Объект в новостройке / ЖК?"
 ASK_AREA    = "4️⃣ Где расположен объект?"
-ASK_COMMENT = (
-    "5️⃣ Добавьте свободный комментарий про объект — планировка, площадь, этаж, состояние, окружение и т.д.\n\n"
-    "✍️ Просто отправьте текст одним сообщением.\nЕсли комментарий не нужен — нажмите «Пропустить»."
-)
+# Далее вместо свободного комментария идёт обязательная анкета (структурированные шаги)
+ASK_FORM_TOTAL_AREA      = "5️⃣ Введите общую площадь объекта (в м²). Пример: 56.4"
+ASK_FORM_FLOORS_TOTAL    = "6️⃣ Введите этажность здания (количество этажей в доме). Пример: 17"
+ASK_FORM_FLOOR           = "7️⃣ Введите этаж расположения объекта. Пример: 5"
+ASK_FORM_KITCHEN_AREA    = "8️⃣ Введите площадь кухни (в м²). Если не применимо — укажите 0. Пример: 10.5"
+ASK_FORM_ROOMS           = "9️⃣ Укажите количество комнат (для жилых объектов). Если не применимо — укажите 0. Пример: 2"
+ASK_FORM_YEAR_COND       = "🔟 Укажите год постройки ИЛИ состояние: «новостройка», «вторичка», «требуется ремонт». Примеры: 2012 / новостройка"
+ASK_FORM_UTILITIES       = "1️⃣1️⃣ Перечислите коммуникации через запятую: отопление, вода, газ, электричество, интернет. Пример: отопление, вода, электричество"
+ASK_FORM_LOCATION        = "1️⃣2️⃣ Укажите локацию: район и ближайшее метро/транспорт. Пример: Пресненский, м. Улица 1905 года"
+ASK_FORM_FEATURES        = "1️⃣3️⃣ Укажите особенности/удобства через запятую (балкон, парковка, лифт, охрана и т.д.). Пример: балкон, лифт, консьерж"
+ASK_FREE_COMMENT         = "1️⃣4️⃣ При желании добавьте свободный комментарий про объект — детали планировки, состояние, окружение и т.п.\n\n✍️ Просто отправьте текст одним сообщением.\nЕсли комментарий не нужен — нажмите «Пропустить»."
 
 GENERATING = "⏳ Генерирую описание… это займёт до минуты."
 ERROR_TEXT = "😔 Не получилось сгенерировать описание. Попробуйте ещё раз."
@@ -174,10 +182,7 @@ def _kb_from_map(m: Dict[str, str], prefix: str, columns: int = 1) -> InlineKeyb
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def kb_skip_comment() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⏭ Пропустить комментарий", callback_data="desc_comment_skip")]
-    ])
+
 
 def kb_retry() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -189,6 +194,12 @@ def kb_retry() -> InlineKeyboardMarkup:
 SUBSCRIBE_KB = InlineKeyboardMarkup(
     inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
 )
+
+def kb_skip_comment() -> InlineKeyboardMarkup:
+    """Кнопка «Пропустить комментарий» для необязательного финального шага."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="⏭ Пропустить комментарий", callback_data="desc_comment_skip")
+    ]])
 
 # ==========================
 # HTTP к контроллеру
@@ -292,9 +303,132 @@ async def handle_area(cb: CallbackQuery, state: FSMContext):
     """area = city / out → затем просим свободный комментарий (или «Пропустить»)."""
     val = cb.data.removeprefix("desc_area_")
     await state.update_data(area=val)
-    await _edit_text_or_caption(cb.message, ASK_COMMENT, kb_skip_comment())
-    await state.set_state(DescriptionStates.waiting_for_comment)
+
+    # Инициализируем последовательность обязательных шагов анкеты
+    data = await state.get_data()
+    obj_type = data.get("type")  # flat/house/land/office/...
+
+    # Базовый набор полей
+    form_keys: List[str] = [
+        "total_area",       # общая площадь (float)
+        "floors_total",     # этажность здания (int)
+        # "floor" — условно для квартира/офис, добавим ниже
+        "kitchen_area",     # площадь кухни (float, 0 если не применимо)
+        # "rooms" — условно для жилых, добавим ниже
+        "year_or_condition",# год/состояние (str или int)
+        "utilities",        # коммуникации (list/str)
+        "location",         # локация (str)
+        "features",         # особенности/удобства (list/str)
+    ]
+    if obj_type in {"flat", "office"}:
+        form_keys.insert(2, "floor")  # после floors_total
+    if obj_type in {"flat", "house"}:
+        form_keys.insert(4, "rooms")  # после kitchen_area
+
+    await state.update_data(__form_keys=form_keys, __form_step=0, __awaiting_free_comment=False)
+
+    # Попросим первый шаг
+    await _edit_text_or_caption(cb.message, _form_prompt_for_key(form_keys[0]))
+    await state.set_state(DescriptionStates.waiting_for_comment)  # используем существующий стейт как «анкета»
     await cb.answer()
+
+# ==========================
+# Анкета: валидация и переходы
+# ==========================
+def _parse_float(val: str) -> Optional[float]:
+    try:
+        x = float(val.replace(",", ".").strip())
+        return x if x >= 0 else None
+    except Exception:
+        return None
+
+def _parse_int(val: str) -> Optional[int]:
+    if not re.fullmatch(r"\d{1,4}", val.strip()):
+        return None
+    return int(val.strip())
+
+def _normalize_list(val: str) -> str:
+    items = [s.strip() for s in val.split(",") if s.strip()]
+    # удалим дубли, сохраняя порядок
+    seen = set(); out = []
+    for it in items:
+        key = it.lower()
+        if key not in seen:
+            seen.add(key); out.append(it)
+    return ", ".join(out)
+
+def _form_prompt_for_key(key: str) -> str:
+    return {
+        "total_area":       ASK_FORM_TOTAL_AREA,
+        "floors_total":     ASK_FORM_FLOORS_TOTAL,
+        "floor":            ASK_FORM_FLOOR,
+        "kitchen_area":     ASK_FORM_KITCHEN_AREA,
+        "rooms":            ASK_FORM_ROOMS,
+        "year_or_condition":ASK_FORM_YEAR_COND,
+        "utilities":        ASK_FORM_UTILITIES,
+        "location":         ASK_FORM_LOCATION,
+        "features":         ASK_FORM_FEATURES,
+    }.get(key, "Введите значение:")
+
+def _validate_and_store(key: str, text: str, data: Dict) -> Optional[str]:
+    """Возвращает None, если ок. Иначе — текст ошибки для пользователя."""
+    t = text.strip()
+    if key == "total_area":
+        v = _parse_float(t)
+        if v is None or v <= 0:
+            return "Введите положительное число в формате м². Пример: 56.4"
+        data["total_area"] = v
+        return None
+    if key == "floors_total":
+        v = _parse_int(t)
+        if v is None or v <= 0:
+            return "Введите целое число этажей. Пример: 17"
+        data["floors_total"] = v
+        return None
+    if key == "floor":
+        v = _parse_int(t)
+        if v is None or v <= 0:
+            return "Введите корректный номер этажа. Пример: 5"
+        floors_total = int(data.get("floors_total") or 0)
+        if floors_total and (v < 1 or v > floors_total):
+            return f"Этаж должен быть от 1 до {floors_total}."
+        data["floor"] = v
+        return None
+    if key == "kitchen_area":
+        v = _parse_float(t)
+        if v is None or v < 0:
+            return "Введите число (м²). Если не применимо — 0."
+        data["kitchen_area"] = v
+        return None
+    if key == "rooms":
+        v = _parse_int(t)
+        if v is None or v < 0:
+            return "Введите неотрицательное целое число комнат. Пример: 2"
+        data["rooms"] = v
+        return None
+    if key == "year_or_condition":
+        if re.fullmatch(r"\d{4}", t):
+            data["year_or_condition"] = t
+            return None
+        norm = t.lower()
+        if norm in {"новостройка", "вторичка", "требуется ремонт"}:
+            data["year_or_condition"] = norm
+            return None
+        return "Укажите год (например, 2012) или одно из: новостройка, вторичка, требуется ремонт."
+    if key == "utilities":
+        data["utilities"] = _normalize_list(t)
+        return None
+    if key == "location":
+        if len(t) < 3:
+            return "Опишите район и транспорт хотя бы несколькими словами."
+        data["location"] = t
+        return None
+    if key == "features":
+        data["features"] = _normalize_list(t)
+        return None
+    # по умолчанию — просто сохранить
+    data[key] = t
+    return None
 
 # ==========================
 # Финал (message/skip)
@@ -334,6 +468,16 @@ async def _generate_and_output(
         "in_complex": data.get("in_complex"),
         "area":       data.get("area"),
         "comment":    (comment or "").strip(),
+        # Новые структурированные поля анкеты
+        "total_area":        data.get("total_area"),
+        "floors_total":      data.get("floors_total"),
+        "floor":             data.get("floor"),
+        "kitchen_area":      data.get("kitchen_area"),
+        "rooms":             data.get("rooms"),
+        "year_or_condition": data.get("year_or_condition"),
+        "utilities":         data.get("utilities"),
+        "location_exact":    data.get("location"),
+        "features":          data.get("features"),
     }
     # Для ДОМА — принудительно обнуляем in_complex (не применимо)
     if data.get("type") == "house":
@@ -393,9 +537,61 @@ async def _generate_and_output(
         await state.clear()
 
 async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
-    await _generate_and_output(message, state, bot, comment=message.text or "", reuse_anchor=False)
+    """
+    waiting_for_comment работает в два этапа:
+    1) обязательная анкета (__form_keys);
+    2) необязательный свободный комментарий (можно «Пропустить»).
+    """
+    user_text = (message.text or "").strip()
+    data = await state.get_data()
+
+    # Этап 2: свободный комментарий?
+    if data.get("__awaiting_free_comment"):
+        # Пользователь прислал произвольный текст — генерируем с этим комментарием
+        await _generate_and_output(message, state, bot, comment=user_text, reuse_anchor=False)
+        return
+
+    # Этап 1: анкета
+    form_keys: List[str] = data.get("__form_keys") or []
+    step: int = int(data.get("__form_step") or 0)
+
+    # Если почему-то нет последовательности — заново попросим старт
+    if not form_keys:
+        await message.answer("Давайте начнём сначала. " + ASK_TYPE,
+                             reply_markup=_kb_from_map(ai_cfg.DESCRIPTION_TYPES, "desc_type_", 1))
+        return
+
+    current_key = form_keys[step]
+    # Валидация и сохранение
+    err = _validate_and_store(current_key, user_text, data)
+    if err:
+        await message.answer(f"⚠️ {err}\n\n{_form_prompt_for_key(current_key)}")
+        return
+
+    # Сохраняем изменения после валидации
+    await state.update_data(**{k: data.get(k) for k in [
+        "total_area","floors_total","floor","kitchen_area","rooms",
+        "year_or_condition","utilities","location","features"
+    ]})
+
+    # Следующий шаг или переход к свободному комментарию
+    step += 1
+    if step < len(form_keys):
+        await state.update_data(__form_step=step)
+        await message.answer(_form_prompt_for_key(form_keys[step]))
+        return
+
+    # Все структурированные поля собраны — спрашиваем свободный комментарий
+    await state.update_data(__awaiting_free_comment=True)
+    await message.answer(ASK_FREE_COMMENT, reply_markup=kb_skip_comment())
 
 async def handle_comment_skip(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    """Пропуск свободного комментария (после анкеты)."""
+    data = await state.get_data()
+    if not data.get("__awaiting_free_comment"):
+        # Если нажали не вовремя — просто повторим вопрос
+        await cb.answer()
+        return
     await _edit_text_or_caption(cb.message, "Комментарий пропущен. Начинаю генерацию…")
     await _generate_and_output(cb.message, state, bot, comment=None, reuse_anchor=True)
     await cb.answer()
@@ -414,6 +610,6 @@ def router(rt: Router):
     rt.callback_query.register(handle_complex, F.data.startswith("desc_complex_"))
     rt.callback_query.register(handle_area,    F.data.startswith("desc_area_"))
 
-    # свободный комментарий / пропуск
+    # анкета + свободный комментарий / пропуск
     rt.message.register(handle_comment_message, DescriptionStates.waiting_for_comment, F.text)
     rt.callback_query.register(handle_comment_skip, F.data == "desc_comment_skip", DescriptionStates.waiting_for_comment)

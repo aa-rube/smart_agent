@@ -8,7 +8,6 @@ from executor.config import OPENAI_API_KEY
 from executor.ai_config import OBJECTION_MODEL, DESCRIPTION_MODEL, FEEDBACK_MODEL, SUMMARY_MODEL, WHISPER_MODEL
 from executor.prompt_factory import (
     build_objection_request,
-    build_description_request,
     build_description_request_from_fields,
     build_feedback_generate_request,
     build_feedback_mutate_request,
@@ -149,26 +148,22 @@ def send_objection_generate_request(question: str, allow_fallback: bool = OPENAI
         allow_fallback=allow_fallback
     )
 
-def send_description_generate_request_from_fields(fields: Dict[str, Optional[str]],
-                                                  allow_fallback: bool = OPENAI_FALLBACK) -> Tuple[str, str]:
-    payload = build_description_request_from_fields(
-        fields=fields,
-        model=DESCRIPTION_MODEL
-    )
+def send_description_generate_request_from_fields(
+    fields: Dict[str, Optional[str]],
+    allow_fallback: bool = OPENAI_FALLBACK
+) -> Tuple[str, str]:
+    """
+    Тонкая обёртка: фабрика собирает payload (учитывая новую анкету),
+    здесь только отправка в OpenAI с fallback и возврат текста + используемой модели.
+    """
+    payload = build_description_request_from_fields(fields=fields, model=DESCRIPTION_MODEL)
     return _send_with_fallback(
         payload,
         default_model=DESCRIPTION_MODEL,
-        allow_fallback=allow_fallback
+        allow_fallback=allow_fallback,
     )
 
-# (оставляем для совместимости путь через 'question', если когда-то прилетит)
-def send_description_generate_request(question: str, allow_fallback: bool = OPENAI_FALLBACK) -> Tuple[str, str]:
-    payload = build_description_request(
-        question=question,
-        model=DESCRIPTION_MODEL)
-    return _send_with_fallback(payload,
-                               default_model=DESCRIPTION_MODEL,
-                               allow_fallback=allow_fallback)
+
 
 # -------- NEW: FEEDBACK / REVIEW --------
 def send_feedback_generate_request(payload_fields: Dict[str, Any],
