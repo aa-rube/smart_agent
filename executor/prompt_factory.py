@@ -1,6 +1,6 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\executor\prompt_factory.py
 import random
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Set
 
 from executor.ai_config import *
 
@@ -114,8 +114,30 @@ def build_description_request(*, question: str, model: Optional[str] = None,
 def _label(m: Dict[str, str], key: Optional[str], default: str = "—") -> str:
     return m.get(key, default) if key else default
 
-def _safe(s: Optional[str]) -> str:
-    return (s or "").strip() or "—"
+def _safe(val: Any) -> str:
+    """
+    Робастный safe-cast в строку для любых типов:
+      - None  -> "—"
+      - int/float -> компактная форма без хвоста .0
+      - bool -> "Да"/"Нет"
+      - list/tuple/set -> через запятую (каждый элемент прогоняется через _safe)
+      - иное -> str().strip() с фолбэком "—"
+    """
+    if val is None:
+        return "—"
+    if isinstance(val, (int, float)):
+        try:
+            return f"{val:.15g}"
+        except Exception:
+            return str(val)
+    if isinstance(val, bool):
+        return "Да" if val else "Нет"
+    if isinstance(val, (list, tuple, set)):
+        parts = [ _safe(x) for x in val ]
+        parts = [ p for p in parts if p and p != "—" ]
+        return ", ".join(parts) if parts else "—"
+    s = str(val).strip()
+    return s or "—"
 
 def compose_description_user_message(fields: Dict[str, Optional[str]]) -> str:
     """
@@ -147,8 +169,8 @@ def compose_description_user_message(fields: Dict[str, Optional[str]]) -> str:
         "building_floors":  _safe(fields.get("building_floors")),
         "rooms":            _safe(fields.get("rooms")),
         "year_state":       _safe(fields.get("year_state")),
-        "utilities":        _safe(fields.get("utilities")),   # CSV или свободный текст
-        "amenities":        _safe(fields.get("amenities")),   # CSV или свободный текст
+        "utilities":        _safe(fields.get("utilities")),   # CSV/список/свободный текст
+        "amenities":        _safe(fields.get("amenities")),   # CSV/список/свободный текст
         "comment":          _safe(fields.get("comment")),
     }
 
@@ -217,9 +239,7 @@ def _length_target_tokens(key: Optional[str]) -> int:
     return 512  # medium
 
 
-def _safe(s: Optional[str]) -> str:
-    return (s or "").strip() or "—"
-
+# ниже был дубликат _safe — удаляем, чтобы не перетирать робастную версию выше
 
 def build_feedback_generate_request(*,
                                     fields: Dict[str, Optional[str]],
