@@ -1,25 +1,4 @@
-# smart_agent/bot/widgets/calendar_picker.py
-"""
-Инлайн-календарь для выбора даты по callback-кнопкам.
-
-Принципы:
-- Самостоятельно обрабатывает ТОЛЬКО навигацию по месяцам (cal.nav:...) и тех.клики (cal.ignore).
-- Кнопки дней отдают callback в формате: cal.date:YYYY-MM-DD (их ловит внешний код).
-- Показывает счётчик постов в каждом дне: "1(2)" — 1 число, (2) поста.
-- Открывается на переданной base_date.
-- Без якорей: если это callback — редактируем сообщение, если нет — отправляем новое.
-
-Подключение:
-    from bot.widgets.calendar_picker import open_calendar, router as calendar_router
-    ...
-    calendar_router(rt)  # в сборщике роутов
-
-Открыть календарь:
-    await open_calendar(message_or_callback.message, date.today())
-
-Ловить выбор:
-    rt.callback_query.register(on_pick, F.data.startswith("cal.date:"))
-"""
+#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\calendar_picker.py
 
 from __future__ import annotations
 
@@ -66,7 +45,11 @@ def _get_counts_map(month_first: date, month_last: date) -> Dict[str, int]:
             return {}
         func = getattr(adb, "get_mailing_counts_map", None)
         if callable(func):
-            return func(month_first.isoformat(), month_last.isoformat()) or {}
+            # пробуем новую сигнатуру (с only_pending), если её нет — откатываемся к старой
+            try:
+                return func(month_first.isoformat(), month_last.isoformat(), only_pending=True) or {}
+            except TypeError:
+                return func(month_first.isoformat(), month_last.isoformat()) or {}
     except Exception:
         pass
     return {}
@@ -139,8 +122,8 @@ def _build_month_markup(y: int, m: int, selected: Optional[date] = None) -> Inli
             )
         rows.append(row)
 
-    # нижняя строчка
-    today_cb = f"{CB_PREFIX}.nav:{today.year}-{today.month:02d}-01|dir=stay|sel={today.isoformat()}"
+    # нижняя строчка (спец-режим dir=today гарантированно прыгает в текущий месяц/день)
+    today_cb = f"{CB_PREFIX}.nav:{today.year}-{today.month:02d}-01|dir=today|sel={today.isoformat()}"
     rows.append([
         InlineKeyboardButton(text="Сегодня", callback_data=today_cb),
         InlineKeyboardButton(text=" ", callback_data=f"{CB_PREFIX}.ignore"),
@@ -197,14 +180,32 @@ async def _on_nav(callback: CallbackQuery):
             m = 1
         else:
             m += 1
+    elif dir_ == "today":
+        # Жёстко прыгаем в текущий месяц и выделяем сегодняшний день
+        t = date.today()
+        y, m = t.year, t.month
+        selected = t
     # stay -> оставляем как есть
 
     kb = _build_month_markup(y, m, selected)
     try:
         await callback.message.edit_reply_markup(reply_markup=kb)
-    except TelegramBadRequest:
-        # если вдруг не получилось — перерисуем целиком
-        await callback.message.edit_text("Выберите дату:", reply_markup=kb)
+    except TelegramBadRequest as e:
+        # Если разметка не изменилась — это нормально (например, уже на текущем месяце)
+        low = str(e).lower()
+        if "message is not modified" in low:
+            # Попробуем легонько «пошевелить» текст невидимым символом, чтобы Телеграм принял апдейт
+            try:
+                await callback.message.edit_text("Выберите дату:\u2060", reply_markup=kb)
+            except TelegramBadRequest:
+                # Совсем без изменений — ок, просто молча подтверждаем клик
+                pass
+        else:
+            # Другая ошибка — попробуем перерисовать целиком
+            try:
+                await callback.message.edit_text("Выберите дату:", reply_markup=kb)
+            except TelegramBadRequest:
+                pass
     await callback.answer()
 
 async def _on_ignore(callback: CallbackQuery):

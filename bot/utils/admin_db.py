@@ -6,7 +6,7 @@ from typing import Optional, List, Tuple, Any, Dict
 from datetime import datetime, timedelta
 
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import create_engine, event, String, Integer, Text
+from sqlalchemy import create_engine, event, String, Integer, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session
 
 import bot.config as cfg
@@ -391,6 +391,47 @@ class AdminRepository:
             s.delete(m)
             return True
 
+    # --- calendar / counts ---
+    def get_mailing_counts_map(
+        self,
+        start_iso: str,
+        end_iso: str,
+        only_pending: bool = True,
+    ) -> Dict[str, int]:
+        """
+        Вернёт словарь {'YYYY-MM-DD': count} по рассылкам в диапазоне дат (включительно).
+        Аргументы можно передавать как 'YYYY-MM-DD' или 'YYYY-MM-DD HH:MM'.
+        По умолчанию считаем только невыполненные и включённые (mailing_on=1, mailing_completed=0).
+        """
+        def _as_start_bound(s: str) -> str:
+            s = (s or "").strip().replace("T", " ")
+            # если пришла только дата — берём начало суток
+            if len(s) == 10:
+                return f"{s} 00:00"
+            return _norm_publish_at(s)
+
+        def _as_end_bound(s: str) -> str:
+            s = (s or "").strip().replace("T", " ")
+            # если пришла только дата — берём конец суток
+            if len(s) == 10:
+                return f"{s} 23:59"
+            return _norm_publish_at(s)
+
+        start_b = _as_start_bound(start_iso)
+        end_b = _as_end_bound(end_iso)
+
+        day_expr = func.substr(Mailing.publish_at, 1, 10)  # 'YYYY-MM-DD'
+        with self._s() as s:
+            q = (
+                s.query(day_expr.label("d"), func.count(Mailing.id).label("c"))
+                 .filter(Mailing.publish_at >= start_b)
+                 .filter(Mailing.publish_at <= end_b)
+            )
+            if only_pending:
+                q = q.filter(Mailing.mailing_on == 1).filter(Mailing.mailing_completed == 0)
+            rows = q.group_by(day_expr).all()
+        return {r.d: int(r.c) for r in rows}
+
     # --- notifications ---
     def get_notification_message(self, days_before: int) -> Optional[str]:
         with self._s() as s:
@@ -574,3 +615,10 @@ def delete_notification_message(days_before: int) -> bool:
 
 def get_users_with_expiring_subscription(days_before: int) -> List[str]:
     return _repo.get_users_with_expiring_subscription(days_before)
+
+
+def get_mailing_counts_map(start_iso: str, end_iso: str, only_pending: bool = True) -> Dict[str, int]:
+    """
+    Обёртка для репозитория. Возвращает {'YYYY-MM-DD': count}.
+    """
+    return _repo.get_mailing_counts_map(start_iso, end_iso, only_pending)
