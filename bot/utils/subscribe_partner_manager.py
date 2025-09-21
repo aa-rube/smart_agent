@@ -8,7 +8,6 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramAPIError
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
-from bot.text.texts import *
 from bot.config import PARTNER_CHANNELS
 
 
