@@ -16,7 +16,6 @@ from aiogram.exceptions import TelegramBadRequest
 
 from typing import Optional
 
-import bot.utils.tokens as tk
 import bot.utils.database as db
 from bot.config import get_file_path
 from bot.utils.database import is_trial_active, trial_remaining_hours
@@ -36,26 +35,36 @@ from bot.utils.file_utils import safe_remove
 # ТЕКСТЫ (ТОЛЬКО ДЛЯ БЛОКА ДИЗАЙНА)
 # =============================================================================
 
-def _format_tokens_text(user_id: int) -> str:
-    tokens_int = tk.get_tokens(user_id)
-    have_sub = db.get_variable(user_id, 'have_sub') == '1'
-    trial_hours = trial_remaining_hours(user_id)
+def _is_sub_active(user_id: int) -> bool:
+    """Активна ли платная подписка по дате sub_until (YYYY-MM-DD)."""
+    raw = db.get_variable(user_id, "sub_until") or ""
+    if not raw:
+        return False
+    try:
+        # дата хранится без времени — сравниваем по UTC дате
+        from datetime import datetime
+        today = datetime.utcnow().date()
+        return today <= datetime.fromisoformat(raw).date()
+    except Exception:
+        return False
 
-    if trial_hours > 0 and not have_sub:
+def _format_access_text(user_id: int) -> str:
+    """Короткий статус доступа: триал/подписка/нет доступа."""
+    trial_hours = trial_remaining_hours(user_id)
+    if _is_sub_active(user_id):
+        sub_until = db.get_variable(user_id, "sub_until")
+        return f'✅ Подписка активна до *{sub_until}*'
+    if trial_hours > 0:
         return f'🆓 Бесплатный доступ активен ещё *~{trial_hours} ч.*'
-    if tokens_int > 0:
-        return f'🔋 У тебя есть *{tokens_int} генераций дизайна*'
-    if have_sub:
-        return '🪫 Токены закончились — продли подписку или пополни пакет.'
     return '😢 Бесплатный период завершён. Оформи подписку, чтобы продолжить.'
 
 def _has_access(user_id: int) -> bool:
-    """Есть доступ, если активен триал ИЛИ есть токены."""
-    return is_trial_active(user_id) or tk.get_tokens(user_id) > 0
+    """Доступ есть, если активен триал ИЛИ активна платная подписка."""
+    return is_trial_active(user_id) or _is_sub_active(user_id)
 
 
 def _start_screen_text(user_id: int) -> str:
-    tokens_text = _format_tokens_text(user_id)
+    tokens_text = _format_access_text(user_id)
     return f"""
 *1️⃣ Выбери, что нужно:*
 
@@ -83,7 +92,7 @@ _TEXT_GET_FILE_REDESIGN_TPL = """
 
 
 def text_get_file_redesign(user_id: int) -> str:
-    return _TEXT_GET_FILE_REDESIGN_TPL.format(tokens_text=_format_tokens_text(user_id))
+    return _TEXT_GET_FILE_REDESIGN_TPL.format(tokens_text=_format_access_text(user_id))
 
 
 # Экран «загрузи фото» для Zero-Design — с показом остатка генераций
@@ -98,7 +107,7 @@ _TEXT_GET_FILE_ZERO_TPL = """
 """.strip()
 
 def text_get_file_zero(user_id: int) -> str:
-    return _TEXT_GET_FILE_ZERO_TPL.format(tokens_text=_format_tokens_text(user_id))
+    return _TEXT_GET_FILE_ZERO_TPL.format(tokens_text=_format_access_text(user_id))
 
 TEXT_GET_STYLE = "Отлично! Теперь выбери стиль оформления 🖼️"
 TEXT_FINAL = "✅ Готово!\nТвоя обновленная визуализация теперь готова влюблять в себя покупателей!"
@@ -123,17 +132,18 @@ SUB_FREE = """
 Пробный доступ на 72 часа истёк — дальше только по подписке.
 
 📦* Что даёт подписка:*
- — Пакет из 100 любых генераций
- — Доступ к 2D/3D и любым стилям
+ — Полный доступ ко всем инструментам
+ — Без ограничений по количеству запусков в период подписки*
 Стоимость пакета всего 2500 рублей!
 """.strip()
 
 SUB_PAY = """
-🪫 Упс… Лимит токенов исчерпан — теперь нужно обновить подписку.
+🪫 Подписка не активна
+Срок подписки истёк или не был оформлен.
 
 📦* Что даёт подписка:*
- — Пакет из 100 любых генераций
- — Доступ к 2D/3D и любым стилям
+ — Полный доступ ко всем инструментам
+ — Без ограничений по количеству запусков в период подписки*
 Стоимость пакета всего 2500 рублей!
 """.strip()
 
@@ -294,7 +304,7 @@ async def design_home(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
 async def start_design_flow(callback: CallbackQuery, state: FSMContext, bot: Bot):
     """
-    Начало редизайна: проверяем токены → показываем экран загрузки файла.
+    Начало редизайна: проверяем доступ → показываем экран загрузки файла.
     """
     user_id = callback.message.chat.id
 
@@ -308,7 +318,8 @@ async def start_design_flow(callback: CallbackQuery, state: FSMContext, bot: Bot
             kb=kb_back_to_tools(),
         )
     else:
-        if not (db.get_variable(user_id, 'have_sub') == '1'):
+        # нет доступа: либо триал закончился и подписки нет, либо подписка истекла
+        if not _is_sub_active(user_id):
             await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
         else:
             await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
@@ -387,7 +398,7 @@ async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot:
 
     user_id = callback.from_user.id
     if not _has_access(user_id):
-        if not (db.get_variable(user_id, 'have_sub') == '1'):
+        if not _is_sub_active(user_id):
             await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
         else:
             await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
@@ -422,9 +433,6 @@ async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot:
 
         if image_url:
             await _edit_or_replace_with_photo_url(bot, callback.message, image_url, TEXT_FINAL, kb=None)
-            # списываем токен только если триал НЕ активен
-            if not is_trial_active(user_id) and tk.get_tokens(user_id) > 0:
-                tk.remove_tokens(user_id)
         else:
             await _edit_text_or_caption(callback.message, SORRY_TRY_AGAIN, kb=kb_back_to_tools())
 
@@ -456,14 +464,14 @@ async def start_zero_design_flow(callback: CallbackQuery, state: FSMContext, bot
             bot=bot,
             msg=callback.message,
             file_path=get_file_path('img/bot/zero_design.jpg'),
-            # показываем такой же «умный» экран ожидания, как в редизайне — с остатком генераций
+            # показываем экран ожидания с текущим статусом доступа
             caption=text_get_file_zero(user_id),
             kb=InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")]]
             ),
         )
     else:
-        if not (db.get_variable(user_id, 'have_sub') == '1'):
+        if not _is_sub_active(user_id):
             await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
         else:
             await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
@@ -545,7 +553,7 @@ async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot
     user_id = callback.from_user.id
 
     if not _has_access(user_id):
-        if not (db.get_variable(user_id, 'have_sub') == '1'):
+        if not _is_sub_active(user_id):
             await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
         else:
             await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
@@ -593,14 +601,8 @@ async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot
                     caption=TEXT_FINAL,
                     kb=None
                 )
-                # списываем токен только если триал НЕ активен
-                if not is_trial_active(user_id) and tk.get_tokens(user_id) > 0:
-                    tk.remove_tokens(user_id)
-
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
+                try: os.remove(tmp_path)
+                except OSError: pass
             else:
                 await _edit_text_or_caption(callback.message, UNSUCCESSFUL_TRY_LATER,
                                             kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(

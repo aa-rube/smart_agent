@@ -1,7 +1,7 @@
 # smart_agent/bot/utils/database.py
 from __future__ import annotations
 
-from typing import Optional, Any, Iterable, List
+from typing import Optional, Any, List
 from datetime import datetime, timedelta
 
 from sqlalchemy import (
@@ -169,7 +169,7 @@ class UserRepository:
     def ensure_user(self, user_id: int) -> bool:
         """
         Возвращает True, если пользователь уже был; False — если только что создан.
-        Дефолты: tokens=0, have_sub=0, trial_until=now+72h.
+        Дефолты: have_sub=0, trial_until=now+72h.
         """
         with self._session() as s, s.begin():
             existed = s.get(User, user_id) is not None
@@ -177,7 +177,6 @@ class UserRepository:
                 u = User(user_id=user_id)
                 s.add(u)
                 s.add_all([
-                    Variable(user_id=user_id, variable_name="tokens",   variable_value="0"),
                     Variable(user_id=user_id, variable_name="have_sub", variable_value="0"),
                     Variable(
                         user_id=user_id, variable_name="trial_until",
@@ -205,27 +204,7 @@ class UserRepository:
             v = s.get(Variable, (user_id, name))
             return v.variable_value if v else None
 
-    # --- tokens helpers (на случай прямого использования репозитория) ---
-    def get_tokens(self, user_id: int) -> int:
-        raw = self.get_var(user_id, "tokens")
-        try:
-            return int(raw) if raw is not None else 0
-        except Exception:
-            return 0
 
-    def set_tokens(self, user_id: int, value: int) -> int:
-        self.set_var(user_id, "tokens", int(value))
-        return int(value)
-
-    def add_tokens(self, user_id: int, delta: int) -> int:
-        new_val = self.get_tokens(user_id) + int(delta)
-        self.set_tokens(user_id, new_val)
-        return new_val
-
-    def remove_tokens(self, user_id: int, delta: int = 1) -> int:
-        new_val = max(0, self.get_tokens(user_id) - int(delta))
-        self.set_tokens(user_id, new_val)
-        return new_val
 
     # --- trial helpers ---
     def set_trial(self, user_id: int, hours: int = 72) -> str:
@@ -385,18 +364,6 @@ def check_and_add_user(user_id: int) -> bool:
     return _repo.ensure_user(user_id)
 
 
-# Необязательно, но удобно (если где-то импортируешь напрямую токены из db)
-def get_tokens(user_id: int) -> int:
-    return _repo.get_tokens(user_id)
-
-
-def add_tokens(user_id: int, n: int) -> int:
-    return _repo.add_tokens(user_id, n)
-
-
-def remove_tokens(user_id: int, n: int = 1) -> int:
-    return _repo.remove_tokens(user_id, n)
-
 # --- Trial wrappers ---
 def set_trial(user_id: int, hours: int = 72) -> str:
     return _repo.set_trial(user_id, hours)
@@ -427,7 +394,3 @@ def summary_list_entries(user_id: int, limit: int = 10) -> list[dict]:
 
 def summary_get_entry(user_id: int, entry_id: int) -> Optional[dict]:
     return _repo.summary_get_entry(user_id, entry_id)
-
-
-
-#summary

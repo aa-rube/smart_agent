@@ -10,23 +10,21 @@ from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 )
 
-import bot.utils.tokens as tk
 import bot.utils.database as db
 from bot.utils import youmoney
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ТАРИФЫ И НАСТРОЙКИ
 # ──────────────────────────────────────────────────────────────────────────────
-# Правила: токены "за месяц" кратно месяцу тарифа. При желании скорректируй.
 TARIFFS: Dict[str, Dict] = {
-    "1m":  {"label": "1 месяц",  "months": 1,  "amount": "2500.00",  "tokens": 100},
-    "3m":  {"label": "3 месяца", "months": 3,  "amount": "6500.00",  "tokens": 300},
-    "6m":  {"label": "6 месяцев","months": 6,  "amount": "12500.00", "tokens": 600},
-    "12m": {"label": "12 месяцев","months": 12,"amount": "24000.00", "tokens": 1200},
+    "1m":  {"label": "1 месяц",   "months": 1,  "amount": "2500.00"},
+    "3m":  {"label": "3 месяца",  "months": 3,  "amount": "6500.00"},
+    "6m":  {"label": "6 месяцев", "months": 6,  "amount": "12500.00"},
+    "12m": {"label": "12 месяцев","months": 12, "amount": "24000.00"},
 }
 
 RATES_TEXT = (
-    "Тут вы можете приобрести нашу подписку по тарифам:\n"
+    "Тут вы можете оформить подписку на доступ:\n"
     "1 месяц / 2.500₽\n"
     "3 месяца / 6.500₽ (скидка 10🔥)\n"
     "6 месяцев / 12.500₽ (скидка 15🔥)\n"
@@ -35,7 +33,7 @@ RATES_TEXT = (
 
 PAY_TEXT = (
     "📦 Что даёт подписка:\n"
-    " — Пакет генераций на выбранный срок (смотри условия тарифа)\n"
+    " — Доступ ко всем инструментам на выбранный срок\n"
     " — Доступ ко всем инструментам\n"
     "Нажмите «Оплатить» для оформления."
 )
@@ -143,14 +141,12 @@ async def choose_rate(cb: CallbackQuery) -> None:
     # Создаём ссылку на оплату через централизованный youmoney.create_pay_ex
     amount = plan["amount"]
     months = plan["months"]
-    tokens = plan["tokens"]
 
-    description = f"Подписка на {plan['label']} ({tokens} генераций)"
+    description = f"Подписка на {plan['label']}"
     meta = {
         "user_id": str(user_id),
         "plan_code": code,
         "months": str(months),
-        "tokens": str(tokens),
         "v": "1",
     }
 
@@ -204,25 +200,22 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
         # разбор плана (из метаданных); фоллбэк — по сумме
         code = metadata.get("plan_code")
         months = int(metadata.get("months") or 0)
-        tokens = int(metadata.get("tokens") or 0)
 
         if not code or code not in TARIFFS:
             # попытка сопоставить по сумме
             amount_val = str(obj.get("amount", {}).get("value") or "")
             for c, pl in TARIFFS.items():
                 if amount_val == pl["amount"]:
-                    code, months, tokens = c, pl["months"], pl["tokens"]
+                    code, months = c, pl["months"]
                     break
 
         if not code:
             # не смогли сопоставить — но деньги пришли; начислим дефолт (1м)
             code = "1m"
             months = months or TARIFFS["1m"]["months"]
-            tokens = tokens or TARIFFS["1m"]["tokens"]
 
         # начисляем
         db.check_and_add_user(user_id)
-        tk.add_tokens(user_id, tokens)
         db.set_variable(user_id, "have_sub", "1")
 
         paid_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
@@ -239,7 +232,6 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                 text=(
                     f"✅ Оплата прошла успешно!\n\n"
                     f"Тариф: *{TARIFFS.get(code, {}).get('label', code)}*\n"
-                    f"Начислено: *{tokens}* генераций\n"
                     f"Подписка активна до: *{sub_until}*"
                 )
             )
