@@ -1,9 +1,9 @@
-# C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\design.py
 from __future__ import annotations
 
 import os
 import fitz
 import aiohttp
+from typing import Optional
 
 from aiogram import Router, F, Bot
 from aiogram.types import (
@@ -14,34 +14,26 @@ from aiogram.fsm.context import FSMContext
 from aiogram.enums.chat_action import ChatAction
 from aiogram.exceptions import TelegramBadRequest
 
-from typing import Optional
-
 import bot.utils.database as db
 from bot.config import get_file_path
 from bot.utils.database import is_trial_active, trial_remaining_hours
-from bot.states.states import DesignStates, ZeroDesignStates
-from executor.prompt_factory import create_floor_plan_prompt, create_prompt
+from bot.states.states import RedesignStates, ZeroDesignStates
+from executor.prompt_factory import create_prompt
 from bot.utils.image_processor import save_image_as_png
 from bot.utils.chat_actions import run_long_operation_with_action
-from bot.utils.ai_processor import (
-    generate_floor_plan,         # для Редизайна
-    generate_design,             # для Zero-Design
-    download_image_from_url,     # загрузка результата по URL (Zero-Design)
-)
+from bot.utils.ai_processor import generate_design, download_image_from_url
 from bot.utils.file_utils import safe_remove
 
 
 # =============================================================================
-# ТЕКСТЫ (ТОЛЬКО ДЛЯ БЛОКА ДИЗАЙНА)
+# Доступ / подписка
 # =============================================================================
 
 def _is_sub_active(user_id: int) -> bool:
-    """Активна ли платная подписка по дате sub_until (YYYY-MM-DD)."""
     raw = db.get_variable(user_id, "sub_until") or ""
     if not raw:
         return False
     try:
-        # дата хранится без времени — сравниваем по UTC дате
         from datetime import datetime
         today = datetime.utcnow().date()
         return today <= datetime.fromisoformat(raw).date()
@@ -49,7 +41,6 @@ def _is_sub_active(user_id: int) -> bool:
         return False
 
 def _format_access_text(user_id: int) -> str:
-    """Короткий статус доступа: триал/подписка/нет доступа."""
     trial_hours = trial_remaining_hours(user_id)
     if _is_sub_active(user_id):
         sub_until = db.get_variable(user_id, "sub_until")
@@ -59,103 +50,69 @@ def _format_access_text(user_id: int) -> str:
     return '😢 Бесплатный период завершён. Оформи подписку, чтобы продолжить.'
 
 def _has_access(user_id: int) -> bool:
-    """Доступ есть, если активен триал ИЛИ активна платная подписка."""
     return is_trial_active(user_id) or _is_sub_active(user_id)
 
+
+# =============================================================================
+# Тексты
+# =============================================================================
 
 def _start_screen_text(user_id: int) -> str:
     tokens_text = _format_access_text(user_id)
     return f"""
-*1️⃣ Выбери, что нужно:*
+*1️⃣ Выбери режим:*
+• 🛋 *Редизайн интерьера* — загрузите фото помещения и выберите стиль.
+• 🆕 *Дизайн с нуля* — фото пустого помещения, выбор мебели и стиля.
 
-\t• 🛋 *Редизайн интерьера* — получите реалистичный дизайн помещения в новом стиле, сохранив планировку.
-
-\t• 🆕 *Дизайн с нуля* — загрузи фото пустого помещения — получи визуализацию, которая помогает продавать дороже.
-
-2️⃣ Получи готовый дизайн за 1–2 минуты 💡
+2️⃣ Получи результат за 1–2 минуты 💡
 
 {tokens_text}
 
-Готов? Загружай файл прямо сюда 👇
+Загрузи файл, когда будешь готов 👇
 """.strip()
-
 
 _TEXT_GET_FILE_REDESIGN_TPL = """
-1️⃣ Загрузи *план/фото помещения* — подойдёт ссылка, фото (jpeg, jpg, png), скан или PDF.
+1️⃣ Загрузи *фото помещения* — подойдёт изображение (jpeg/jpg/png), PDF (1 стр.) или прямая ссылка на картинку.
 
-2️⃣ Получи готовый дизайн за 1–2 минуты 💡
+2️⃣ Выбери интерьерный стиль и получи обновлённый дизайн.
 
 {tokens_text}
 
-Готов? Загружай файл прямо сюда 👇
+Жду файл 👇
 """.strip()
-
 
 def text_get_file_redesign(user_id: int) -> str:
     return _TEXT_GET_FILE_REDESIGN_TPL.format(tokens_text=_format_access_text(user_id))
 
-
-# Экран «загрузи фото» для Zero-Design — с показом остатка генераций
 _TEXT_GET_FILE_ZERO_TPL = """
-1️⃣ Загрузи *фото интерьера* (jpeg, jpg, png) или отправь ссылку на изображение.
+1️⃣ Загрузи *фото интерьера* (jpeg/jpg/png), PDF (1 стр.) или ссылку на изображение.
 
-2️⃣ Получи готовый интерьер за 1–2 минуты 💡
+2️⃣ Выбери тип помещения, меблировку и стиль — и получишь готовую визуализацию.
 
 {tokens_text}
 
-Готов? Загружай файл прямо сюда 👇
+Жду файл 👇
 """.strip()
 
 def text_get_file_zero(user_id: int) -> str:
     return _TEXT_GET_FILE_ZERO_TPL.format(tokens_text=_format_access_text(user_id))
 
-TEXT_GET_STYLE = "Отлично! Теперь выбери стиль оформления 🖼️"
-TEXT_FINAL = "✅ Готово!\nТвоя обновленная визуализация теперь готова влюблять в себя покупателей!"
-ERROR_WRONG_INPUT = "❌ Пожалуйста, отправь фото, PDF (1 страница) или ссылку на изображение."
-ERROR_PDF_PAGES = "❌ Ошибка! В PDF-файле должно быть не больше одной страницы."
-ERROR_LINK = "❌ Не удалось загрузить изображение по этой ссылке. Убедись, что она ведет прямо на картинку (jpg, png)."
-SORRY_TRY_AGAIN = "😔 К сожалению, не удалось сгенерировать изображение. Попробуйте ещё раз."
+TEXT_GET_STYLE = "Ок! Теперь выбери стиль оформления 🖼️"
+TEXT_FINAL = "✅ Готово! Вот результат."
+ERROR_WRONG_INPUT = "❌ Пожалуйста, отправь изображение (jpg/png), PDF (1 страница) или прямую ссылку на картинку."
+ERROR_PDF_PAGES = "❌ В PDF должно быть не больше одной страницы."
+ERROR_LINK = "❌ Не удалось скачать изображение по ссылке. Нужна прямая ссылка на файл (jpg/png)."
+SORRY_TRY_AGAIN = "😔 Не удалось сгенерировать изображение. Попробуйте ещё раз."
 UNSUCCESSFUL_TRY_LATER = "😔 Не удалось скачать сгенерированное изображение. Попробуйте позже."
 
-TEXT_PHOTO_UPLOADED = "Отлично! 📸\nТеперь выбери, какое это помещение:"
-TEXT_GET_FURNITURE_OPTION = """
-Хочешь дизайн с мебелью или без?
-🛋 С мебелью — сразу видно, как может выглядеть готовый интерьер.
-▫️ Без мебели — чистое пространство, акцент на отделке и ощущении масштаба. Прекрасный вариант для новостроек.
-
-Выбери вариант 👇
-(Если не уверен — рекомендую с мебелью для вау-эффекта)
-""".strip()
-
-SUB_FREE = """
-🎁 Бесплатный период завершён
-Пробный доступ на 72 часа истёк — дальше только по подписке.
-
-📦* Что даёт подписка:*
- — Полный доступ ко всем инструментам
- — Без ограничений по количеству запусков в период подписки*
-Стоимость пакета всего 2500 рублей!
-""".strip()
-
-SUB_PAY = """
-🪫 Подписка не активна
-Срок подписки истёк или не был оформлен.
-
-📦* Что даёт подписка:*
- — Полный доступ ко всем инструментам
- — Без ограничений по количеству запусков в период подписки*
-Стоимость пакета всего 2500 рублей!
-""".strip()
-
-
-# =============================================================================
-# КЛАВИАТУРЫ (ТОЛЬКО ДЛЯ БЛОКА ДИЗАЙНА)
-# =============================================================================
-
-# Единая кнопка для перехода к тарифам/оплате (централизовано в subscribe_handler)
 SUBSCRIBE_KB = InlineKeyboardMarkup(
     inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
 )
+
+
+# =============================================================================
+# Клавиатуры
+# =============================================================================
 
 def kb_design_home() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -166,16 +123,6 @@ def kb_design_home() -> InlineKeyboardMarkup:
         ]
     )
 
-
-def kb_visualization_style() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🖊️ Скетч-стиль", callback_data="viz_sketch")],
-            [InlineKeyboardButton(text="📸 Реалистичный стиль", callback_data="viz_realistic")],
-        ]
-    )
-
-
 def kb_style_choices() -> InlineKeyboardMarkup:
     styles = [
         "Современный", "Скандинавский", "Классика", "Минимализм", "Хай-тек",
@@ -183,23 +130,19 @@ def kb_style_choices() -> InlineKeyboardMarkup:
         "🔥 Случайный выбор ИИ",
     ]
     rows = [[InlineKeyboardButton(text=f"💎 {s}", callback_data=f"style_{s}")] for s in styles]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def kb_room_type() -> InlineKeyboardMarkup:
-    rooms = ["🍳 Кухня", "🛏 Спальня", "🛋 Гостиная", "🚿 Ванная", "🚪 Прихожая"]
-    rows = []
-    line = []
-    for r in rooms:
-        line.append(InlineKeyboardButton(text=r, callback_data=f"room_{r}"))
-        if len(line) == 2:
-            rows.append(line)
-            line = []
-    if line:
-        rows.append(line)
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+def kb_room_type() -> InlineKeyboardMarkup:
+    rooms = ["🍳 Кухня", "🛏 Спальня", "🛋 Гостиная", "🚿 Ванная", "🚪 Прихожая"]
+    rows, line = [], []
+    for r in rooms:
+        line.append(InlineKeyboardButton(text=r, callback_data=f"room_{r}"))
+        if len(line) == 2:
+            rows.append(line); line = []
+    if line: rows.append(line)
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def kb_furniture() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -210,19 +153,11 @@ def kb_furniture() -> InlineKeyboardMarkup:
     )
 
 
-
-def kb_back_to_tools() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")]]
-    )
-
-
 # =============================================================================
-# ХЕЛПЕРЫ ОБНОВЛЕНИЯ/ЗАМЕНЫ СООБЩЕНИЯ
+# Хелперы редактирования
 # =============================================================================
 
 async def _edit_text_or_caption(msg: Message, text: str, kb: Optional[InlineKeyboardMarkup] = None) -> None:
-    """Обновить текст/подпись/клавиатуру текущего сообщения (без создания нового)."""
     try:
         await msg.edit_text(text, reply_markup=kb, parse_mode=None)
         return
@@ -238,14 +173,9 @@ async def _edit_text_or_caption(msg: Message, text: str, kb: Optional[InlineKeyb
     except TelegramBadRequest:
         pass
 
-
 async def _edit_or_replace_with_photo_file(
     bot: Bot, msg: Message, file_path: str, caption: str, kb: Optional[InlineKeyboardMarkup] = None
 ) -> None:
-    """
-    Поменять контент текущего сообщения на фото с подписью (из файла).
-    Если не удаётся заменить — удаляем старое и отправляем фото заново.
-    """
     try:
         media = InputMediaPhoto(media=FSInputFile(file_path), caption=caption)
         await msg.edit_media(media=media, reply_markup=kb)
@@ -257,11 +187,9 @@ async def _edit_or_replace_with_photo_file(
             pass
         await bot.send_photo(chat_id=msg.chat.id, photo=FSInputFile(file_path), caption=caption, reply_markup=kb)
 
-
 async def _edit_or_replace_with_photo_url(
     bot: Bot, msg: Message, url: str, caption: str, kb: Optional[InlineKeyboardMarkup] = None
 ) -> None:
-    """Заменить на фото по URL; при неудаче — отправить заново новым сообщением."""
     try:
         media = InputMediaPhoto(media=url, caption=caption)
         await msg.edit_media(media=media, reply_markup=kb)
@@ -275,23 +203,19 @@ async def _edit_or_replace_with_photo_url(
 
 
 # =============================================================================
-# ГЛАВНЫЙ ЭКРАН «ДИЗАЙН» (nav.design_home)
+# Главный экран «Дизайн»
 # =============================================================================
 
 async def design_home(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """
-    Показываем карточку раздела: пытаемся заменить текущее сообщение
-    на картинку main_design.jpg + caption; при неудаче — фолбэк на текст.
-    """
     await state.clear()
     user_id = callback.from_user.id
 
-    main_rel = "img/bot/main_design.jpg"  # data/img/bot/main_design.jpg
-    main_path = get_file_path(main_rel)
+    cover_rel = "img/bot/main_design.jpg"
+    cover_path = get_file_path(cover_rel)
     caption = _start_screen_text(user_id)
 
-    if os.path.exists(main_path):
-        await _edit_or_replace_with_photo_file(bot, callback.message, main_path, caption, kb_design_home())
+    if os.path.exists(cover_path):
+        await _edit_or_replace_with_photo_file(bot, callback.message, cover_path, caption, kb_design_home())
     else:
         await _edit_text_or_caption(callback.message, caption, kb_design_home())
 
@@ -299,36 +223,32 @@ async def design_home(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
 
 # =============================================================================
-# РЕДИЗАЙН ИНТЕРЬЕРА (по фото/плану)
+# РЕДИЗАЙН (по фото)
 # =============================================================================
 
-async def start_design_flow(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """
-    Начало редизайна: проверяем доступ → показываем экран загрузки файла.
-    """
+async def start_redesign_flow(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """Начало редизайна — просим загрузить фото/скан/ссылку."""
     user_id = callback.message.chat.id
 
     if _has_access(user_id):
-        await state.set_state(DesignStates.waiting_for_file)
+        await state.set_state(RedesignStates.waiting_for_file)
         await _edit_or_replace_with_photo_file(
             bot=bot,
             msg=callback.message,
-            file_path=get_file_path('img/bot/plan.jpg'),
+            file_path=get_file_path('img/bot/design.jpg'),
             caption=text_get_file_redesign(user_id),
-            kb=kb_back_to_tools(),
+            kb=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")]]
+            ),
         )
     else:
-        # нет доступа: либо триал закончился и подписки нет, либо подписка истекла
-        if not _is_sub_active(user_id):
-            await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
-        else:
-            await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
+        await _edit_text_or_caption(callback.message, _format_access_text(user_id), SUBSCRIBE_KB)
 
     await callback.answer()
 
 
 async def handle_file_redesign(message: Message, state: FSMContext, bot: Bot):
-    """Загрузка файла/ссылки для редизайна → ждём выбор типа визуализации."""
+    """Получаем файл для редизайна → затем спросим тип помещения и стиль."""
     await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     user_id = message.from_user.id
     image_bytes: bytes | None = None
@@ -337,12 +257,10 @@ async def handle_file_redesign(message: Message, state: FSMContext, bot: Bot):
         file_id = message.photo[-1].file_id
         file = await bot.get_file(file_id)
         image_bytes = (await bot.download_file(file.file_path)).read()
-
     elif message.document and message.document.mime_type and message.document.mime_type.startswith('image/'):
         file_id = message.document.file_id
         file = await bot.get_file(file_id)
         image_bytes = (await bot.download_file(file.file_path)).read()
-
     elif message.document and message.document.mime_type == 'application/pdf':
         file_id = message.document.file_id
         file = await bot.get_file(file_id)
@@ -355,7 +273,6 @@ async def handle_file_redesign(message: Message, state: FSMContext, bot: Bot):
         pix = page.get_pixmap(dpi=200)
         image_bytes = pix.tobytes("png")
         doc.close()
-
     elif message.text and (message.text.startswith('http://') or message.text.startswith('https://')):
         url = message.text.strip()
         try:
@@ -374,56 +291,46 @@ async def handle_file_redesign(message: Message, state: FSMContext, bot: Bot):
         return
 
     if image_bytes:
-        saved_path = await save_image_as_png(image_bytes, user_id)
-        if saved_path:
-            await state.update_data(image_path=saved_path)
-            await message.answer("Выберите стиль визуализации:", reply_markup=kb_visualization_style())
-            await state.set_state(DesignStates.waiting_for_visualization_style)
-        else:
-            await message.answer("Произошла ошибка при обработке файла. Попробуйте ещё раз.")
+        saved_path = get_file_path(f"img/tmp/redesign_{user_id}.png")
+        os.makedirs(os.path.dirname(saved_path), exist_ok=True)
+        with open(saved_path, "wb") as f:
+            f.write(image_bytes)
+
+        await state.update_data(image_path=saved_path)
+        await message.answer("Какое это помещение?", reply_markup=kb_room_type())
+        await state.set_state(RedesignStates.waiting_for_room_type)
 
 
-async def handle_visualization_style(callback: CallbackQuery, state: FSMContext):
-    """Выбор: скетч/реализм → дальше выбор интерьерного стиля (список)."""
-    viz_style = "sketch" if callback.data == "viz_sketch" else "realistic"
-    await state.update_data(visualization_style=viz_style)
+async def handle_room_type_redesign(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(room_type=callback.data.split('_', 1)[1])
     await callback.message.edit_text(TEXT_GET_STYLE, reply_markup=kb_style_choices())
-    await state.set_state(DesignStates.waiting_for_style)
+    await state.set_state(RedesignStates.waiting_for_style)
     await callback.answer()
 
 
 async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """Финиш редизайна: генерируем по plan+style."""
-    await callback.answer("Принято! Начинаю генерацию...")
-
+    """Генерация редизайна по фото + room_type + style."""
     user_id = callback.from_user.id
     if not _has_access(user_id):
-        if not _is_sub_active(user_id):
-            await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
-        else:
-            await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
+        await _edit_text_or_caption(callback.message, _format_access_text(user_id), SUBSCRIBE_KB)
         await state.clear()
+        await callback.answer()
         return
 
-    user_data = await state.get_data()
-    image_path = user_data.get("image_path")
-    visualization_style = user_data.get("visualization_style")
-
+    data = await state.get_data()
+    image_path = data.get("image_path")
+    room_type = data.get("room_type")
     try:
-        _, style_raw = (callback.data or "").split("_", 1)
-        interior_style = style_raw
+        _, style_choice = (callback.data or "").split("_", 1)
     except Exception:
-        interior_style = "Модерн"
+        style_choice = "Модерн"
 
-    prompt = create_floor_plan_prompt(
-        visualization_style=visualization_style,
-        interior_style=interior_style
-    )
+    prompt = create_prompt(style=style_choice, room_type=room_type)
 
-    await _edit_text_or_caption(callback.message, "⏳ Генерирую визуализацию… Это может занять до 1–2 минут.")
+    await _edit_text_or_caption(callback.message, "⏳ Генерирую дизайн… Это может занять до 1–2 минут.")
 
     try:
-        coro = generate_floor_plan(floor_plan_path=image_path, prompt=prompt)
+        coro = generate_design(image_path=image_path, prompt=prompt)
         image_url = await run_long_operation_with_action(
             bot=bot,
             chat_id=user_id,
@@ -432,10 +339,34 @@ async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot:
         )
 
         if image_url:
-            await _edit_or_replace_with_photo_url(bot, callback.message, image_url, TEXT_FINAL, kb=None)
-        else:
-            await _edit_text_or_caption(callback.message, SORRY_TRY_AGAIN, kb=kb_back_to_tools())
+            image_bytes = await download_image_from_url(image_url)
+            if image_bytes:
+                tmp_path = get_file_path(f"img/tmp/result_{user_id}.png")
+                os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
+                with open(tmp_path, "wb") as f:
+                    f.write(image_bytes)
 
+                await _edit_or_replace_with_photo_file(
+                    bot=bot,
+                    msg=callback.message,
+                    file_path=tmp_path,
+                    caption=TEXT_FINAL,
+                    kb=None
+                )
+                try: os.remove(tmp_path)
+                except OSError: pass
+            else:
+                await _edit_text_or_caption(
+                    callback.message,
+                    UNSUCCESSFUL_TRY_LATER,
+                    kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                        text="⬅️ Назад", callback_data="nav.design_home")]]))
+        else:
+            await _edit_text_or_caption(
+                callback.message,
+                SORRY_TRY_AGAIN,
+                kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                    text="⬅️ Назад", callback_data="nav.design_home")]]))
     finally:
         if image_path and os.path.exists(image_path):
             if safe_remove(image_path):
@@ -443,19 +374,14 @@ async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot:
             else:
                 print(f"Не удалось удалить временный файл (занят): {image_path}")
         await state.clear()
+        await callback.answer()
 
 
 # =============================================================================
-# ZERO-DESIGN (ДИЗАЙН С НУЛЯ) — ОТЛИЧИТЕЛЬНЫЕ МЕТОДЫ
-# -----------------------------------------------------------------------------
-# В этом сценарии после загрузки фото:
-# 1) Выбираем тип помещения → 2) Выбираем «с мебелью / без» → 3) Выбираем стиль
-# После чего генерируется итоговая картинка (generate_design), результат скачивается
-# по URL и отправляется как фото (если замена невозможна — новым сообщением).
+# ДИЗАЙН С НУЛЯ (Zero-Design)
 # =============================================================================
 
 async def start_zero_design_flow(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """Старт Zero-Design: экран загрузки фото + переход в состояние ожидания файла."""
     user_id = callback.message.chat.id
 
     if _has_access(user_id):
@@ -464,23 +390,18 @@ async def start_zero_design_flow(callback: CallbackQuery, state: FSMContext, bot
             bot=bot,
             msg=callback.message,
             file_path=get_file_path('img/bot/zero_design.jpg'),
-            # показываем экран ожидания с текущим статусом доступа
             caption=text_get_file_zero(user_id),
             kb=InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")]]
             ),
         )
     else:
-        if not _is_sub_active(user_id):
-            await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
-        else:
-            await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
+        await _edit_text_or_caption(callback.message, _format_access_text(user_id), SUBSCRIBE_KB)
 
     await callback.answer()
 
 
 async def handle_file_zero(message: Message, state: FSMContext, bot: Bot):
-    """Загрузка файла для Zero-Design → выбор типа помещения."""
     await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     user_id = message.from_user.id
     image_bytes: bytes | None = None
@@ -526,22 +447,25 @@ async def handle_file_zero(message: Message, state: FSMContext, bot: Bot):
         saved_path = await save_image_as_png(image_bytes, user_id)
         if saved_path:
             await state.update_data(image_path=saved_path)
-            await message.answer(TEXT_PHOTO_UPLOADED, reply_markup=kb_room_type())
+            await message.answer("Какое это помещение?", reply_markup=kb_room_type())
             await state.set_state(ZeroDesignStates.waiting_for_room_type)
         else:
             await message.answer("Произошла ошибка при обработке файла. Попробуйте ещё раз.")
 
 
-async def handle_room_type(callback: CallbackQuery, state: FSMContext):
-    """Zero-Design: выбор типа помещения → выбор мебели."""
+async def handle_room_type_zero(callback: CallbackQuery, state: FSMContext):
     await state.update_data(room_type=callback.data.split('_', 1)[1])
-    await callback.message.edit_text(TEXT_GET_FURNITURE_OPTION, reply_markup=kb_furniture())
+    await callback.message.edit_text(
+        "Хочешь дизайн с мебелью или без?\n\n"
+        "🛋 С мебелью — сразу видно, как может выглядеть готовый интерьер.\n"
+        "▫️ Без мебели — чистое пространство, акцент на отделке.",
+        reply_markup=kb_furniture()
+    )
     await state.set_state(ZeroDesignStates.waiting_for_furniture)
     await callback.answer()
 
 
-async def handle_furniture(callback: CallbackQuery, state: FSMContext):
-    """Zero-Design: выбор меблировки → выбор стиля."""
+async def handle_furniture_zero(callback: CallbackQuery, state: FSMContext):
     await state.update_data(furniture_choice=callback.data)  # furniture_yes | furniture_no
     await callback.message.edit_text(TEXT_GET_STYLE, reply_markup=kb_style_choices())
     await state.set_state(ZeroDesignStates.waiting_for_style)
@@ -549,24 +473,19 @@ async def handle_furniture(callback: CallbackQuery, state: FSMContext):
 
 
 async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """Zero-Design: генерируем по фото + room_type + furniture + style."""
     user_id = callback.from_user.id
 
     if not _has_access(user_id):
-        if not _is_sub_active(user_id):
-            await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
-        else:
-            await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
+        await _edit_text_or_caption(callback.message, _format_access_text(user_id), SUBSCRIBE_KB)
         await state.clear()
         await callback.answer()
         return
 
-    user_data = await state.get_data()
-    image_path = user_data.get("image_path")
-    room_type = user_data.get("room_type")
-    furniture_choice = user_data.get("furniture_choice")
+    data = await state.get_data()
+    image_path = data.get("image_path")
+    room_type = data.get("room_type")
+    furniture_choice = data.get("furniture_choice")
 
-    # стиль из callback_data вида "style_<Название>"
     try:
         _, style_choice = (callback.data or "").split("_", 1)
     except Exception:
@@ -588,7 +507,6 @@ async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot
         if image_url:
             image_bytes = await download_image_from_url(image_url)
             if image_bytes:
-                # сохраняем временно и отправляем как фото
                 tmp_path = get_file_path(f"img/tmp/result_{user_id}.png")
                 os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
                 with open(tmp_path, "wb") as f:
@@ -604,14 +522,17 @@ async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot
                 try: os.remove(tmp_path)
                 except OSError: pass
             else:
-                await _edit_text_or_caption(callback.message, UNSUCCESSFUL_TRY_LATER,
-                                            kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
-                                                text="⬅️ Назад", callback_data="nav.design_home")]]))
+                await _edit_text_or_caption(
+                    callback.message,
+                    UNSUCCESSFUL_TRY_LATER,
+                    kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                        text="⬅️ Назад", callback_data="nav.design_home")]]))
         else:
-            await _edit_text_or_caption(callback.message, SORRY_TRY_AGAIN,
-                                        kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
-                                            text="⬅️ Назад", callback_data="nav.design_home")]]))
-
+            await _edit_text_or_caption(
+                callback.message,
+                SORRY_TRY_AGAIN,
+                kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                    text="⬅️ Назад", callback_data="nav.design_home")]]))
     finally:
         if image_path and os.path.exists(image_path):
             if safe_remove(image_path):
@@ -623,7 +544,7 @@ async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot
 
 
 # =============================================================================
-# ROUTER
+# Router
 # =============================================================================
 
 def router(rt: Router):
@@ -631,22 +552,22 @@ def router(rt: Router):
     rt.callback_query.register(design_home, F.data == 'nav.design_home')
 
     # Редизайн
-    rt.callback_query.register(start_design_flow, F.data == "floor_plan")
+    rt.callback_query.register(start_redesign_flow, F.data == "redesign")
     rt.message.register(
         handle_file_redesign,
-        DesignStates.waiting_for_file,
+        RedesignStates.waiting_for_file,
         F.content_type.in_({ContentType.PHOTO, ContentType.DOCUMENT, ContentType.TEXT})
     )
-    rt.callback_query.register(handle_visualization_style, DesignStates.waiting_for_visualization_style)
-    rt.callback_query.register(handle_style_redesign, DesignStates.waiting_for_style)
+    rt.callback_query.register(handle_room_type_redesign, RedesignStates.waiting_for_room_type)
+    rt.callback_query.register(handle_style_redesign, RedesignStates.waiting_for_style)
 
-    # Zero-Design (Дизайн с нуля)
+    # Дизайн с нуля
     rt.callback_query.register(start_zero_design_flow, F.data == "0design")
     rt.message.register(
         handle_file_zero,
         ZeroDesignStates.waiting_for_file,
         F.content_type.in_({ContentType.PHOTO, ContentType.DOCUMENT, ContentType.TEXT})
     )
-    rt.callback_query.register(handle_room_type, ZeroDesignStates.waiting_for_room_type)
-    rt.callback_query.register(handle_furniture, ZeroDesignStates.waiting_for_furniture)
+    rt.callback_query.register(handle_room_type_zero, ZeroDesignStates.waiting_for_room_type)
+    rt.callback_query.register(handle_furniture_zero, ZeroDesignStates.waiting_for_furniture)
     rt.callback_query.register(handle_style_zero, ZeroDesignStates.waiting_for_style)

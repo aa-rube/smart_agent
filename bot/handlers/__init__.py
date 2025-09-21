@@ -3,7 +3,7 @@ from aiogram import Router
 from . import (
     handler_manager,
     design,
-    # plans,
+    plans,
     admin,
     objection_playbook,
     description_playbook,
@@ -16,7 +16,7 @@ def register_routers(rt: Router):
     feedback_playbook.router(rt)
     handler_manager.router(rt)
     design.router(rt)
-    # plans.router(rt)
+    plans.router(rt)
     description_playbook.router(rt)
     objection_playbook.router(rt)
     summary_playbook.router(rt)
