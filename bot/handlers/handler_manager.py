@@ -108,7 +108,7 @@ def help_kb():
 # =============================================================================
 async def init_user_event(evt: Union[Message, CallbackQuery]) -> None:
     """
-    Гарантирует, что пользователь есть в БД и имеет дефолтные значения.
+    Гарантирует, что пользователь есть в БД (дефолты ставятся в repo.ensure_user).
     Работает и для входящих сообщений, и для callback’ов.
     """
     if isinstance(evt, CallbackQuery):
@@ -123,14 +123,9 @@ async def init_user_event(evt: Union[Message, CallbackQuery]) -> None:
 
     user_id = msg.chat.id
 
-    # основная БД
-    if not db.check_and_add_user(user_id):
-        db.set_variable(user_id, "tokens", 2)
-        db.set_variable(user_id, "have_sub", 0)
-
-        # админская БД (подписки/уведомления)
-        adb.init_notification_table()
-        adb.inicialize_users(user_id, username or "")
+    db.check_and_add_user(user_id)
+    adb.init_notification_table()
+    adb.inicialize_users(user_id, username or "")
 
 
 # =============================================================================

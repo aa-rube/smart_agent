@@ -11,18 +11,49 @@ from aiogram.exceptions import TelegramBadRequest
 from bot.states.states import RedesignStates
 from executor.prompt_factory import create_prompt
 from bot.text.texts import *
-from bot.keyboards.inline import *
 from bot.config import *
 from bot.utils.image_processor import save_image_as_png
 from bot.utils.chat_actions import run_long_operation_with_action
 from bot.utils.ai_processor import generate_design, download_image_from_url
 from bot.utils.file_utils import safe_remove
+from bot.utils.database import is_trial_active
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
+SUBSCRIBE_KB = InlineKeyboardMarkup(
+    inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
+)
+
+
+def _has_access(user_id: int) -> bool:
+    return is_trial_active(user_id) or tk.get_tokens(user_id) > 0
 
 design_home_inline = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")]
     ])
+
+
+def get_style_kb():
+    builder = InlineKeyboardBuilder()
+    styles = [
+        "Современный", "Скандинавский", "Классика", "Минимализм", "Хай-тек",
+        "Лофт", "Эко-стиль", "Средиземноморский", "Барокко",
+        "Неоклассика"
+    ]
+    for style in styles:
+        builder.button(text=f"💎 {style}", callback_data=f"style_{style}")
+    builder.button(text="🔥 Случайный выбор ИИ", callback_data="style_🔥 Случайный выбор ИИ")
+    builder.adjust(1)
+    return builder.as_markup()
+
+def get_room_type_kb():
+    builder = InlineKeyboardBuilder()
+    rooms = ["🍳 Кухня", "🛏 Спальня", "🛋 Гостиная", "🚿 Ванная", "🚪 Прихожая"]
+    for room in rooms:
+        # Используем текст с эмодзи как данные для колбэка
+        builder.button(text=room, callback_data=f"room_{room}")
+    builder.adjust(2)  # Располагаем по 2 кнопки в ряд
+    return builder.as_markup()
 
 
 # ===== helpers: редактирование текущего сообщения =====
@@ -67,7 +98,7 @@ async def _edit_or_replace_with_photo(bot: Bot, msg: Message, photo_path: str, c
 async def start_redesign_flow(callback: CallbackQuery, state: FSMContext, bot: Bot):
     user_id = callback.message.chat.id
 
-    if tk.get_tokens(user_id) > 0:
+    if _has_access(user_id):
         # показать экран «загрузите фото» в текущем сообщении (как апдейт)
         await _edit_or_replace_with_photo(
             bot=bot,
@@ -79,10 +110,10 @@ async def start_redesign_flow(callback: CallbackQuery, state: FSMContext, bot: B
         await state.set_state(RedesignStates.waiting_for_photo)
     else:
         # показать оффер подписки / оплаты — тоже редактированием
-        if db.get_variable(user_id, 'have_sub') == '0':
-            await _edit_text_or_caption(callback.message, SUB_FREE, sub(user_id))
+        if not (db.get_variable(user_id, 'have_sub') == '1'):
+            await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
         else:
-            await _edit_text_or_caption(callback.message, SUB_PAY, sub(user_id))
+            await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
 
     await callback.answer()
 
@@ -97,12 +128,12 @@ async def handle_room_type(callback: CallbackQuery, state: FSMContext):
 async def handle_style(callback: CallbackQuery, state: FSMContext, bot: Bot):
     user_id = callback.from_user.id
 
-    # токены закончились — показываем предложение пополнить В ТЕКУЩЕМ сообщении
-    if tk.get_tokens(user_id) <= 0:
-        if db.get_variable(user_id, 'have_sub') == '0':
-            await _edit_text_or_caption(callback.message, SUB_FREE, sub(user_id))
+    # нет доступа — триал кончился и токенов нет
+    if not _has_access(user_id):
+        if not (db.get_variable(user_id, 'have_sub') == '1'):
+            await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
         else:
-            await _edit_text_or_caption(callback.message, SUB_PAY, sub(user_id))
+            await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
         await state.clear()
         await callback.answer()
         return
@@ -150,7 +181,9 @@ async def handle_style(callback: CallbackQuery, state: FSMContext, bot: Bot):
                     caption=TEXT_FINAL,
                     kb=None
                 )
-                print(f'REMOVE TOKENS: {tk.remove_tokens(user_id)}')
+                if not is_trial_active(user_id) and tk.get_tokens(user_id) > 0:
+                    tk.remove_tokens(user_id)
+                print('Generation done')
 
                 try:
                     os.remove(tmp_path)

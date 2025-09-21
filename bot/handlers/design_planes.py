@@ -19,6 +19,7 @@ from typing import Optional
 import bot.utils.tokens as tk
 import bot.utils.database as db
 from bot.config import get_file_path
+from bot.utils.database import is_trial_active, trial_remaining_hours
 from bot.states.states import DesignStates, ZeroDesignStates
 from executor.prompt_factory import create_floor_plan_prompt, create_prompt
 from bot.utils.image_processor import save_image_as_png
@@ -36,18 +37,21 @@ from bot.utils.file_utils import safe_remove
 # =============================================================================
 
 def _format_tokens_text(user_id: int) -> str:
-    is_sub = db.get_variable(user_id, 'have_sub')
-    tokens = db.get_variable(user_id, 'tokens')
-    try:
-        tokens_int = int(tokens)
-    except Exception:
-        tokens_int = 0
+    tokens_int = tk.get_tokens(user_id)
+    have_sub = db.get_variable(user_id, 'have_sub') == '1'
+    trial_hours = trial_remaining_hours(user_id)
 
-    if tokens_int <= 0:
-        return '😢 У вас закончились генерации. Пополните, используя команду /sub'
-    if is_sub == '1':
+    if trial_hours > 0 and not have_sub:
+        return f'🆓 Бесплатный доступ активен ещё *~{trial_hours} ч.*'
+    if tokens_int > 0:
         return f'🔋 У тебя есть *{tokens_int} генераций дизайна*'
-    return f'🎁 У тебя есть *{tokens_int} бесплатных дизайна* на тест — используй с умом 😉'
+    if have_sub:
+        return '🪫 Токены закончились — продли подписку или пополни пакет.'
+    return '😢 Бесплатный период завершён. Оформи подписку, чтобы продолжить.'
+
+def _has_access(user_id: int) -> bool:
+    """Есть доступ, если активен триал ИЛИ есть токены."""
+    return is_trial_active(user_id) or tk.get_tokens(user_id) > 0
 
 
 def _start_screen_text(user_id: int) -> str:
@@ -115,8 +119,8 @@ TEXT_GET_FURNITURE_OPTION = """
 """.strip()
 
 SUB_FREE = """
-🎁 Упс… Бесплатный лимит исчерпан
-Ты использовал 2 бесплатных запроса — дальше только по подписке.
+🎁 Бесплатный период завершён
+Пробный доступ на 72 часа истёк — дальше только по подписке.
 
 📦* Что даёт подписка:*
  — Пакет из 100 любых генераций
@@ -294,7 +298,7 @@ async def start_design_flow(callback: CallbackQuery, state: FSMContext, bot: Bot
     """
     user_id = callback.message.chat.id
 
-    if tk.get_tokens(user_id) > 0:
+    if _has_access(user_id):
         await state.set_state(DesignStates.waiting_for_file)
         await _edit_or_replace_with_photo_file(
             bot=bot,
@@ -304,7 +308,7 @@ async def start_design_flow(callback: CallbackQuery, state: FSMContext, bot: Bot
             kb=kb_back_to_tools(),
         )
     else:
-        if db.get_variable(user_id, 'have_sub') == '0':
+        if not (db.get_variable(user_id, 'have_sub') == '1'):
             await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
         else:
             await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
@@ -382,8 +386,8 @@ async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot:
     await callback.answer("Принято! Начинаю генерацию...")
 
     user_id = callback.from_user.id
-    if tk.get_tokens(user_id) <= 0:
-        if db.get_variable(user_id, 'have_sub') == '0':
+    if not _has_access(user_id):
+        if not (db.get_variable(user_id, 'have_sub') == '1'):
             await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
         else:
             await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
@@ -418,7 +422,9 @@ async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot:
 
         if image_url:
             await _edit_or_replace_with_photo_url(bot, callback.message, image_url, TEXT_FINAL, kb=None)
-            tk.remove_tokens(user_id)
+            # списываем токен только если триал НЕ активен
+            if not is_trial_active(user_id) and tk.get_tokens(user_id) > 0:
+                tk.remove_tokens(user_id)
         else:
             await _edit_text_or_caption(callback.message, SORRY_TRY_AGAIN, kb=kb_back_to_tools())
 
@@ -444,7 +450,7 @@ async def start_zero_design_flow(callback: CallbackQuery, state: FSMContext, bot
     """Старт Zero-Design: экран загрузки фото + переход в состояние ожидания файла."""
     user_id = callback.message.chat.id
 
-    if tk.get_tokens(user_id) > 0:
+    if _has_access(user_id):
         await state.set_state(ZeroDesignStates.waiting_for_file)
         await _edit_or_replace_with_photo_file(
             bot=bot,
@@ -457,7 +463,7 @@ async def start_zero_design_flow(callback: CallbackQuery, state: FSMContext, bot
             ),
         )
     else:
-        if db.get_variable(user_id, 'have_sub') == '0':
+        if not (db.get_variable(user_id, 'have_sub') == '1'):
             await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
         else:
             await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
@@ -538,8 +544,8 @@ async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot
     """Zero-Design: генерируем по фото + room_type + furniture + style."""
     user_id = callback.from_user.id
 
-    if tk.get_tokens(user_id) <= 0:
-        if db.get_variable(user_id, 'have_sub') == '0':
+    if not _has_access(user_id):
+        if not (db.get_variable(user_id, 'have_sub') == '1'):
             await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
         else:
             await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
@@ -587,7 +593,9 @@ async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot
                     caption=TEXT_FINAL,
                     kb=None
                 )
-                tk.remove_tokens(user_id)
+                # списываем токен только если триал НЕ активен
+                if not is_trial_active(user_id) and tk.get_tokens(user_id) > 0:
+                    tk.remove_tokens(user_id)
 
                 try:
                     os.remove(tmp_path)

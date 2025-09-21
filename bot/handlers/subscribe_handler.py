@@ -1,9 +1,7 @@
 # smart_agent/bot/handlers/subscribe_handler.py
 from __future__ import annotations
 
-import json
 import logging
-import uuid
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple
 

@@ -2,17 +2,60 @@
 from __future__ import annotations
 
 import logging
+from typing import List, Dict, Union, Optional
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramAPIError
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 from bot.text.texts import *
-from bot.keyboards.inline import *
 from bot.config import PARTNER_CHANNELS
 
 # статусы, трактуемые как "подписан"
 OK_STATUSES = {"creator", "administrator", "member"}
+
+def build_missing_subscribe_keyboard(
+        channels: List[Dict[str, Union[int, str]]],
+        sub_map: Dict[int, bool],
+        *,
+        retry_callback_data: Optional[str] = None,
+        columns: int = 1,
+) -> InlineKeyboardMarkup:
+    """
+    Строит клавиатуру ТОЛЬКО по отсутствующим подпискам.
+    Кнопка = URL из конфига, текст = label из конфига.
+    """
+    columns = max(1, min(columns, 4))
+    rows: list[list[InlineKeyboardButton]] = []
+    line: list[InlineKeyboardButton] = []
+
+    for cfg in channels:
+        chat_id: int = cfg["chat_id"]
+        if sub_map.get(chat_id, True):
+            continue  # уже подписан — кнопку не показываем
+
+        url: str = cfg["url"]  # если нет — упадёт (ошибка данных), это ок
+        label: str = str(cfg.get("label") or "Канал")
+
+        btn = InlineKeyboardButton(text=f"Подписаться → {label}", url=url)
+
+        if columns == 1:
+            rows.append([btn])
+        else:
+            line.append(btn)
+            if len(line) >= columns:
+                rows.append(line)
+                line = []
+
+    if columns > 1 and line:
+        rows.append(line)
+
+    if retry_callback_data:
+        rows.append([InlineKeyboardButton(text="✅ Проверить", callback_data=retry_callback_data)])
+        rows.append([InlineKeyboardButton(text="❗️ Не подписываться", callback_data="skip_subscribe")])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 
 async def _is_subscribed(bot: Bot, chat_id: int, user_id: int) -> bool:
