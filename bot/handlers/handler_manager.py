@@ -18,7 +18,6 @@ from aiogram.types import (
     InputMediaPhoto,
 )
 
-import bot.utils.admin_db as adb
 import bot.utils.database as db
 import bot.utils.tokens as tk
 from bot.config import get_file_path
@@ -101,8 +100,6 @@ def help_kb():
     return builder.as_markup()
 
 
-
-
 # =============================================================================
 # Инициализация пользователя
 # =============================================================================
@@ -123,9 +120,11 @@ async def init_user_event(evt: Union[Message, CallbackQuery]) -> None:
 
     user_id = msg.chat.id
 
-    db.check_and_add_user(user_id)
-    adb.init_notification_table()
-    adb.inicialize_users(user_id, username or "")
+    # Основная БД: гарантируем пользователя и дефолты
+    if not db.check_and_add_user(user_id):
+        db.set_variable(user_id, "tokens", 2)
+        db.set_variable(user_id, "have_sub", 0)
+        # Примечание: отдельная admin_db больше не требуется
 
 
 # =============================================================================
@@ -315,16 +314,17 @@ async def smm_content(callback: CallbackQuery) -> None:
 async def my_profile(callback: CallbackQuery) -> None:
     await init_user_event(callback)
 
-    info = adb.get_my_info(callback.from_user.id)
-    if info:
-        text = (
-            f'Подписка: {"YES" if info[0] else "NO"}\n'
-            f"Дата оплаты подписки: {info[1] or '-'}\n"
-            f"Дата окончания подписки: {info[2] or '-'}"
-        )
-        await _edit_text_safe(callback, text)
-    else:
-        await _edit_text_safe(callback, "Профиль не найден.")
+    user_id = callback.from_user.id
+    have_sub = (db.get_variable(user_id, "have_sub") == "1")
+    paid_at = db.get_variable(user_id, "sub_paid_at") or "-"
+    sub_until = db.get_variable(user_id, "sub_until") or "-"
+
+    text = (
+        f"Подписка: {'YES' if have_sub else 'NO'}\n"
+        f"Дата оплаты подписки: {paid_at}\n"
+        f"Дата окончания подписки: {sub_until}"
+    )
+    await _edit_text_safe(callback, text)
 
 
 # =============================================================================
