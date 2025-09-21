@@ -193,8 +193,6 @@ def build_description_request_from_fields(
     use_model = model or DESCRIPTION_MODEL
     return {
         "model": use_model,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
@@ -394,8 +392,6 @@ def build_summary_analyze_request(
 
     payload: Dict[str, Any] = {
         "model": model,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
         "messages": [
             {"role": "system", "content": sys_prompt},
             {"role": "user",   "content": user_prompt},
