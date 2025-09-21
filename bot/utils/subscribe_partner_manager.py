@@ -11,8 +11,17 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from bot.text.texts import *
 from bot.config import PARTNER_CHANNELS
 
+
 # статусы, трактуемые как "подписан"
 OK_STATUSES = {"creator", "administrator", "member"}
+
+
+you_have_to_subscribe = ('''
+🔔 Если хочешь бесплатно протестировать все наши инструменты, подпишись на наше сообщество
+
+После подписки нажми «✅ Проверить».
+''')
+
 
 def build_missing_subscribe_keyboard(
         channels: List[Dict[str, Union[int, str]]],
@@ -177,13 +186,3 @@ async def ensure_partner_subs(
         await reply_msg.answer(you_have_to_subscribe, reply_markup=kb)
 
     return False
-
-
-
-
-
-you_have_to_subscribe = ('''
-🔔 Если хочешь бесплатно протестировать все наши инструменты, подпишись на наше сообщество
-
-После подписки нажми «✅ Проверить».
-''')
