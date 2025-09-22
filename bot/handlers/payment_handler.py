@@ -4,10 +4,11 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple
+from bot.config import get_file_path
 
 from aiogram import Router, F, Bot
 from aiogram.types import (
-    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 )
 
 import bot.utils.database as db
@@ -201,7 +202,30 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
         if not payment_id or not status:
             return 400, "missing payment_id/status"
 
-        # интересует только успешное завершение
+        # Неуспешные завершения/отмена — уведомляем пользователя картинкой и текстом
+        if (event in ("payment.canceled", "payment.expired")
+                or status in ("canceled", "expired")):
+            try:
+                user_id_raw = (payload.get("object") or {}).get("metadata", {}).get("user_id")
+                user_id_fail = int(user_id_raw) if user_id_raw is not None else None
+            except Exception:
+                user_id_fail = None
+
+            if user_id_fail:
+                try:
+                    cover_path = get_file_path("data/img/bot/no_pay.png")
+                    photo = FSInputFile(cover_path)
+                    caption = (
+                        "❌ *Оплата не прошла*\n\n"
+                        "Платёж был отменён или не завершён.\n"
+                        "Если списания не было — вы можете попробовать оплатить снова из раздела тарифов."
+                    )
+                    await bot.send_photo(chat_id=user_id_fail, photo=photo, caption=caption, parse_mode="Markdown")
+                except Exception as e:
+                    logging.warning("Failed to send fail payment notice to %s: %s", user_id_fail, e)
+            return 200, f"fail event={event} status={status}"
+
+        # Интересуют только успешные кейсы (или ожидание подтверждения/capture)
         if event not in ("payment.succeeded", "payment.waiting_for_capture"):
             return 200, f"skip event={event}"
 
