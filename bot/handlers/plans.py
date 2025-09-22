@@ -111,7 +111,7 @@ SUBSCRIBE_KB = InlineKeyboardMarkup(
 
 def kb_back_to_tools() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retr")]]
+        inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")]]
     )
 
 def kb_visualization_style() -> InlineKeyboardMarkup:
