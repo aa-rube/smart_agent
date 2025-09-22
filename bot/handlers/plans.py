@@ -111,7 +111,7 @@ SUBSCRIBE_KB = InlineKeyboardMarkup(
 
 def kb_back_to_tools() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")]]
+        inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retr")]]
     )
 
 def kb_visualization_style() -> InlineKeyboardMarkup:
@@ -129,7 +129,7 @@ def kb_style_choices() -> InlineKeyboardMarkup:
         "🔥 Случайный выбор ИИ",
     ]
     rows = [[InlineKeyboardButton(text=f"💎 {s}", callback_data=f"style_{s}")] for s in styles]
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def kb_result_back() -> InlineKeyboardMarkup:
