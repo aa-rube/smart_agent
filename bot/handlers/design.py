@@ -223,7 +223,7 @@ async def design_home(callback: CallbackQuery, state: FSMContext, bot: Bot):
     await state.clear()
     user_id = callback.from_user.id
 
-    cover_rel = "img/bot/main_design.jpg"
+    cover_rel = "img/bot/main_design.png"
     cover_path = get_file_path(cover_rel)
     caption = _start_screen_text(user_id)
 
@@ -248,7 +248,7 @@ async def start_redesign_flow(callback: CallbackQuery, state: FSMContext, bot: B
         await _edit_or_replace_with_photo_file(
             bot=bot,
             msg=callback.message,
-            file_path=get_file_path('img/bot/design.jpg'),
+            file_path=get_file_path('img/bot/design.png'),
             caption=text_get_file_redesign(user_id),
             kb=InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")]]
@@ -402,7 +402,7 @@ async def start_zero_design_flow(callback: CallbackQuery, state: FSMContext, bot
         await _edit_or_replace_with_photo_file(
             bot=bot,
             msg=callback.message,
-            file_path=get_file_path('img/bot/zero_design.jpg'),
+            file_path=get_file_path('img/bot/zero_design.png'),
             caption=text_get_file_zero(user_id),
             kb=InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")]]
@@ -576,7 +576,7 @@ async def handle_redesign_back_to_upload(callback: CallbackQuery, state: FSMCont
     await state.set_state(RedesignStates.waiting_for_file)
     await bot.send_photo(
         chat_id=callback.message.chat.id,
-        photo=FSInputFile(get_file_path('img/bot/design.jpg')),
+        photo=FSInputFile(get_file_path('img/bot/design.png')),
         caption=text_get_file_redesign(user_id),
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")]]
@@ -602,7 +602,7 @@ async def handle_zero_back_to_upload(callback: CallbackQuery, state: FSMContext,
     await state.set_state(ZeroDesignStates.waiting_for_file)
     await bot.send_photo(
         chat_id=callback.message.chat.id,
-        photo=FSInputFile(get_file_path('img/bot/zero_design.jpg')),
+        photo=FSInputFile(get_file_path('img/bot/zero_design.png')),
         caption=text_get_file_zero(user_id),
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")]]
