@@ -24,6 +24,64 @@ from bot.utils.redis_repo import feedback_repo
 logger = logging.getLogger(__name__)
 
 # =============================================================================
+# Доступ / подписка (как в plans)
+# =============================================================================
+import bot.utils.database as db
+from bot.utils.database import is_trial_active, trial_remaining_hours
+
+def _is_sub_active(user_id: int) -> bool:
+    raw = db.get_variable(user_id, "sub_until") or ""
+    if not raw:
+        return False
+    try:
+        from datetime import datetime
+        today = datetime.utcnow().date()
+        return today <= datetime.fromisoformat(raw).date()
+    except Exception:
+        return False
+
+def _format_access_text(user_id: int) -> str:
+    trial_hours = trial_remaining_hours(user_id)
+    if _is_sub_active(user_id):
+        sub_until = db.get_variable(user_id, "sub_until")
+        return f'✅ Подписка активна до *{sub_until}*'
+    if trial_hours > 0:
+        return f'🆓 Бесплатный доступ активен ещё *~{trial_hours} ч.*'
+    return '😢 Бесплатный период завершён. Оформи подписку, чтобы продолжить.'
+
+def _has_access(user_id: int) -> bool:
+    return is_trial_active(user_id) or _is_sub_active(user_id)
+
+# Тексты и кнопка «Оформить подписку» (как в plans)
+SUB_FREE = """
+🎁 Бесплатный период завершён
+Пробный доступ на 72 часа истёк — дальше только по подписке.
+
+📦* Что даёт подписка:*
+ — Полный доступ ко всем инструментам
+ — Без ограничений по количеству запусков в период подписки*
+Стоимость пакета всего 2500 рублей!
+""".strip()
+
+SUB_PAY = """
+🪫 Подписка не активна
+Срок подписки истёк или не был оформлен.
+
+📦* Что даёт подписка:*
+ — Полный доступ ко всем инструментам
+ — Без ограничений по количеству запусков в период подписки*
+Стоимость пакета всего 2500 рублей!
+""".strip()
+
+SUBSCRIBE_KB = InlineKeyboardMarkup(
+    inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
+)
+
+# Доп. форматтер стартового текста «Отзывы» с информацией о доступе
+def _feedback_home_text(user_id: int) -> str:
+    return f"{MAIN_MENU_TITLE}\n\n{_format_access_text(user_id)}"
+
+# =============================================================================
 # UX Texts (copy)
 # =============================================================================
 
@@ -730,6 +788,14 @@ def _payload_from_state(d: Dict[str, Any]) -> ReviewPayload:
 # Flow handlers
 # =============================================================================
 async def start_feedback_flow(callback: CallbackQuery, state: FSMContext):
+    # Проверка доступа как в plans: без подписки не пускаем в сценарий
+    user_id = callback.message.chat.id
+    if not _has_access(user_id):
+        text = SUB_FREE if not _is_sub_active(user_id) else SUB_PAY
+        await ui_reply(callback, text, SUBSCRIBE_KB, state=state)
+        await callback.answer()
+        return
+
     # якорим текущее сообщение для последующих редактирований
     await state.update_data(anchor_id=callback.message.message_id)
     await ui_reply(callback, ASK_CLIENT_NAME, kb_only_cancel(), state=state)
@@ -1103,6 +1169,14 @@ async def start_generation(callback: CallbackQuery, state: FSMContext, bot: Bot)
     # ACK РАНО, чтобы не словить "query is too old"
     await _safe_cb_answer(callback)
 
+    # Повторная проверка доступа перед обращением к сервису (как в plans.handle_style_plan)
+    user_id = callback.message.chat.id
+    if not _has_access(user_id):
+        text = SUB_FREE if not _is_sub_active(user_id) else SUB_PAY
+        await ui_reply(callback, text, SUBSCRIBE_KB, state=state)
+        await state.clear()
+        return
+
     d = await state.get_data()
     try:
         payload = _payload_from_state(d)
@@ -1160,6 +1234,15 @@ async def start_generation(callback: CallbackQuery, state: FSMContext, bot: Bot)
 async def mutate_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
     # ранний ACK
     await _safe_cb_answer(callback)
+
+    # Защита на мутациях: если подписка слетела — не даём продолжить
+    user_id = callback.message.chat.id
+    if not _has_access(user_id):
+        text = SUB_FREE if not _is_sub_active(user_id) else SUB_PAY
+        await ui_reply(callback, text, SUBSCRIBE_KB, state=state)
+        await state.clear()
+        return
+
     data = callback.data  # mutate.{index}.short|long|style
     try:
         _, idx_str, op = data.split(".")
@@ -1220,6 +1303,15 @@ async def mutate_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
 async def gen_more_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
     # ранний ACK
     await _safe_cb_answer(callback)
+
+    # Проверка доступа для «Ещё вариант»
+    user_id = callback.message.chat.id
+    if not _has_access(user_id):
+        text = SUB_FREE if not _is_sub_active(user_id) else SUB_PAY
+        await ui_reply(callback, text, SUBSCRIBE_KB, state=state)
+        await state.clear()
+        return
+
     d = await state.get_data()
     payload = _payload_from_state(d)
 
@@ -1517,22 +1609,24 @@ async def go_menu(callback: CallbackQuery, state: FSMContext):
     rel = "data/img/bot/feed_back.png"  # можно и "img/bot/feed_back.png" — get_file_path поймёт оба варианта
     path = get_file_path(rel)
     bot = callback.bot
+    user_id = callback.message.chat.id
+    caption = _feedback_home_text(user_id)
     try:
         if Path(path).exists():
             await _edit_or_replace_with_photo(
                 bot=bot,
                 msg=callback.message,
                 photo_path=path,
-                caption=MAIN_MENU_TITLE,
+                caption=caption,
                 kb=kb_menu_main(),
             )
         else:
             logger.warning("Menu image not found: %s (resolved from %s)", path, rel)
             # Фолбэк на текст, если файла нет
-            await ui_reply(callback, MAIN_MENU_TITLE, kb_menu_main(), state=state)
+            await ui_reply(callback, caption, kb_menu_main(), state=state)
     except Exception as e:
         logger.exception("Failed to display menu image: %s", e)
-        await ui_reply(callback, MAIN_MENU_TITLE, kb_menu_main(), state=state)
+        await ui_reply(callback, caption, kb_menu_main(), state=state)
     finally:
         # Безопасный ACK
         try:

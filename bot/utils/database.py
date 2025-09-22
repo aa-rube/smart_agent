@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from typing import Optional, Any, List
 from datetime import datetime, timedelta
+from urllib.parse import quote_plus
 
 from sqlalchemy import (
-    create_engine, event,
+    create_engine,
     String, Integer, ForeignKey, DateTime, Text
 )
 from sqlalchemy.orm import (
@@ -13,7 +14,7 @@ from sqlalchemy.orm import (
     sessionmaker, Session
 )
 
-from bot.config import DB_PATH
+from bot.config import DB_URL
 import json
 
 
@@ -26,17 +27,10 @@ class Base(DeclarativeBase):
 
 def _make_engine():
     engine = create_engine(
-        f"sqlite:///{DB_PATH}",
+        DB_URL,  # Используем DB_URL вместо DB_PATH
         future=True,
-        echo=False,           # при необходимости включай лог SQL
+        echo=False,
     )
-
-    # Включаем каскады FK в SQLite
-    @event.listens_for(engine, "connect")
-    def _set_sqlite_pragma(dbapi_conn, conn_record):
-        cur = dbapi_conn.cursor()
-        cur.execute("PRAGMA foreign_keys=ON")
-        cur.close()
 
     return engine
 

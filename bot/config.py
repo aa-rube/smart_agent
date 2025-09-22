@@ -1,8 +1,9 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\config.py
-
 import os
 from pathlib import Path
+
 from dotenv import load_dotenv
+from urllib.parse import quote_plus
 
 load_dotenv()
 
@@ -23,30 +24,42 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_DIR = Path(os.getenv("DB_DIR", str(DEFAULT_DB_DIR))).resolve()
 DB_DIR.mkdir(parents=True, exist_ok=True)
 
+
+# === MySQL Database ===
+MYSQL_HOST = os.getenv("MYSQL_HOST", "null")
+MYSQL_PORT = os.getenv("MYSQL_PORT", "0")
+MYSQL_USER = os.getenv("MYSQL_USER", "null")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "null")
+
+# Админская база данных
+MYSQL_ADMIN_DB = os.getenv("MYSQL_ADMIN_DB", "null")
+ADMIN_DB_URL = f"mysql+pymysql://{MYSQL_USER}:{quote_plus(MYSQL_PASSWORD)}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_ADMIN_DB}"
+
+
 # === Токен бота ===
 TOKEN = os.getenv("TOKEN")
 
-# === Пути к БД (строки для sqlite3.connect) ===
-DB_PATH        = os.getenv("DB_PATH",        str(DB_DIR / "settings.db"))
-ADMIN_DB_PATH  = os.getenv("ADMIN_DB_PATH",  str(DB_DIR / "admins.bd"))
+# === Telegram IDs ===
+ADMIN_ID            = int(os.getenv("ADMIN_ID", "0"))
+ADMIN_GROUP_ID      = int(os.getenv("ADMIN_GROUP_ID", "0"))
+CONTENT_CHANNEL_ID  = int(os.getenv("CONTENT_CHANNEL_ID", "0"))
+CONTENT_GROUP_ID    = int(os.getenv("CONTENT_GROUP_ID", "0"))
+# Дополнительные настройки (если нужны)
+PARTNER_CHANNELS=[{"chat_id":"-1002969803274","url":"https://t.me/setrealtora","label":"Сеть Риэлтора"}]
+
 
 # === Интеграции / сервисы ===
 EXECUTOR_BASE_URL = os.getenv("EXECUTOR_BASE_URL", "http://127.0.0.1:5001")
 
-PARTNER_CHANNELS=[{"chat_id":"-1002969803274","url":"https://t.me/setrealtora","label":"Сеть Риэлтора"}]
 
-# YooMoney
-YOUMONEY_SHOP_ID     = os.getenv("YOUMONEY_SHOP_ID")
-YOUMONEY_SECRET_KEY  = os.getenv("YOUMONEY_SECRET_KEY")
+# Основная база данных
+MYSQL_DB = os.getenv("MYSQL_DB", "null")
+DB_URL = f"mysql+pymysql://{MYSQL_USER}:{quote_plus(MYSQL_PASSWORD)}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}"
 
-# === Telegram IDs ===
-ADMIN_ID            = int(os.getenv("ADMIN_ID", "7833048230"))
-ADMIN_GROUP_ID      = int(os.getenv("ADMIN_GROUP_ID", "7833048230"))
-CONTENT_CHANNEL_ID  = int(os.getenv("CONTENT_CHANNEL_ID", "7833048230"))
-CONTENT_GROUP_ID    = int(os.getenv("CONTENT_GROUP_ID", "-1002899688608"))
 
-# === Оплата ===
-PAYMENT_PROVIDER_TOKEN = os.getenv("PAYMENT_PROVIDER_TOKEN", "390540012:LIVE:75513")
+YOUMONEY_SHOP_ID = os.getenv("YOUMONEY_SHOP_ID")
+YOUMONEY_SECRET_KEY = os.getenv("YOUMONEY_SECRET_KEY")
+
 
 
 def get_file_path(relative_path: str) -> str:

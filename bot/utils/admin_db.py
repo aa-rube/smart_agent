@@ -4,9 +4,10 @@ from __future__ import annotations
 import json
 from typing import Optional, List, Tuple, Any, Dict
 from datetime import datetime, timedelta
+from urllib.parse import quote_plus
 
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import create_engine, event, String, Integer, Text, func
+from sqlalchemy import create_engine, String, Integer, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session
 
 import bot.config as cfg
@@ -20,17 +21,10 @@ class Base(DeclarativeBase):
 
 
 def _make_engine():
-    engine = create_engine(
-        f"sqlite:///{cfg.ADMIN_DB_PATH}",
-        future=True,
-        echo=False,
-    )
-
-    @event.listens_for(engine, "connect")
-    def _sqlite_pragmas(dbapi_conn, conn_record):
-        cur = dbapi_conn.cursor()
-        cur.execute("PRAGMA foreign_keys = ON")
-        cur.close()
+    # Используем админскую базу данных MySQL
+    engine = create_engine(cfg.ADMIN_DB_URL, 
+                          future=True,
+                          echo=False)
 
     return engine
 
