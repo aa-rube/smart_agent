@@ -22,6 +22,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     InputMediaPhoto,
+    InputMediaVideo,
 )
 
 import bot.config as cfg
@@ -41,8 +42,8 @@ NO_ACCESS_TEXT = "У вас нет доступа к админ панели."
 
 ASK_MAILING_CONTENT = (
     "Отправьте новое сообщение для рассылки.\n\n"
-    "Поддерживается: текст, фото, <u>альбом фото</u>, видео, аудио, GIF/анимация.\n"
-    "Если отправляете <b>альбом</b>, загрузите все фото одним пакетом, затем нажмите «Далее». "
+    "Поддерживается: текст, фото, <u>альбом (фото/видео)</u>, видео, аудио, GIF/анимация.\n"
+    "Если отправляете <b>альбом</b>, загрузите все медиа одним пакетом (Telegram пометит их общим group_media_id), затем нажмите «Далее». "
     "Подпись (caption) возьмём с первого медиа с подписью."
 )
 
@@ -274,14 +275,22 @@ async def _preview_mailing_to_chat(m: Dict[str, Any], chat_id: int, bot: Bot):
     elif ctype == "animation":
         await bot.send_animation(chat_id, payload["file_id"], caption=caption or None)
     elif ctype == "media_group":
-        file_ids: List[str] = payload.get("file_ids", [])
-        for chunk in _chunk(file_ids, 10):
+        # Новая схема: payload.items = [{"type":"photo|video","file_id":"..."}]
+        items = payload.get("items")
+        if not items:
+            # back-compat: старая схема file_ids = [..] → трактуем как фото
+            file_ids: List[str] = payload.get("file_ids", [])
+            items = [{"type": "photo", "file_id": fid} for fid in file_ids]
+        for chunk in _chunk(items, 10):
             media = []
-            for i, fid in enumerate(chunk):
-                if i == 0 and caption:
-                    media.append(InputMediaPhoto(media=fid, caption=caption))
+            for i, it in enumerate(chunk):
+                t = (it.get("type") or "photo").lower()
+                fid = it.get("file_id")
+                cap = caption if (i == 0 and caption) else None
+                if t == "video":
+                    media.append(InputMediaVideo(media=fid, caption=cap))
                 else:
-                    media.append(InputMediaPhoto(media=fid))
+                    media.append(InputMediaPhoto(media=fid, caption=cap))
             await bot.send_media_group(chat_id, media)
 
 async def _edit_or_send(msg: Message, *, text: str, kb: InlineKeyboardMarkup | None = None, parse_mode: str | None = "HTML") -> None:
@@ -318,7 +327,15 @@ async def _render_mailing_item(message: Message, mailing_id: int, origin: str = 
     if ctype == "text":
         extra = f"Текст: {(m.get('payload', {}) or {}).get('text','')[:160]}"
     elif ctype == "media_group":
-        extra = f"Альбом • фото: {len((m.get('payload') or {}).get('file_ids', []))} • caption: {cap}"
+        pl = (m.get("payload") or {})
+        items = pl.get("items")
+        if items:
+            photos = sum(1 for it in items if (it.get("type") or "photo").lower() == "photo")
+            videos = sum(1 for it in items if (it.get("type") or "photo").lower() == "video")
+            extra = f"Альбом • фото: {photos} • видео: {videos} • caption: {cap}"
+        else:
+            # back-compat
+            extra = f"Альбом • фото: {len(pl.get('file_ids', []))} • caption: {cap}"
     else:
         extra = f"Caption: {cap}"
     await _edit_or_send(
@@ -374,9 +391,9 @@ async def mailing_stop(callback: CallbackQuery, state: FSMContext):
 
 async def album_done(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    items: List[str] = data.get("album_items") or []
+    items: List[Dict[str, str]] = data.get("album_items") or []
     if not items:
-        await callback.answer("Альбом пуст — пришлите фото.", show_alert=True)
+        await callback.answer("Альбом пуст — пришлите медиа (фото/видео).", show_alert=True)
         return
     # Создаём запись сразу с дефолтной датой и открываем карточку
     last = adb.get_last_publish_at()
@@ -398,7 +415,7 @@ async def album_done(callback: CallbackQuery, state: FSMContext):
     mailing_id = adb.create_scheduled_mailing(
         content_type="media_group",
         caption=caption,
-        payload={"file_ids": items},
+        payload={"items": items},
         publish_at=publish_at_iso,
         mailing_on=True,
     )
@@ -446,20 +463,25 @@ async def mailing_accept(message: Message, state: FSMContext):
 
     # Редактирование: замена контента
     if step == "edit_content_wait":
-        # Альбом для редактирования? Копим фото, предлагаем «Сохранить/Назад».
+        # Альбом для редактирования? Копим фото/видео, предлагаем «Сохранить/Назад».
         if message.media_group_id:
             gid = message.media_group_id
             st_gid = data.get("album_gid")
-            items: List[str] = data.get("album_items") or []
+            items: List[Dict[str, str]] = data.get("album_items") or []
             caption = data.get("caption")
             if message.photo:
                 fid = message.photo[-1].file_id
-                items.append(fid)
+                items.append({"type": "photo", "file_id": fid})
+                if (message.caption or "") and not caption:
+                    caption = message.caption
+            elif message.video:
+                fid = message.video.file_id
+                items.append({"type": "video", "file_id": fid})
                 if (message.caption or "") and not caption:
                     caption = message.caption
             else:
                 await message.answer(
-                    "В альбоме допустимы только фото. Пришлите фото либо используйте «Назад».",
+                    "В альбоме допустимы только фото/видео. Пришлите медиа либо используйте «Назад».",
                     reply_markup=BTN_CONTENT_SAVE_BACK,
                 )
                 return
@@ -468,10 +490,10 @@ async def mailing_accept(message: Message, state: FSMContext):
             elif st_gid != gid:
                 # новая медиагруппа — начинаем новый набор
                 await state.update_data(album_gid=gid, album_items=[], caption=None)
-                items = [fid]
+                # уже добавили текущий элемент выше
             await state.update_data(album_items=items, caption=caption, new_content=None)
             await message.answer(
-                f"Добавлено фото: {len(items)}. Нажмите «Сохранить», когда закончите.",
+                f"Добавлено медиа в альбом: {len(items)}. Нажмите «Сохранить», когда закончите.",
                 reply_markup=BTN_CONTENT_SAVE_BACK,
             )
             return
@@ -493,21 +515,26 @@ async def mailing_accept(message: Message, state: FSMContext):
 
     # 1) Сбор контента (создание) — создаём запись сразу и открываем карточку
     if step in (None, "await_content"):
-        # Альбом фото?
+        # Альбом? (Telegram ставит media_group_id / group_media_id)
         if message.media_group_id:
             gid = message.media_group_id
             st_gid = data.get("album_gid")
-            items: List[str] = data.get("album_items") or []
+            items: List[Dict[str, str]] = data.get("album_items") or []
             caption = data.get("caption")
 
             if message.photo:
                 file_id = message.photo[-1].file_id
-                items.append(file_id)
+                items.append({"type": "photo", "file_id": file_id})
+                if (message.caption or "") and not caption:
+                    caption = message.caption
+            elif message.video:
+                file_id = message.video.file_id
+                items.append({"type": "video", "file_id": file_id})
                 if (message.caption or "") and not caption:
                     caption = message.caption
             else:
                 await message.answer(
-                    "В альбоме допустимы только фотографии. Повторите отправку.",
+                    "В альбом допустимы только фото/видео. Повторите отправку.",
                     reply_markup=BTN_ALBUM_FLOW,
                 )
                 return
@@ -523,7 +550,7 @@ async def mailing_accept(message: Message, state: FSMContext):
 
             await state.update_data(album_items=items, caption=caption, step="await_content")
             await message.answer(
-                f"Принято фото в альбом: {len(items)}. Когда отправите все — нажмите «Далее».",
+                f"Принято медиа в альбом: {len(items)}. Когда отправите все — нажмите «Далее».",
                 reply_markup=BTN_ALBUM_FLOW,
             )
             return
@@ -586,7 +613,9 @@ async def mailing_accept(message: Message, state: FSMContext):
         elif ctype in ("photo", "video", "audio", "animation"):
             extra = f"Caption: {caption or '—'}"
         elif ctype == "media_group":
-            extra = f"Фотографий в альбоме: {len(payload.get('file_ids', []))}"
+            items = payload.get("items")
+            cnt = len(items or payload.get("file_ids", []))
+            extra = f"Медиа в альбоме: {cnt}"
         else:
             extra = "—"
 
@@ -948,16 +977,16 @@ async def album_done_edit(callback: CallbackQuery, state: FSMContext):
     if not data or data.get("step") != "edit_content_wait":
         await callback.answer("Нет активного редактирования альбома.", show_alert=True)
         return
-    items: List[str] = data.get("album_items") or []
+    items: List[Dict[str, str]] = data.get("album_items") or []
     caption = data.get("caption")
     if not items:
-        await callback.answer("Альбом пуст — пришлите фото.", show_alert=True)
+        await callback.answer("Альбом пуст — пришлите медиа.", show_alert=True)
         return
     mid = int(data.get("edit_mailing_id"))
     adb.update_mailing_payload(
         mailing_id=mid,
         content_type="media_group",
-        payload={"file_ids": items},
+        payload={"items": items},
         caption=caption,
     )
     await state.update_data(step=None, album_gid=None, album_items=[], caption=None)
@@ -974,13 +1003,13 @@ async def content_edit_save(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Нет изменений для сохранения.", show_alert=True)
         return
     mid = int(data.get("edit_mailing_id"))
-    items: List[str] = data.get("album_items") or []
+    items: List[Dict[str, str]] = data.get("album_items") or []
     caption = data.get("caption")
     single: Dict[str, Any] | None = data.get("new_content")
 
     if items:
         content_type = "media_group"
-        payload = {"file_ids": items}
+        payload = {"items": items}
     elif single:
         content_type = single["content_type"]
         payload = single["payload"]
@@ -1159,15 +1188,22 @@ async def run_mailing_scheduler(bot: Bot):
                 elif ctype == "animation":
                     await bot.send_animation(int(uid), payload["file_id"], caption=caption or None)
                 elif ctype == "media_group":
-                    file_ids: List[str] = payload.get("file_ids", [])
+                    items = payload.get("items")
+                    if not items:
+                        # back-compat: старая схема — только фото
+                        file_ids: List[str] = payload.get("file_ids", [])
+                        items = [{"type": "photo", "file_id": fid} for fid in file_ids]
                     # Telegram ограничивает медиа-группу 10 элементами. Режем на чанки.
-                    for chunk in _chunk(file_ids, 10):
+                    for chunk in _chunk(items, 10):
                         media = []
-                        for i, fid in enumerate(chunk):
-                            if i == 0 and caption:
-                                media.append(InputMediaPhoto(media=fid, caption=caption))
+                        for i, it in enumerate(chunk):
+                            t = (it.get("type") or "photo").lower()
+                            fid = it.get("file_id")
+                            cap = caption if (i == 0 and caption) else None
+                            if t == "video":
+                                media.append(InputMediaVideo(media=fid, caption=cap))
                             else:
-                                media.append(InputMediaPhoto(media=fid))
+                                media.append(InputMediaPhoto(media=fid, caption=cap))
                         await bot.send_media_group(int(uid), media)
                 else:
                     # неизвестный тип — пропускаем
