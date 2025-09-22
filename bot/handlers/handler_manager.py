@@ -145,7 +145,7 @@ async def _edit_text_safe(cb: CallbackQuery, text: str, kb: InlineKeyboardMarkup
     await cb.answer()
 
 
-async def _send_menu_with_logo(bot: Bot, chat_id: int) -> None:
+async def send_menu_with_logo(bot: Bot, chat_id: int) -> None:
     """
     Главный экран одним сообщением: фото-логотип + caption + клавиатура.
     Фоллбэк — просто текст.
@@ -207,7 +207,7 @@ async def _replace_with_menu_with_logo(callback: CallbackQuery) -> None:
         logging.warning("Logo not found: %s (resolved from %s)", logo_path, logo_rel)
 
     # Финальный фоллбэк — просто отправим новое сообщение с меню, не удаляя старое
-    await _send_menu_with_logo(callback.bot, callback.message.chat.id)
+    await send_menu_with_logo(callback.bot, callback.message.chat.id)
     await callback.answer()
 
 
@@ -266,7 +266,7 @@ async def frst_msg(message: Message, bot: Bot) -> None:
             return
 
     # главный экран: фото + caption в одном сообщении
-    await _send_menu_with_logo(bot, user_id)
+    await send_menu_with_logo(bot, user_id)
 
 
 # =============================================================================
