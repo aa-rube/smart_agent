@@ -24,7 +24,6 @@ from bot.config import get_file_path
 from bot.utils.subscribe_partner_manager import ensure_partner_subs
 from bot.handlers.payment_handler import show_rates as show_rates_handler
 
-
 # =============================================================================
 # Тексты
 # =============================================================================
@@ -60,7 +59,6 @@ smm_description = (
 
 HELP = "🆘 Нажмите на кнопку, чтобы обратиться в поддержку 👇"
 
-
 # =============================================================================
 # Клавиатуры
 # =============================================================================
@@ -68,9 +66,9 @@ frst_kb_inline = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="🏡 Контент для соцсетей риелтора", callback_data="smm_content")],
         [InlineKeyboardButton(text="🧠 Продвинутые инструменты", callback_data="nav.ai_tools")],
-        [InlineKeyboardButton(text="(FREE TEST!)📐 Генератор планировок", callback_data="floor_plan")],
+        [InlineKeyboardButton(text="📐Планировки (Тестовая версия)", callback_data="floor_plan")],
         [InlineKeyboardButton(text="Наше сообщество", url="https://t.me/+DJfn6NyHmRAzMTdi")],
-        [InlineKeyboardButton(text="Тех. поддержка", url="https://t.me/dashaadminrealtor")],
+        [InlineKeyboardButton(text="Тех. поддержка", url="https://t.me/setrealtora")],
     ]
 )
 
@@ -84,7 +82,6 @@ ai_tools_inline = InlineKeyboardMarkup(
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")],
     ]
 )
-
 
 get_smm_subscribe_inline = InlineKeyboardMarkup(
     inline_keyboard=[
@@ -212,10 +209,10 @@ async def _replace_with_menu_with_logo(callback: CallbackQuery) -> None:
 
 
 async def _edit_or_replace_with_photo_cb(
-    callback: CallbackQuery,
-    image_rel_path: str,
-    caption: str,
-    kb: InlineKeyboardMarkup | None = None,
+        callback: CallbackQuery,
+        image_rel_path: str,
+        caption: str,
+        kb: InlineKeyboardMarkup | None = None,
 ) -> None:
     """
     Меняет текущий экран на фото с подписью (через edit_media).
@@ -308,7 +305,8 @@ async def skip_subscribe(callback: CallbackQuery) -> None:
 
 async def smm_content(callback: CallbackQuery) -> None:
     await init_user_event(callback)
-    await _edit_text_safe(callback, smm_description, get_smm_subscribe_inline)
+    await _edit_or_replace_with_photo_cb(callback, image_rel_path="img/bot/smm.png", caption=smm_description,
+                                         kb=get_smm_subscribe_inline)
 
 
 async def my_profile(callback: CallbackQuery) -> None:
