@@ -67,8 +67,8 @@ frst_kb_inline = InlineKeyboardMarkup(
         [InlineKeyboardButton(text="🏡 Контент для соцсетей риелтора", callback_data="smm_content")],
         [InlineKeyboardButton(text="🧠 Продвинутые инструменты", callback_data="nav.ai_tools")],
         [InlineKeyboardButton(text="📐Планировки (Тестовая версия)", callback_data="floor_plan")],
-        [InlineKeyboardButton(text="Наше сообщество", url="https://t.me/+DJfn6NyHmRAzMTdi")],
-        [InlineKeyboardButton(text="Тех. поддержка", url="https://t.me/setrealtora")],
+        [InlineKeyboardButton(text="Наше сообщество", url="https://t.me/setrealtora")],
+        [InlineKeyboardButton(text="Тех. поддержка", url="https://t.me/dashaadminrealtor")],
     ]
 )
 
