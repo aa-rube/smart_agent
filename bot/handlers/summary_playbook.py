@@ -25,18 +25,74 @@ from bot.utils.database import (
     summary_list_entries as list_entries,
     summary_get_entry as get_entry,
 )
+import bot.utils.database as db
+from bot.utils.database import is_trial_active, trial_remaining_hours
+
+# ============= Доступ / подписка (как в других скриптах) =============
+
+def _is_sub_active(user_id: int) -> bool:
+    raw = db.get_variable(user_id, "sub_until") or ""
+    if not raw:
+        return False
+    try:
+        today = datetime.utcnow().date()
+        return today <= datetime.fromisoformat(raw).date()
+    except Exception:
+        return False
+
+def _format_access_text(user_id: int) -> str:
+    trial_hours = trial_remaining_hours(user_id)
+    if _is_sub_active(user_id):
+        sub_until = db.get_variable(user_id, "sub_until")
+        return f'✅ Подписка активна до *{sub_until}*'
+    if trial_hours > 0:
+        return f'🆓 Бесплатный доступ активен ещё *~{trial_hours} ч.*'
+    return '😢 Бесплатный период завершён. Оформи подписку, чтобы продолжить.'
+
+def _has_access(user_id: int) -> bool:
+    return is_trial_active(user_id) or _is_sub_active(user_id)
+
+# Тексты уведомлений + кнопка «Оформить подписку»
+SUB_FREE = """
+🎁 Бесплатный период завершён
+Пробный доступ на 72 часа истёк — дальше только по подписке.
+
+📦* Что даёт подписка:*
+ — Полный доступ ко всем инструментам
+ — Без ограничений по количеству запусков в период подписки*
+Стоимость пакета всего 2500 рублей!
+""".strip()
+
+SUB_PAY = """
+🪫 Подписка не активна
+Срок подписки истёк или не был оформлен.
+
+📦* Что даёт подписка:*
+ — Полный доступ ко всем инструментам
+ — Без ограничений по количеству запусков в период подписки*
+Стоимость пакета всего 2500 рублей!
+""".strip()
+
+SUBSCRIBE_KB = InlineKeyboardMarkup(
+    inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
+)
 
 # ============= UI текст =============
-HOME_TEXT = ('''
-    🧠 *Саммари по переговорам*
-    Загрузите *аудио* разговора или вставьте *текст переписки!*
-    
-    • Узнаете *сильные стороны* и *ошибки* коммуникации,
-    • Получите *краткое резюме*,
-    • Зафиксируете *договорённости и следующие шаги*.
-    Выберите формат:
-    '''
-)
+HOME_TEXT_TPL = ('''
+🧠 *Саммари по переговорам*
+Загрузите *аудио* разговора или вставьте *текст переписки!*
+
+• Узнаете *сильные стороны* и *ошибки* коммуникации,
+• Получите *краткое резюме*,
+• Зафиксируете *договорённости и следующие шаги*.
+
+{access_text}
+
+Выберите формат:
+''').strip()
+
+def home_text(user_id: int) -> str:
+    return HOME_TEXT_TPL.format(access_text=_format_access_text(user_id))
 
 ASK_TEXT = "✍️ Пришлите сюда текст переписки (можно несколькими сообщениями). Когда закончите — нажмите «Сгенерировать саммари»."
 ASK_AUDIO = "🎙️ Пришлите аудио (voice, audio или документ с аудио). Затем нажмите «Сгенерировать саммари»."
@@ -55,6 +111,7 @@ def kb_home() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🎧 Отправить аудио", callback_data="summary.audio"),
          InlineKeyboardButton(text="📝 Вставить текст", callback_data="summary.text")],
         [InlineKeyboardButton(text="🕘 История", callback_data="summary.history")],
+        [InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")]
     ])
 
@@ -207,13 +264,14 @@ def _render_result(res: dict) -> str:
 async def summary_home(callback: CallbackQuery, state: FSMContext, bot: Bot):
     await state.clear()
     await summary_repo.clear(callback.from_user.id)
+    user_id = callback.from_user.id
     # Пытаемся показать карточку раздела с картинкой; если файла нет — фолбэк на текст
     rel = "img/bot/summary.png"           # data/img/bot/summary.png
     path = get_file_path(rel)
     if os.path.exists(path):
-        await _edit_or_replace_with_photo_file(bot, callback.message, path, HOME_TEXT, kb_home())
+        await _edit_or_replace_with_photo_file(bot, callback.message, path, home_text(user_id), kb_home())
     else:
-        await _edit_text_or_caption(callback.message, HOME_TEXT, kb_home())
+        await _edit_text_or_caption(callback.message, home_text(user_id), kb_home())
     await callback.answer()
 
 # --- Текстовый поток ---
@@ -221,7 +279,11 @@ async def choose_text(callback: CallbackQuery, state: FSMContext):
     # фиксируем стадию и тип входа
     await summary_repo.set_stage(callback.from_user.id, "waiting_text")
     await summary_repo.set_input_text(callback.from_user.id, "", append=False)
-    await _edit_text_or_caption(callback.message, ASK_TEXT, kb_ready())
+    await _edit_text_or_caption(
+        callback.message,
+        f"{ASK_TEXT}\n\n{_format_access_text(callback.from_user.id)}",
+        kb_ready()
+    )
     await state.set_state(SummaryStates.waiting_for_text)
     await callback.answer()
 
@@ -232,7 +294,7 @@ async def handle_text(message: Message, state: FSMContext):
     draft = await summary_repo.get_draft(user_id)
     new_txt = (draft.get("input") or {}).get("text", "") if (draft.get("input") or {}).get("type") == "text" else ""
     await message.answer(
-        f"Получено ~{len(new_txt)} символов.\n\n{GEN_HINT}",
+        f"Получено ~{len(new_txt)} символов.\n\n{GEN_HINT}\n\n{_format_access_text(user_id)}",
         reply_markup=kb_ready()
     )
     await state.set_state(SummaryStates.ready_to_generate)
@@ -240,7 +302,11 @@ async def handle_text(message: Message, state: FSMContext):
 # --- Аудио поток ---
 async def choose_audio(callback: CallbackQuery, state: FSMContext):
     await summary_repo.set_stage(callback.from_user.id, "waiting_audio")
-    await _edit_text_or_caption(callback.message, ASK_AUDIO, kb_ready())
+    await _edit_text_or_caption(
+        callback.message,
+        f"{ASK_AUDIO}\n\n{_format_access_text(callback.from_user.id)}",
+        kb_ready()
+    )
     await state.set_state(SummaryStates.waiting_for_audio)
     await callback.answer()
 
@@ -263,7 +329,11 @@ async def handle_audio(message: Message, state: FSMContext, bot: Bot):
         return
 
     await summary_repo.set_input_audio(user_id, local_path=local, telegram_meta=tg_meta)
-    await message.answer(f"Файл получен: `{os.path.basename(local)}`\n\n{GEN_HINT}", reply_markup=kb_ready(), parse_mode="Markdown")
+    await message.answer(
+        f"Файл получен: `{os.path.basename(local)}`\n\n{GEN_HINT}\n\n{_format_access_text(user_id)}",
+        reply_markup=kb_ready(),
+        parse_mode="Markdown"
+    )
     await state.set_state(SummaryStates.ready_to_generate)
 
 # --- Кнопки «готово/сброс/добавить» ---
@@ -271,25 +341,42 @@ async def add_more(callback: CallbackQuery, state: FSMContext):
     draft = await summary_repo.get_draft(callback.from_user.id)
     typ = (draft.get("input") or {}).get("type")
     if typ == "text":
-        await _edit_text_or_caption(callback.message, "Добавьте ещё текст и снова нажмите «Сгенерировать саммари».", kb_ready())
+        await _edit_text_or_caption(
+            callback.message,
+            f"Добавьте ещё текст и снова нажмите «Сгенерировать саммари».\n\n{_format_access_text(callback.from_user.id)}",
+            kb_ready()
+        )
         await state.set_state(SummaryStates.waiting_for_text)
     elif typ == "audio":
-        await _edit_text_or_caption(callback.message, "Пришлите ещё один аудио-файл и снова нажмите «Сгенерировать саммари».", kb_ready())
+        await _edit_text_or_caption(
+            callback.message,
+            f"Пришлите ещё один аудио-файл и снова нажмите «Сгенерировать саммари».\n\n{_format_access_text(callback.from_user.id)}",
+            kb_ready()
+        )
         await state.set_state(SummaryStates.waiting_for_audio)
     else:
-        await _edit_text_or_caption(callback.message, HOME_TEXT, kb_home())
+        await _edit_text_or_caption(callback.message, home_text(callback.from_user.id), kb_home())
     await callback.answer()
 
 async def reset_draft(callback: CallbackQuery, state: FSMContext):
     await summary_repo.clear(callback.from_user.id)
     await state.clear()
-    await _edit_text_or_caption(callback.message, HOME_TEXT, kb_home())
+    await _edit_text_or_caption(callback.message, home_text(callback.from_user.id), kb_home())
     await callback.answer("Очищено")
 
 # --- Генерация и показ результата ---
 async def generate_summary(callback: CallbackQuery, state: FSMContext, bot: Bot):
     user_id = callback.from_user.id
     chat_id = callback.message.chat.id
+    # Блокируем генерацию без доступа и показываем инфо/кнопку подписки
+    if not _has_access(user_id):
+        if not _is_sub_active(user_id):
+            await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
+        else:
+            await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
+        await callback.answer()
+        return
+
     payload = await _build_payload(user_id, chat_id)
 
     async def _do():
