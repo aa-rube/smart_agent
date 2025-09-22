@@ -77,6 +77,10 @@ ERROR_TEXT = (
     "Проверьте подключение и попробуйте ещё раз."
 )
 
+# Стартовый текст с информацией о доступе (как в plans)
+def _text_objection_home(user_id: int) -> str:
+    return f"{OBJECTION_HOME_TEXT}\n\n{_format_access_text(user_id)}"
+
 # ===========================
 # Тексты и клавиатуры подписки
 # ===========================
@@ -264,10 +268,11 @@ async def objection_home(callback: CallbackQuery, state: FSMContext):
     Домашний экран раздела «Закрытие возражений».
     """
     await state.clear()
+    user_id = callback.message.chat.id
     await _edit_or_replace_with_photo_cb(
         callback=callback,
         image_rel_path="img/bot/objection.png",
-        caption=OBJECTION_HOME_TEXT,
+        caption=_text_objection_home(user_id),
         kb=kb_home_entry(),
     )
 
