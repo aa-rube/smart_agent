@@ -12,7 +12,7 @@ from aiogram.types import (
 
 import bot.utils.database as db
 from bot.utils import youmoney
-from bot.handlers.handler_manager import send_menu_with_logo
+from bot.handlers.handler_manager import send_menu_with_logo  # → стартовое меню
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ТАРИФЫ И НАСТРОЙКИ
