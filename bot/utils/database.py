@@ -74,8 +74,10 @@ class Variable(Base):
         ForeignKey("users.user_id", ondelete="CASCADE"),
         primary_key=True
     )
-    variable_name: Mapped[str] = mapped_column(String, primary_key=True)
-    variable_value: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # MySQL требует длину для VARCHAR; 191 безопасно для utf8mb4 (PK/индексы)
+    variable_name: Mapped[str] = mapped_column(String(191), primary_key=True)
+    # Значения переменных могут быть длинными → используем TEXT
+    variable_value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     user: Mapped[User] = relationship(back_populates="variables")
 
@@ -97,15 +99,16 @@ class ReviewHistory(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     # payload
-    client_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    agent_name:  Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    company:     Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    city:        Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    address:     Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    deal_type:   Mapped[Optional[str]] = mapped_column(String, nullable=True)  # CSV кодов (sale,buy,...) + 'custom'
-    deal_custom: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    client_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    agent_name:  Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    company:     Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    city:        Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    address:     Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # CSV кодов (sale,buy,...) + 'custom'
+    deal_type:   Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    deal_custom: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     situation:   Mapped[Optional[str]] = mapped_column(Text,   nullable=True)
-    style:       Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    style:       Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     # результат
     final_text:  Mapped[str] = mapped_column(Text, nullable=False)
@@ -129,7 +132,7 @@ class SummaryHistory(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     # метаданные запроса
-    source_type: Mapped[str] = mapped_column(String, nullable=False)  # "text" | "audio" | "unknown"
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)  # "text" | "audio" | "unknown"
     options_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
     # данные

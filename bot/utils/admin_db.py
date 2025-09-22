@@ -39,11 +39,12 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 class AdminUser(Base):
     __tablename__ = "Users"
 
-    user_id: Mapped[str] = mapped_column(String, primary_key=True)
-    UserTag: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # MySQL требует длину для VARCHAR; 191 безопасно для utf8mb4 PK/индексов
+    user_id: Mapped[str] = mapped_column(String(191), primary_key=True)
+    UserTag: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     HaveSub: Mapped[int] = mapped_column(Integer, default=0)  # 0/1
-    StartSub: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # 'YYYY-MM-DD'
-    EndSub: Mapped[Optional[str]] = mapped_column(String, nullable=True)    # 'YYYY-MM-DD'
+    StartSub: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)  # 'YYYY-MM-DD'
+    EndSub: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)    # 'YYYY-MM-DD'
     Rate: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)     # месяцы
 
 
@@ -51,11 +52,11 @@ class Mailing(Base):
     __tablename__ = "Mailings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    created_at: Mapped[str] = mapped_column(String)       # 'YYYY-MM-DD HH:MM[:SS]'
-    publish_at: Mapped[str] = mapped_column(String)       # 'YYYY-MM-DD HH:MM'
+    created_at: Mapped[str] = mapped_column(String(32))       # 'YYYY-MM-DD HH:MM[:SS]'
+    publish_at: Mapped[str] = mapped_column(String(32))       # 'YYYY-MM-DD HH:MM'
     mailing_on: Mapped[int] = mapped_column(Integer, default=0)        # 0/1
     mailing_completed: Mapped[int] = mapped_column(Integer, default=0) # 0/1
-    content_type: Mapped[str] = mapped_column(String)     # text/photo/video/audio/animation/media_group
+    content_type: Mapped[str] = mapped_column(String(32))     # text/photo/video/audio/animation/media_group
     caption: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     payload: Mapped[str] = mapped_column(Text)            # JSON с file_ids/text
 
@@ -64,7 +65,8 @@ class NotificationMessage(Base):
     __tablename__ = "NotificationMessages"
 
     days_before: Mapped[int] = mapped_column(Integer, primary_key=True)
-    message: Mapped[str] = mapped_column(String)
+    # Сообщение может быть длинным → используем TEXT (и избегаем требования длины)
+    message: Mapped[str] = mapped_column(Text)
 
 
 # =========================
