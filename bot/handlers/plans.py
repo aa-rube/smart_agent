@@ -204,7 +204,7 @@ async def start_plans_flow(callback: CallbackQuery, state: FSMContext, bot: Bot)
         await _edit_or_replace_with_photo_file(
             bot=bot,
             msg=callback.message,
-            file_path=get_file_path('img/bot/plan.jpg'),
+            file_path=get_file_path('img/bot/plan.png'),
             caption=text_get_file_plan(user_id),
             kb=kb_back_to_tools(),
         )
@@ -356,7 +356,7 @@ async def handle_plan_back_to_upload(callback: CallbackQuery, state: FSMContext,
     await state.set_state(FloorPlanStates.waiting_for_file)
     await bot.send_photo(
         chat_id=callback.message.chat.id,
-        photo=FSInputFile(get_file_path('img/bot/plan.jpg')),
+        photo=FSInputFile(get_file_path('img/bot/plan.png')),
         caption=text_get_file_plan(user_id),
         reply_markup=kb_back_to_tools(),
     )
