@@ -12,7 +12,6 @@ from aiogram.types import (
 
 import bot.utils.database as db
 from bot.utils import youmoney
-from bot.handlers.handler_manager import send_menu_with_logo  # → стартовое меню
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ТАРИФЫ И НАСТРОЙКИ
@@ -284,7 +283,12 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                     f"Подписка активна до: *{sub_until}*"
                 )
             )
-            await send_menu_with_logo(bot, user_id)
+            # Показываем главное меню после оплаты (ленивый импорт, чтобы избежать циклического импорта)
+            try:
+                from bot.handlers.handler_manager import send_menu_with_logo as _send_menu_with_logo
+                await _send_menu_with_logo(bot, user_id)
+            except Exception as e:
+                logging.warning("Failed to send main menu after payment for user %s: %s", user_id, e)
         except Exception as e:
             logging.warning("Failed to notify user %s after payment: %s", user_id, e)
 
