@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 from typing import Optional, List, Tuple, Any, Dict
 from datetime import datetime, timedelta
-from urllib.parse import quote_plus
 
 from dateutil.relativedelta import relativedelta
 from sqlalchemy import create_engine, String, Integer, Text, func
@@ -22,9 +21,12 @@ class Base(DeclarativeBase):
 
 def _make_engine():
     # Используем админскую базу данных MySQL
-    engine = create_engine(cfg.ADMIN_DB_URL, 
-                          future=True,
-                          echo=False)
+    engine = create_engine(
+        cfg.ADMIN_DB_URL,
+        future=True,
+        echo=False,
+        pool_pre_ping=True
+    )
 
     return engine
 
@@ -39,9 +41,10 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 class AdminUser(Base):
     __tablename__ = "Users"
 
-    # MySQL требует длину для VARCHAR; 191 безопасно для utf8mb4 PK/индексов
-    user_id: Mapped[str] = mapped_column(String(191), primary_key=True)
-    UserTag: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # для PK в MySQL лучше задавать длину; 32 достаточно для TG id как строки
+    user_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    # теги/псевдонимы — безопасно 191 (utf8mb4 индекс-френдли)
+    UserTag: Mapped[Optional[str]] = mapped_column(String(191), nullable=True)
     HaveSub: Mapped[int] = mapped_column(Integer, default=0)  # 0/1
     StartSub: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)  # 'YYYY-MM-DD'
     EndSub: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)    # 'YYYY-MM-DD'
@@ -52,11 +55,11 @@ class Mailing(Base):
     __tablename__ = "Mailings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    created_at: Mapped[str] = mapped_column(String(32))       # 'YYYY-MM-DD HH:MM[:SS]'
-    publish_at: Mapped[str] = mapped_column(String(32))       # 'YYYY-MM-DD HH:MM'
+    created_at: Mapped[str] = mapped_column(String(19))   # 'YYYY-MM-DD HH:MM:SS'
+    publish_at: Mapped[str] = mapped_column(String(16))   # 'YYYY-MM-DD HH:MM'
     mailing_on: Mapped[int] = mapped_column(Integer, default=0)        # 0/1
     mailing_completed: Mapped[int] = mapped_column(Integer, default=0) # 0/1
-    content_type: Mapped[str] = mapped_column(String(32))     # text/photo/video/audio/animation/media_group
+    content_type: Mapped[str] = mapped_column(String(32)) # text/photo/video/audio/animation/media_group
     caption: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     payload: Mapped[str] = mapped_column(Text)            # JSON с file_ids/text
 
@@ -65,8 +68,7 @@ class NotificationMessage(Base):
     __tablename__ = "NotificationMessages"
 
     days_before: Mapped[int] = mapped_column(Integer, primary_key=True)
-    # Сообщение может быть длинным → используем TEXT (и избегаем требования длины)
-    message: Mapped[str] = mapped_column(Text)
+    message: Mapped[str] = mapped_column(Text)  # текст уведомления может быть длинным
 
 
 # =========================

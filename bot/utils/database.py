@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from typing import Optional, Any, List
 from datetime import datetime, timedelta
-from urllib.parse import quote_plus
 
 from sqlalchemy import (
     create_engine,
@@ -30,6 +29,7 @@ def _make_engine():
         DB_URL,  # Используем DB_URL вместо DB_PATH
         future=True,
         echo=False,
+        pool_pre_ping=True,
     )
 
     return engine
