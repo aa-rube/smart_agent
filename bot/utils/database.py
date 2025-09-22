@@ -7,7 +7,7 @@ from urllib.parse import quote_plus
 
 from sqlalchemy import (
     create_engine,
-    String, Integer, ForeignKey, DateTime, Text
+    String, Integer, BigInteger, ForeignKey, DateTime, Text
 )
 from sqlalchemy.orm import (
     DeclarativeBase, Mapped, mapped_column, relationship,
@@ -45,7 +45,8 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 class User(Base):
     __tablename__ = "users"
 
-    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Telegram user_id может быть > 2^31 → используем BIGINT
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     variables: Mapped[list["Variable"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
@@ -70,7 +71,7 @@ class Variable(Base):
 
     # Композитный PK: (user_id, variable_name)
     user_id: Mapped[int] = mapped_column(
-        Integer,
+        BigInteger,
         ForeignKey("users.user_id", ondelete="CASCADE"),
         primary_key=True
     )
@@ -91,7 +92,7 @@ class ReviewHistory(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        Integer,
+        BigInteger,
         ForeignKey("users.user_id", ondelete="CASCADE"),
         index=True,
         nullable=False,
@@ -102,13 +103,13 @@ class ReviewHistory(Base):
     client_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     agent_name:  Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     company:     Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    city:        Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    city:        Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     address:     Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     # CSV кодов (sale,buy,...) + 'custom'
     deal_type:   Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     deal_custom: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     situation:   Mapped[Optional[str]] = mapped_column(Text,   nullable=True)
-    style:       Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    style:       Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
     # результат
     final_text:  Mapped[str] = mapped_column(Text, nullable=False)
@@ -124,7 +125,7 @@ class SummaryHistory(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        Integer,
+        BigInteger,
         ForeignKey("users.user_id", ondelete="CASCADE"),
         index=True,
         nullable=False,
