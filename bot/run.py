@@ -1,3 +1,4 @@
+#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\run.py
 import asyncio
 import logging
 
@@ -10,9 +11,8 @@ from aiohttp import web
 from bot import setup
 from bot.config import TOKEN
 import bot.utils.database as db
-import bot.utils.tokens as tk
 
-from bot.handlers.subscribe_handler import process_yookassa_webhook
+from bot.handlers.payment_handler import process_yookassa_webhook
 
 
 
@@ -44,13 +44,13 @@ async def main():
     logging.info("DB initialized")
 
     app = web.Application()
-    app.router.add_post("/yookassa_webhook", yookassa_webhook_handler)
+    app.router.add_post("/payment", yookassa_webhook_handler)
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 8080)
+    site = web.TCPSite(runner, "0.0.0.0", 8000)
     await site.start()
-    logging.info("Webhook server started on http://0.0.0.0:8080")
+    logging.info("Webhook server started on http://0.0.0.0:8000")
 
     try:
         logging.info("Бот запущен")

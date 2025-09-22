@@ -22,7 +22,7 @@ import bot.utils.database as db
 import bot.utils.tokens as tk
 from bot.config import get_file_path
 from bot.utils.subscribe_partner_manager import ensure_partner_subs
-from bot.handlers.subscribe_handler import show_rates as show_rates_handler
+from bot.handlers.payment_handler import show_rates as show_rates_handler
 
 
 # =============================================================================

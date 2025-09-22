@@ -1,4 +1,4 @@
-# smart_agent/bot/handlers/subscribe_handler.py
+# smart_agent/bot/handlers/payment_handler.py
 from __future__ import annotations
 
 import logging
@@ -17,18 +17,18 @@ from bot.utils import youmoney
 # ТАРИФЫ И НАСТРОЙКИ
 # ──────────────────────────────────────────────────────────────────────────────
 TARIFFS: Dict[str, Dict] = {
-    "1m":  {"label": "1 месяц",   "months": 1,  "amount": "2500.00"},
-    "3m":  {"label": "3 месяца",  "months": 3,  "amount": "6500.00"},
-    "6m":  {"label": "6 месяцев", "months": 6,  "amount": "12500.00"},
-    "12m": {"label": "12 месяцев","months": 12, "amount": "24000.00"},
+    "1m":  {"label": "1 месяц",   "months": 1,  "amount": "2490.00"},
+    "3m":  {"label": "3 месяца",  "months": 3,  "amount": "6590.00"},
+    "6m":  {"label": "6 месяцев", "months": 6,  "amount": "11390.00"},
+    "12m": {"label": "12 месяцев","months": 12, "amount": "19900.00"},
 }
 
 RATES_TEXT = (
     "Тут вы можете оформить подписку на доступ:\n"
-    "1 месяц / 2.500₽\n"
-    "3 месяца / 6.500₽ (скидка 10🔥)\n"
-    "6 месяцев / 12.500₽ (скидка 15🔥)\n"
-    "12 месяцев / 24.000₽ (скидка 20🔥)\n"
+    "1 месяц / 2.490₽\n"
+    "3 месяца / 6.590₽ (мин. скидка)\n"
+    "6 месяцев / 11.390₽ (сред. скидка🔥)\n"
+    "12 месяцев / 19.990₽ (макс. скидка 20🔥)\n"
 )
 
 PAY_TEXT = (
@@ -69,15 +69,26 @@ def kb_pay(url: str) -> InlineKeyboardMarkup:
 # UI/HELPERS
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def _edit_safe(cb: CallbackQuery, text: str, kb: InlineKeyboardMarkup | None = None) -> None:
+async def _edit_safe(cb: CallbackQuery, text: str, kb: InlineKeyboardMarkup | None = None) -> Optional[int]:
+    """
+    Редактируем сообщение (или отвечаем новым) и возвращаем message_id,
+    чтобы потом можно было удалить «кнопку оплаты».
+    """
+    msg_id: Optional[int] = None
     try:
-        await cb.message.edit_text(text, reply_markup=kb)
+        m = await cb.message.edit_text(text, reply_markup=kb)
+        msg_id = m.message_id if isinstance(m, Message) else cb.message.message_id
     except Exception:
         try:
-            await cb.message.edit_caption(caption=text, reply_markup=kb)
+            m = await cb.message.edit_caption(caption=text, reply_markup=kb)
+            if isinstance(m, Message):
+                msg_id = m.message_id
         except Exception:
-            await cb.message.answer(text, reply_markup=kb)
+            m = await cb.message.answer(text, reply_markup=kb)
+            if isinstance(m, Message):
+                msg_id = m.message_id
     await cb.answer()
+    return msg_id
 
 
 def _plan_by_code(code: str) -> Optional[Dict]:
@@ -163,7 +174,12 @@ async def choose_rate(cb: CallbackQuery) -> None:
         return
 
     text = f"{description}\n\n{PAY_TEXT}"
-    await _edit_safe(cb, text, kb_pay(payment_url))
+    msg_id = await _edit_safe(cb, text, kb_pay(payment_url))
+    # сохраним id сообщения с кнопкой, чтобы удалить после успешной оплаты
+    try:
+        db.set_variable(user_id, "yk:last_pay_msg_id", str(msg_id or ""))
+    except Exception:
+        logging.exception("Failed to store last pay message id for user %s", user_id)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -194,8 +210,22 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
         if not user_id:
             return 400, "missing user_id in metadata"
 
-        if _is_payment_processed(user_id, payment_id):
-            return 200, "already processed"
+        # --- АУДИТ И ИДЕМПОТЕНТНОСТЬ ЧЕРЕЗ ЛОГ ПЛАТЕЖЕЙ ---
+        try:
+            db.payment_log_upsert(
+                payment_id=payment_id,
+                user_id=user_id,
+                amount_value=str(obj.get("amount", {}).get("value") or ""),
+                amount_currency=str(obj.get("amount", {}).get("currency") or "RUB"),
+                event=str(event or ""),
+                status=str(status or ""),
+                metadata=metadata,
+                raw_payload=payload,
+            )
+            if db.payment_log_is_processed(payment_id):
+                return 200, "already processed"
+        except Exception:
+            logging.exception("payment_log_upsert failed for %s", payment_id)
 
         # разбор плана (из метаданных); фоллбэк — по сумме
         code = metadata.get("plan_code")
@@ -223,7 +253,25 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
         db.set_variable(user_id, "sub_paid_at", paid_at)
         db.set_variable(user_id, "sub_until", sub_until)
 
-        _mark_payment_processed(user_id, payment_id)
+        # пометим платёж обработанным (идемпотентность)
+        try:
+            db.payment_log_mark_processed(payment_id)
+        except Exception:
+            logging.exception("payment_log_mark_processed failed for %s", payment_id)
+
+        # пытаемся удалить предыдущее сообщение с кнопкой
+        try:
+            msg_id_raw = db.get_variable(user_id, "yk:last_pay_msg_id")
+            if msg_id_raw:
+                msg_id_int = int(msg_id_raw)
+                try:
+                    await bot.delete_message(chat_id=user_id, message_id=msg_id_int)
+                except Exception as e:
+                    logging.warning("delete_message failed for user %s, msg %s: %s", user_id, msg_id_int, e)
+                finally:
+                    db.set_variable(user_id, "yk:last_pay_msg_id", "")
+        except Exception:
+            logging.exception("Failed to delete last pay message for user %s", user_id)
 
         # Отправим пользователю уведомление
         try:

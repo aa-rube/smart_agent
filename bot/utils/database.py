@@ -1,7 +1,7 @@
 # smart_agent/bot/utils/database.py
 from __future__ import annotations
 
-from typing import Optional, Any, List
+from typing import Optional, Any, List, Dict
 from datetime import datetime, timedelta
 
 from sqlalchemy import (
@@ -143,6 +143,25 @@ class SummaryHistory(Base):
     user: Mapped[User] = relationship(back_populates="summaries")
 
 
+class PaymentLog(Base):
+    """
+    Журнал платежей YooKassa (аудит + идемпотентность по payment_id).
+    """
+    __tablename__ = "payment_log"
+
+    payment_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id:    Mapped[Optional[int]] = mapped_column(BigInteger, ForeignKey("users.user_id", ondelete="SET NULL"), index=True, nullable=True)
+    amount_value:    Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    amount_currency: Mapped[Optional[str]] = mapped_column(String(8),  nullable=True)
+    event:      Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    status:     Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    metadata_json:    Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    raw_payload_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    created_at:   Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 # =========================
 #       Repository
 # =========================
@@ -201,6 +220,60 @@ class UserRepository:
         with self._session() as s:
             v = s.get(Variable, (user_id, name))
             return v.variable_value if v else None
+
+    # --- payments ---
+    def payment_log_upsert(
+        self,
+        *,
+        payment_id: str,
+        user_id: Optional[int],
+        amount_value: Optional[str],
+        amount_currency: Optional[str],
+        event: Optional[str],
+        status: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        raw_payload: Optional[Dict[str, Any]],
+    ) -> None:
+        with self._session() as s, s.begin():
+            rec = s.get(PaymentLog, payment_id)
+            metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
+            raw_payload_json = json.dumps(raw_payload or {}, ensure_ascii=False)
+            if rec is None:
+                rec = PaymentLog(
+                    payment_id=payment_id,
+                    user_id=user_id,
+                    amount_value=amount_value,
+                    amount_currency=amount_currency or "RUB",
+                    event=event,
+                    status=status,
+                    metadata_json=metadata_json,
+                    raw_payload_json=raw_payload_json,
+                )
+                s.add(rec)
+            else:
+                # обновляем известные поля; processed_at не трогаем
+                if user_id and not rec.user_id:
+                    rec.user_id = user_id
+                rec.amount_value = amount_value
+                rec.amount_currency = amount_currency or rec.amount_currency
+                rec.event = event or rec.event
+                rec.status = status or rec.status
+                rec.metadata_json = metadata_json
+                rec.raw_payload_json = raw_payload_json
+
+    def payment_log_is_processed(self, payment_id: str) -> bool:
+        with self._session() as s:
+            rec = s.get(PaymentLog, payment_id)
+            return bool(rec and rec.processed_at is not None)
+
+    def payment_log_mark_processed(self, payment_id: str) -> None:
+        with self._session() as s, s.begin():
+            rec = s.get(PaymentLog, payment_id)
+            if rec is None:
+                rec = PaymentLog(payment_id=payment_id, processed_at=datetime.utcnow())
+                s.add(rec)
+            else:
+                rec.processed_at = datetime.utcnow()
 
 
 
@@ -392,3 +465,19 @@ def summary_list_entries(user_id: int, limit: int = 10) -> list[dict]:
 
 def summary_get_entry(user_id: int, entry_id: int) -> Optional[dict]:
     return _repo.summary_get_entry(user_id, entry_id)
+
+# -------- Payments (лог/идемпотентность) --------
+def payment_log_upsert(*, payment_id: str, user_id: Optional[int], amount_value: Optional[str],
+                       amount_currency: Optional[str], event: Optional[str], status: Optional[str],
+                       metadata: Optional[dict], raw_payload: Optional[dict]) -> None:
+    _repo.payment_log_upsert(
+        payment_id=payment_id, user_id=user_id, amount_value=amount_value,
+        amount_currency=amount_currency, event=event, status=status,
+        metadata=metadata, raw_payload=raw_payload
+    )
+
+def payment_log_is_processed(payment_id: str) -> bool:
+    return _repo.payment_log_is_processed(payment_id)
+
+def payment_log_mark_processed(payment_id: str) -> None:
+    _repo.payment_log_mark_processed(payment_id)
