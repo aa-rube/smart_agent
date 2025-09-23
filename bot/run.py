@@ -92,6 +92,10 @@ async def main():
                 for sub in due:
                     user_id = sub["user_id"]
                     pm_id = sub["payment_method_id"]
+                    # если токена нет (триал был без сохранённой карты) — пропускаем
+                    if not pm_id:
+                        logging.info("Skip recurring: subscription %s for user %s has no payment_method_id", sub.get("id"), user_id)
+                        continue
                     amount = sub["amount_value"]
                     plan_code = sub["plan_code"]
                     interval_m = int(sub["interval_months"] or 1)
@@ -110,11 +114,7 @@ async def main():
                         logging.exception("Failed to create recurring charge for user %s: %s", user_id, e)
                         continue
 
-                    # продлеваем дату следующего списания (факт успеха подтвердит вебхук)
-                    next_charge_at_msk = datetime.now(MSK) + relativedelta(months=+interval_m)
-                    db.subscription_mark_charged(sub["id"], next_charge_at=next_charge_at_msk)
-
-                    # сразу продлим доступ (консервативно можно ждать вебхука; оставим как есть, доступ продлеваем по вебхуку)
+                    # перенос next_charge_at и продление — только по вебхуку
             except Exception as e:
                 logging.exception("billing_loop error: %s", e)
             finally:

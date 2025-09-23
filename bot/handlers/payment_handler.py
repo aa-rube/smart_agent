@@ -1,5 +1,5 @@
 # # smart_agent/bot/handlers/payment_handler.py
-# #Всегда пиши код без «поддержки старых версий». Если они есть в еодк - удаляй
+# #Всегда пиши код без «поддержки старых версий». Если они есть - удаляй
 from __future__ import annotations
 
 import logging
@@ -199,9 +199,33 @@ async def choose_rate(cb: CallbackQuery) -> None:
                 save_payment_method=True,
             )
         except Exception as e:
-            logging.exception("Failed to create trial payment: %s", e)
-            await _edit_safe(cb, "Не удалось создать платёж. Попробуйте позже.", kb_rates())
-            return
+            # Фолбэк для магазинов без рекуррентных платежей
+            err_txt = str(getattr(e, "args", [""])[0] or e)
+            if "can't make recurring payments" in err_txt.lower() or "forbidden" in err_txt.lower():
+                logging.error("Recurring not allowed for this shop. Falling back to tokenless trial 1 RUB")
+                # создаём обычный платёж на 1 ₽ БЕЗ сохранения способа оплаты
+                try:
+                    meta_fallback = dict(meta)
+                    # помечаем, что это триал без токена — чтобы в вебхуке не создавать рекуррентную подписку
+                    meta_fallback["is_recurring"] = "0"
+                    meta_fallback["phase"] = "trial_tokenless"
+                    pay_url = youmoney.create_pay_ex(
+                        user_id=user_id,
+                        amount_rub=first_amount,
+                        description=f"{description} (пробный период)",
+                        metadata=meta_fallback,
+                        save_payment_method=False,
+                    )
+                    # для UI дадим понятный текст
+                    db.set_variable(user_id, "yk:recurring_disabled", "1")
+                except Exception as e2:
+                    logging.exception("Fallback (tokenless trial) also failed: %s", e2)
+                    await _edit_safe(cb, "Не удалось создать платёж. Попробуйте позже.", kb_rates())
+                    return
+            else:
+                logging.exception("Failed to create trial payment: %s", e)
+                await _edit_safe(cb, "Не удалось создать платёж. Попробуйте позже.", kb_rates())
+                return
     else:
         try:
             pay_url = youmoney.create_pay_ex(
@@ -316,6 +340,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
         if event not in ("payment.succeeded", "payment.waiting_for_capture"):
             return 200, f"skip event={event}"
 
+        # базовая валидация
         user_id = int(metadata.get("user_id") or 0)
         if not user_id:
             return 400, "missing user_id in metadata"
@@ -353,7 +378,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             months = months or TARIFFS["1m"]["months"]
 
         is_recurring = str(metadata.get("is_recurring") or "0") == "1"
-        phase = str(metadata.get("phase") or "").strip()  # "trial" | "renewal" | ""
+        phase = str(metadata.get("phase") or "").strip()  # "trial" | "renewal" | "trial_tokenless"
 
         db.check_and_add_user(user_id)
         paid_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
@@ -367,7 +392,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             interval_m = int(TARIFFS.get(code, {}).get("months", 1))
 
             if phase == "trial":
-                # ⚑ Первый платёж на 1 ₽: открываем демо-период и планируем автосписание через trial_hours
+                # Первый платёж 1 ₽: открываем демо-период, планируем автосписание
                 trial_until_iso = db.set_trial(user_id, hours=trial_hours)
                 db.subscription_upsert(
                     user_id=user_id,
@@ -386,13 +411,13 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                 db.set_variable(user_id, "sub_until", trial_until_iso[:10])
 
                 sub_until = trial_until_iso[:10]
-            else:
-                # ⚑ Рекуррентное списание (полная сумма после trial)
+            elif phase == "renewal":
+                # Успешное автосписание после триала
                 sub_until = _compute_sub_until(interval_m)
                 db.set_variable(user_id, "have_sub", "1")
                 db.set_variable(user_id, "sub_paid_at", paid_at)
                 db.set_variable(user_id, "sub_until", sub_until)
-                # переносим дату следующего списания только ПОСЛЕ успешного списания
+                # перенос next_charge_at только после успеха
                 try:
                     from dateutil.relativedelta import relativedelta
                     next_at = datetime.utcnow() + relativedelta(months=+interval_m)
@@ -401,17 +426,29 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                 try:
                     db.subscription_mark_charged(metadata.get("subscription_id"), next_charge_at=next_at)
                 except Exception:
-                    # на всякий, если id подписки не передан — апдейтим по user_id
                     try:
                         db.subscription_mark_charged_for_user(user_id=user_id, next_charge_at=next_at)
                     except Exception:
                         logging.exception("Failed to bump next_charge_at after renewal for user %s", user_id)
+            else:
+                # защитная ветка на случай странных метаданных
+                logging.info("Recurring payment with unexpected phase=%s; no state change", phase)
         else:
-            # Разовый платёж
-            db.set_variable(user_id, "have_sub", "1")
-            sub_until = _compute_sub_until(months)
-            db.set_variable(user_id, "sub_paid_at", paid_at)
-            db.set_variable(user_id, "sub_until", sub_until)
+            # НЕ рекуррентные оплаты (включая триал без токена)
+            # 1) trial_tokenless → просто открыть демо и НЕ создавать рекуррентную подписку
+            if phase == "trial_tokenless":
+                trial_hours = int(str(metadata.get("trial_hours") or "72"))
+                trial_until_iso = db.set_trial(user_id, hours=trial_hours)
+                db.set_variable(user_id, "have_sub", "1")
+                db.set_variable(user_id, "sub_paid_at", paid_at)
+                db.set_variable(user_id, "sub_until", trial_until_iso[:10])
+                sub_until = trial_until_iso[:10]
+            else:
+                # Обычный разовый платёж
+                db.set_variable(user_id, "have_sub", "1")
+                sub_until = _compute_sub_until(months)
+                db.set_variable(user_id, "sub_paid_at", paid_at)
+                db.set_variable(user_id, "sub_until", sub_until)
 
         # Идемпотентность
         try:

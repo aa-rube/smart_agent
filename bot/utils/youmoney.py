@@ -2,6 +2,7 @@
 import uuid
 from typing import Optional, Dict
 
+from yookassa.domain.exceptions.forbidden_error import ForbiddenError
 from yookassa import Configuration, Payment
 from bot.config import YOUMONEY_SHOP_ID, YOUMONEY_SECRET_KEY
 
@@ -46,7 +47,14 @@ def create_pay_ex(
         "save_payment_method": bool(save_payment_method),
     }
 
-    payment = Payment.create(body, uuid.uuid4())
+    try:
+        payment = Payment.create(body, uuid.uuid4())
+    except ForbiddenError as e:
+        # пробрасываем как есть — наверху решим, нужен ли фолбэк без сохранения карты
+        raise
+    except Exception:
+        # любые другие ошибки — тоже наверх
+        raise
     return payment.confirmation.confirmation_url
 
 

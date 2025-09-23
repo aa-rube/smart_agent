@@ -1,5 +1,5 @@
 # smart_agent/bot/handlers/subscribe_partner_manager.py
-#Всегда пиши код без «поддержки старых версий». Если они есть в еодк - удаляй.
+#Всегда пиши код без «поддержки старых версий». Если они есть - удаляй.
 
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ def build_missing_subscribe_keyboard(
 
     if retry_callback_data:
         rows.append([InlineKeyboardButton(text="✅ Проверить", callback_data=retry_callback_data)])
-        rows.append([InlineKeyboardButton(text="❗️ Не подписываться", callback_data="skip_subscribe")])
+        # rows.append([InlineKeyboardButton(text="❗️ Не подписываться", callback_data="skip_subscribe")])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
