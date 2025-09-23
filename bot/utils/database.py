@@ -164,6 +164,37 @@ class PaymentLog(Base):
     processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class Subscription(Base):
+    """
+    Подписки пользователей (рекуррентные списания).
+    """
+    __tablename__ = "subscriptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    plan_code: Mapped[str] = mapped_column(String(32), nullable=False)               # 1m / 3m ...
+    interval_months: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    amount_value: Mapped[str] = mapped_column(String(32), nullable=False)            # "2490.00"
+    amount_currency: Mapped[str] = mapped_column(String(8), nullable=False, default="RUB")
+
+    payment_method_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")   # active|canceled
+    next_charge_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_charge_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    cancel_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    user: Mapped[User] = relationship(backref="subscriptions")
+
+
 # =========================
 #       Repository
 # =========================
@@ -277,7 +308,97 @@ class UserRepository:
             else:
                 rec.processed_at = datetime.utcnow()
 
+    # --- subscriptions ---
+    def subscription_upsert(
+        self,
+        *,
+        user_id: int,
+        plan_code: str,
+        interval_months: int,
+        amount_value: str,
+        amount_currency: str = "RUB",
+        payment_method_id: Optional[str],
+        next_charge_at: Optional[datetime],
+        status: str = "active",
+    ) -> int:
+        with self._session() as s, s.begin():
+            # одна активная подписка на пользователя и план
+            rec = (
+                s.query(Subscription)
+                .filter(Subscription.user_id == user_id, Subscription.plan_code == plan_code)
+                .one_or_none()
+            )
+            if rec is None:
+                rec = Subscription(
+                    user_id=user_id,
+                    plan_code=plan_code,
+                    interval_months=interval_months,
+                    amount_value=amount_value,
+                    amount_currency=amount_currency,
+                    payment_method_id=payment_method_id,
+                    next_charge_at=next_charge_at,
+                    status=status,
+                )
+                s.add(rec)
+                s.flush()
+                return rec.id
+            else:
+                rec.interval_months = interval_months
+                rec.amount_value = amount_value
+                rec.amount_currency = amount_currency or rec.amount_currency
+                if payment_method_id:
+                    rec.payment_method_id = payment_method_id
+                rec.next_charge_at = next_charge_at
+                rec.status = status
+                rec.updated_at = datetime.utcnow()
+                s.flush()
+                return rec.id
 
+    def subscription_mark_charged(self, sub_id: int, *, next_charge_at: datetime) -> None:
+        with self._session() as s, s.begin():
+            rec = s.get(Subscription, sub_id)
+            if rec:
+                rec.last_charge_at = datetime.utcnow()
+                rec.next_charge_at = next_charge_at
+                rec.updated_at = datetime.utcnow()
+
+    def subscriptions_due(self, *, now: datetime, limit: int = 200) -> List[Dict[str, Any]]:
+        with self._session() as s:
+            q = (
+                s.query(Subscription)
+                .filter(
+                    Subscription.status == "active",
+                    Subscription.next_charge_at != None,                     # noqa: E711
+                    Subscription.next_charge_at <= now,
+                    Subscription.payment_method_id != None,                  # noqa: E711
+                )
+                .order_by(Subscription.next_charge_at.asc())
+                .limit(limit)
+            )
+            items: List[Dict[str, Any]] = []
+            for rec in q:
+                items.append({
+                    "id": rec.id,
+                    "user_id": rec.user_id,
+                    "plan_code": rec.plan_code,
+                    "interval_months": rec.interval_months,
+                    "amount_value": rec.amount_value,
+                    "amount_currency": rec.amount_currency,
+                    "payment_method_id": rec.payment_method_id,
+                })
+            return items
+
+    def subscription_cancel(self, user_id: int, plan_code: str) -> None:
+        with self._session() as s, s.begin():
+            rec = (
+                s.query(Subscription)
+                .filter(Subscription.user_id == user_id, Subscription.plan_code == plan_code)
+                .one_or_none()
+            )
+            if rec and rec.status != "canceled":
+                rec.status = "canceled"
+                rec.cancel_at = datetime.utcnow()
+                rec.updated_at = datetime.utcnow()
 
     # --- trial helpers ---
     def set_trial(self, user_id: int, hours: int = 72) -> str:
@@ -483,3 +604,22 @@ def payment_log_is_processed(payment_id: str) -> bool:
 
 def payment_log_mark_processed(payment_id: str) -> None:
     _repo.payment_log_mark_processed(payment_id)
+
+# -------- Subscriptions --------
+def subscription_upsert(*, user_id: int, plan_code: str, interval_months: int, amount_value: str,
+                        amount_currency: str, payment_method_id: Optional[str],
+                        next_charge_at: Optional[datetime], status: str = "active") -> int:
+    return _repo.subscription_upsert(
+        user_id=user_id, plan_code=plan_code, interval_months=interval_months,
+        amount_value=amount_value, amount_currency=amount_currency,
+        payment_method_id=payment_method_id, next_charge_at=next_charge_at, status=status
+    )
+
+def subscriptions_due(now: datetime, limit: int = 200) -> List[Dict[str, Any]]:
+    return _repo.subscriptions_due(now=now, limit=limit)
+
+def subscription_mark_charged(sub_id: int, *, next_charge_at: datetime) -> None:
+    _repo.subscription_mark_charged(sub_id, next_charge_at=next_charge_at)
+
+def subscription_cancel(user_id: int, plan_code: str) -> None:
+    _repo.subscription_cancel(user_id, plan_code)

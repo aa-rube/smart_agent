@@ -20,7 +20,8 @@ from bot.utils import youmoney
 # ТАРИФЫ И НАСТРОЙКИ
 # ──────────────────────────────────────────────────────────────────────────────
 TARIFFS: Dict[str, Dict] = {
-    "1m":  {"label": "1 месяц",   "months": 1,  "amount": "2490.00"},
+    # Для примера делаем рекуррентной только 1m (остальные — разовые)
+    "1m":  {"label": "1 месяц",   "months": 1,  "amount": "2490.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
     "3m":  {"label": "3 месяца",  "months": 3,  "amount": "6590.00"},
     "6m":  {"label": "6 месяцев", "months": 6,  "amount": "11390.00"},
     "12m": {"label": "12 месяцев","months": 12, "amount": "19900.00"},
@@ -66,6 +67,21 @@ def kb_pay(url: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="⬅️ Выбрать другой тариф", callback_data="show_rates")],
         ]
     )
+
+# Клавиатура оплаты с чекбоксом согласия.
+# Если consent=False — кнопка «Оплатить» идёт КОЛБЭКОМ без URL.
+# Если consent=True — появляется URL для оплаты.
+def kb_pay_with_consent(*, consent: bool, pay_url: Optional[str]) -> InlineKeyboardMarkup:
+    check = "✅ Я ознакомлен и согласен" if consent else "⬜️ Я ознакомлен и согласен"
+    rows = [
+        [InlineKeyboardButton(text=check, callback_data="tos:toggle")],
+    ]
+    if consent and pay_url:
+        rows.append([InlineKeyboardButton(text="💳 Оплатить", url=pay_url)])
+    else:
+        rows.append([InlineKeyboardButton(text="💳 Оплатить", callback_data="tos:need")])
+    rows.append([InlineKeyboardButton(text="⬅️ Выбрать другой тариф", callback_data="show_rates")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -164,25 +180,79 @@ async def choose_rate(cb: CallbackQuery) -> None:
         "v": "1",
     }
 
-    try:
-        payment_url = youmoney.create_pay_ex(
-            user_id=user_id,
-            amount_rub=amount,
-            description=description,
-            metadata=meta,
-        )
-    except Exception as e:
-        logging.exception("Failed to create YooKassa payment: %s", e)
-        await _edit_safe(cb, "Не удалось создать платёж. Попробуйте позже.", kb_rates())
-        return
+    # Рекуррентная подписка: первый платёж 1 ₽ c сохранением карты
+    pay_url: Optional[str] = None
+    if plan.get("recurring"):
+        first_amount = plan.get("trial_amount", "1.00")
+        meta.update({
+            "is_recurring": "1",
+            "trial_hours": str(plan.get("trial_hours", 72)),
+            "plan_amount": amount,
+        })
+        try:
+            pay_url = youmoney.create_pay_ex(
+                user_id=user_id,
+                amount_rub=first_amount,
+                description=f"{description} (пробный период)",
+                metadata=meta,
+                save_payment_method=True,
+            )
+        except Exception as e:
+            logging.exception("Failed to create trial payment: %s", e)
+            await _edit_safe(cb, "Не удалось создать платёж. Попробуйте позже.", kb_rates())
+            return
+    else:
+        # Разовый платёж
+        try:
+            pay_url = youmoney.create_pay_ex(
+                user_id=user_id,
+                amount_rub=amount,
+                description=description,
+                metadata=meta,
+            )
+        except Exception as e:
+            logging.exception("Failed to create YooKassa payment: %s", e)
+            await _edit_safe(cb, "Не удалось создать платёж. Попробуйте позже.", kb_rates())
+            return
 
     text = f"{description}\n\n{PAY_TEXT}"
-    msg_id = await _edit_safe(cb, text, kb_pay(payment_url))
+
+    # Читаем согласие
+    consent_raw = db.get_variable(user_id, "tos:accepted_at")
+    consent = bool(consent_raw)
+    msg_id = await _edit_safe(cb, text, kb_pay_with_consent(consent=consent, pay_url=pay_url))
     # сохраним id сообщения с кнопкой, чтобы удалить после успешной оплаты
     try:
         db.set_variable(user_id, "yk:last_pay_msg_id", str(msg_id or ""))
     except Exception:
         logging.exception("Failed to store last pay message id for user %s", user_id)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Доп. хендлеры чек-бокса согласия
+# ──────────────────────────────────────────────────────────────────────────────
+async def toggle_tos(cb: CallbackQuery) -> None:
+    user_id = cb.from_user.id
+    cur = db.get_variable(user_id, "tos:accepted_at")
+    if cur:
+        db.set_variable(user_id, "tos:accepted_at", "")  # снимаем
+    else:
+        db.set_variable(user_id, "tos:accepted_at", datetime.utcnow().isoformat(timespec="seconds") + "Z")
+
+    # Перерисуем клавиатуру, если это экран оплаты
+    # Переиспользуем последний URL, если он был сохранён в сообщении (мы его не храним отдельно),
+    # поэтому просто заново построим кнопки: если consent=false — URL не нужен.
+    consent = not bool(cur)
+    # Текст оставляем как есть, только заменяем клавиатуру:
+    try:
+        await cb.message.edit_reply_markup(reply_markup=kb_pay_with_consent(consent=consent, pay_url=None))
+    except Exception:
+        pass
+    await cb.answer()
+
+
+async def need_tos(cb: CallbackQuery) -> None:
+    await cb.answer("Поставьте отметку «Я ознакомлен и согласен», чтобы продолжить.", show_alert=True)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -200,6 +270,8 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
         payment_id = obj.get("id")
         status = obj.get("status")
         metadata = obj.get("metadata") or {}
+        payment_method = obj.get("payment_method") or {}
+        pm_id = payment_method.get("id")
 
         if not payment_id or not status:
             return 400, "missing payment_id/status"
@@ -270,14 +342,46 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             code = "1m"
             months = months or TARIFFS["1m"]["months"]
 
-        # начисляем
-        db.check_and_add_user(user_id)
-        db.set_variable(user_id, "have_sub", "1")
+        # подписка / разовый платёж
+        is_recurring = str(metadata.get("is_recurring") or "0") == "1"
 
+        db.check_and_add_user(user_id)
         paid_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
-        sub_until = _compute_sub_until(months)
-        db.set_variable(user_id, "sub_paid_at", paid_at)
-        db.set_variable(user_id, "sub_until", sub_until)
+
+        if is_recurring:
+            # Сохраняем способ оплаты и создаём/обновляем запись подписки
+            if pm_id:
+                db.set_variable(user_id, "yk:payment_method_id", pm_id)
+            trial_hours = int(str(metadata.get("trial_hours") or "72"))
+            plan_amount = str(metadata.get("plan_amount") or TARIFFS.get(code, {}).get("amount", "2490.00"))
+            interval_m = int(TARIFFS.get(code, {}).get("months", 1))
+            # trial до:
+            trial_until_iso = db.set_trial(user_id, hours=trial_hours)
+
+            # создаём/обновляем сущность подписки
+            db.subscription_upsert(
+                user_id=user_id,
+                plan_code=code,
+                interval_months=interval_m,
+                amount_value=plan_amount,
+                amount_currency=str(obj.get("amount", {}).get("currency") or "RUB"),
+                payment_method_id=pm_id or db.get_variable(user_id, "yk:payment_method_id"),
+                next_charge_at=datetime.utcnow() + timedelta(hours=trial_hours),
+                status="active",
+            )
+
+            # права доступа сразу открываем на trial
+            db.set_variable(user_id, "have_sub", "1")
+            db.set_variable(user_id, "sub_paid_at", paid_at)
+            db.set_variable(user_id, "sub_until", trial_until_iso[:10])  # на период trial
+
+            sub_until = trial_until_iso[:10]
+        else:
+            # разовый платёж — как раньше
+            db.set_variable(user_id, "have_sub", "1")
+            sub_until = _compute_sub_until(months)
+            db.set_variable(user_id, "sub_paid_at", paid_at)
+            db.set_variable(user_id, "sub_until", sub_until)
 
         # пометим платёж обработанным (идемпотентность)
         try:
@@ -347,3 +451,7 @@ def router(rt: Router) -> None:
             await _edit_safe(cb, "Тариф не распознан.", kb_rates())
 
     rt.callback_query.register(legacy_choose, F.data.in_({"Rate_1", "Rate_2", "Rate_3", "Rate_4"}))
+
+    # Чекбокс согласия и блокирующая «Оплатить» без согласия
+    rt.callback_query.register(toggle_tos, F.data == "tos:toggle")
+    rt.callback_query.register(need_tos,   F.data == "tos:need")
