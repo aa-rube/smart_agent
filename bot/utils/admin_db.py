@@ -6,11 +6,13 @@ from __future__ import annotations
 import json
 from typing import Optional, List, Tuple, Any, Dict
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from dateutil.relativedelta import relativedelta
 from sqlalchemy import create_engine, String, Integer, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session
 
+MSK = ZoneInfo("Europe/Moscow")
 import bot.config as cfg
 
 
@@ -197,7 +199,7 @@ class AdminRepository:
 
     def remove_expired_subscriptions(self) -> List[str]:
         removed: List[str] = []
-        today = datetime.now().date()
+        today = datetime.now(MSK).date()
         with self._s() as s, s.begin():
             users = s.query(AdminUser).filter(AdminUser.HaveSub == 1).all()
             for u in users:
@@ -234,7 +236,8 @@ class AdminRepository:
         publish_at: str,   # 'YYYY-MM-DD HH:MM' (или ISO, нормализуем)
         mailing_on: bool = True,
     ) -> int:
-        now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # метка создания в МСК
+        now_iso = datetime.now(MSK).strftime("%Y-%m-%d %H:%M:%S")
         payload_json = _json_dump(payload)
         with self._s() as s, s.begin():
             m = Mailing(
@@ -251,7 +254,8 @@ class AdminRepository:
             return m.id
 
     def get_pending_mailings(self) -> List[Dict[str, Any]]:
-        now_iso = datetime.now().strftime("%Y-%m-%d %H:%M")
+        # сравниваем «пора слать» по МСК
+        now_iso = datetime.now(MSK).strftime("%Y-%m-%d %H:%M")
         with self._s() as s:
             rows = (
                 s.query(Mailing)
@@ -467,7 +471,7 @@ class AdminRepository:
     def get_users_with_expiring_subscription(self, days_before: int) -> List[str]:
         if days_before < 0:
             return []
-        target_str = (datetime.now().date() + timedelta(days=days_before)).strftime("%Y-%m-%d")
+        target_str = (datetime.now(MSK).date() + timedelta(days=days_before)).strftime("%Y-%m-%d")
         with self._s() as s:
             rows = (
                 s.query(AdminUser.user_id)

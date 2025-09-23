@@ -4,12 +4,17 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Dict, Any, List
+from zoneinfo import ZoneInfo
+from datetime import datetime
 
 from aiogram import Bot
 from aiogram.types import InputMediaPhoto, InputMediaVideo
 
 import bot.utils.admin_db as adb
+
+MSK = ZoneInfo("Europe/Moscow")
 
 
 CHUNK_SIZE = 10  # Telegram ограничивает медиа-группу 10 элементами
@@ -114,16 +119,21 @@ async def run_mailing_scheduler(bot: Bot) -> None:
     Шлёт подписчикам и помечает как выполненные.
     """
     pending = adb.get_pending_mailings()
+    logging.info("[mailing] %s pending at %s MSK", len(pending), datetime.now(MSK).strftime("%Y-%m-%d %H:%M:%S"))
+
     if not pending:
         return
 
     user_ids = adb.get_active_user_ids()
+    logging.info("[mailing] recipients=%s", len(user_ids))
+
     if not user_ids:
-        # Некому отправлять — сразу пометим как completed, чтобы не висело
         for m in pending:
             adb.mark_mailing_completed(m["id"])
+            logging.info("[mailing] no recipients → mark completed id=%s", m["id"])
         return
 
     for m in pending:
         await broadcast(bot, m, user_ids)
         adb.mark_mailing_completed(m["id"])
+        logging.info("[mailing] completed id=%s", m["id"])

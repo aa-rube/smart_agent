@@ -16,14 +16,13 @@ from bot.utils.mailing import run_mailing_scheduler  # ✅ планировщи�
 from bot.handlers.payment_handler import process_yookassa_webhook
 from bot.utils import youmoney
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from dateutil.relativedelta import relativedelta
-
 
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
 dp = Dispatcher(storage=MemoryStorage())
 setup(dp)
-
 
 
 async def yookassa_webhook_handler(request: web.Request):
@@ -56,6 +55,9 @@ async def main():
     await site.start()
     logging.info("Webhook server started on http://0.0.0.0:8000")
 
+    # Московская таймзона (UTC+3, без сезонных переводов)
+    MSK = ZoneInfo("Europe/Moscow")
+
     async def mailing_loop():
         """
         Фоновый цикл рассылок.
@@ -84,7 +86,9 @@ async def main():
         """
         while True:
             try:
-                due = db.subscriptions_due(now=datetime.utcnow(), limit=100)
+                # timezone-aware MSK:
+                now_msk = datetime.now(MSK)
+                due = db.subscriptions_due(now=now_msk, limit=100)
                 for sub in due:
                     user_id = sub["user_id"]
                     pm_id = sub["payment_method_id"]
@@ -107,8 +111,8 @@ async def main():
                         continue
 
                     # продлеваем дату следующего списания (факт успеха подтвердит вебхук)
-                    next_charge_at = datetime.utcnow() + relativedelta(months=+interval_m)
-                    db.subscription_mark_charged(sub["id"], next_charge_at=next_charge_at)
+                    next_charge_at_msk = datetime.now(MSK) + relativedelta(months=+interval_m)
+                    db.subscription_mark_charged(sub["id"], next_charge_at=next_charge_at_msk)
 
                     # сразу продлим доступ (консервативно можно ждать вебхука; оставим как есть, доступ продлеваем по вебхуку)
             except Exception as e:
