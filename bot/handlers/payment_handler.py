@@ -76,8 +76,9 @@ def kb_pay_with_consent(*, consent: bool, pay_url: Optional[str]) -> InlineKeybo
     ]
     if consent and pay_url:
         rows.append([InlineKeyboardButton(text="💳 Оплатить", url=pay_url)])
-    else:
-        rows.append([InlineKeyboardButton(text="💳 Оплатить", callback_data="tos:need")])
+
+    # else:
+    #     rows.append([InlineKeyboardButton(text="💳 Оплатить", callback_data="tos:need")])
     rows.append([InlineKeyboardButton(text="⬅️ Выбрать другой тариф", callback_data="show_rates")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

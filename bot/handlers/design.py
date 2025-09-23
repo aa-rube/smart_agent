@@ -122,7 +122,7 @@ def kb_design_home() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text="🛋 Редизайн интерьера", callback_data="redesign")],
             [InlineKeyboardButton(text="🆕 Дизайн с нуля", callback_data="0design")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")],
         ]
     )
 
