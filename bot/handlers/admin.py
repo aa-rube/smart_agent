@@ -178,6 +178,16 @@ BTN_CONTENT_SAVE_BACK = InlineKeyboardMarkup(
 # =============================================================================
 # Вспомогательные
 # =============================================================================
+def is_admin(user_id: int | str | None) -> bool:
+    """True, если user_id в списке админов из .env."""
+    if user_id is None:
+        return False
+    try:
+        return int(user_id) in cfg.ADMIN_IDS
+    except (TypeError, ValueError):
+        return False
+
+
 def _parse_dt(s: str) -> datetime | None:
     s = (s or "").strip()
     for fmt in ("%Y-%m-%d %H:%M", "%d.%m.%Y %H:%M"):
@@ -408,14 +418,14 @@ async def _render_mailing_item(message: Message, mailing_id: int, origin: str = 
 # ХЕНДЛЕРЫ МЕНЮ
 # =============================================================================
 async def admin_menu(message: Message):
-    if message.from_user.id != cfg.ADMIN_ID:
+    if not is_admin(message.from_user.id):
         await message.answer(NO_ACCESS_TEXT)
         return
     await message.answer(ADMIN_MENU_TEXT, reply_markup=kb_admin_home(), parse_mode="HTML")
 
 
 async def admin_home(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != cfg.ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     await state.clear()
@@ -427,7 +437,7 @@ async def admin_home(callback: CallbackQuery, state: FSMContext):
 # РАССЫЛКА (создание и планирование)
 # =============================================================================
 async def start_mailing(callback: CallbackQuery, state: FSMContext):
-    if callback.message.chat.id != cfg.ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     await state.clear()
@@ -439,7 +449,7 @@ async def start_mailing(callback: CallbackQuery, state: FSMContext):
 
 async def mailing_stop(callback: CallbackQuery, state: FSMContext):
     # Сброс сценария и возврат к вводу контента
-    if callback.message.chat.id == cfg.ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await state.clear()
         await state.update_data(step="await_content", album_gid=None, album_items=[], caption=None)
         await _edit_or_send(callback.message, text=ASK_MAILING_CONTENT, kb=kb_back_admin(), parse_mode="HTML")
@@ -451,7 +461,7 @@ async def mailing_stop(callback: CallbackQuery, state: FSMContext):
 
 
 async def mailing_accept(message: Message, state: FSMContext):
-    if message.from_user.id != cfg.ADMIN_ID:
+    if not is_admin(message.from_user.id):
         await message.answer(NO_ACCESS_TEXT)
         return
 
@@ -651,7 +661,7 @@ async def mailing_accept(message: Message, state: FSMContext):
 
 
 async def go_mailing(callback: CallbackQuery, state: FSMContext):
-    if callback.message.chat.id != cfg.ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
 
@@ -681,7 +691,7 @@ async def go_mailing(callback: CallbackQuery, state: FSMContext):
 
 async def use_default_datetime(callback: CallbackQuery, state: FSMContext):
     """Callback на кнопку '🗓 Использовать {default_dt}' — сразу переходим к подтверждению."""
-    if callback.message.chat.id != cfg.ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     data = await state.get_data()
@@ -719,7 +729,7 @@ async def use_default_datetime(callback: CallbackQuery, state: FSMContext):
 # УПРАВЛЕНИЕ ЗАПЛАНИРОВАННЫМИ
 # =============================
 async def open_mailing_list(callback: CallbackQuery):
-    if callback.from_user.id != cfg.ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     items = adb.get_scheduled_mailings(limit=10)  # невыполненные
@@ -742,7 +752,7 @@ async def open_mailing_list(callback: CallbackQuery):
 
 
 async def open_mailing_item(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != cfg.ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     # сохраняем текущий id в состоянии для возвращений "Назад"
@@ -752,7 +762,7 @@ async def open_mailing_item(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 async def open_mailing_item_keep(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != cfg.ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     mailing_id = int(callback.data.split(":")[1])
@@ -765,7 +775,7 @@ async def open_mailing_item_keep(callback: CallbackQuery, state: FSMContext):
 
 
 async def preview_mailing(callback: CallbackQuery, bot: Bot, state: FSMContext):
-    if callback.from_user.id != cfg.ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     mailing_id = int(callback.data.split(":")[1])
@@ -782,7 +792,7 @@ async def preview_mailing(callback: CallbackQuery, bot: Bot, state: FSMContext):
 
 
 async def start_edit_mailing_datetime(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != cfg.ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     mailing_id = int(callback.data.split(":")[1])
@@ -817,7 +827,7 @@ async def start_edit_mailing_datetime(callback: CallbackQuery, state: FSMContext
 
 async def start_edit_mailing_datetime_calendar(callback: CallbackQuery, state: FSMContext):
     """Открыть календарик на дате текущей публикации."""
-    if callback.from_user.id != cfg.ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     mailing_id = int(callback.data.split(":")[1])
@@ -926,7 +936,7 @@ async def calendar_date_chosen(callback: CallbackQuery, state: FSMContext):
 
 
 async def start_edit_mailing_text(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != cfg.ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     mailing_id = int(callback.data.split(":")[1])
@@ -1007,7 +1017,7 @@ async def text_edit_back(callback: CallbackQuery, state: FSMContext):
 
 
 async def start_edit_mailing_content(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != cfg.ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     mailing_id = int(callback.data.split(":")[1])
@@ -1082,7 +1092,7 @@ async def content_edit_back(callback: CallbackQuery, state: FSMContext):
 
 async def content_edit_delete(callback: CallbackQuery, state: FSMContext):
     """Удалить текущий контент у рассылки и вернуться к карточке."""
-    if callback.from_user.id != cfg.ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     mailing_id = int(callback.data.split(":")[1])
@@ -1101,7 +1111,7 @@ async def content_edit_delete(callback: CallbackQuery, state: FSMContext):
 
 
 async def delete_mailing(callback: CallbackQuery):
-    if callback.from_user.id != cfg.ADMIN_ID:
+    if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     mailing_id = int(callback.data.split(":")[1])

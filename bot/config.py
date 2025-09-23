@@ -40,7 +40,19 @@ ADMIN_DB_URL = f"mysql+pymysql://{MYSQL_USER}:{quote_plus(MYSQL_PASSWORD)}@{MYSQ
 TOKEN = os.getenv("TOKEN")
 
 # === Telegram IDs ===
-ADMIN_ID            = int(os.getenv("ADMIN_ID", "0"))
+
+def _parse_int_list(s: str) -> list[int]:
+    if not s:
+        return []
+    import re
+    ids = []
+    for token in re.split(r"[,\s;]+", s.strip()):
+        if not token:
+            continue
+        ids.append(int(token))
+    return ids
+
+ADMIN_IDS           = _parse_int_list(os.getenv("ADMIN_IDS") or os.getenv("ADMIN_ID", ""))
 ADMIN_GROUP_ID      = int(os.getenv("ADMIN_GROUP_ID", "0"))
 CONTENT_CHANNEL_ID  = int(os.getenv("CONTENT_CHANNEL_ID", "0"))
 CONTENT_GROUP_ID    = int(os.getenv("CONTENT_GROUP_ID", "0"))
