@@ -16,7 +16,6 @@ import bot.utils.database as db
 from bot.utils import youmoney
 
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # ТАРИФЫ И НАСТРОЙКИ
 # ──────────────────────────────────────────────────────────────────────────────
@@ -28,6 +27,7 @@ TARIFFS: Dict[str, Dict] = {
     "6m":  {"label": "6 месяцев", "months": 6,  "amount": "11390.00"},
     "12m": {"label": "12 месяцев","months": 12, "amount": "19900.00"},
 }
+
 
 RATES_TEXT = (
     "Тут вы можете оформить подписку на доступ:\n"
@@ -168,6 +168,7 @@ async def choose_rate(cb: CallbackQuery) -> None:
         await _edit_safe(cb, "Такого тарифа нет. Выберите из списка.", kb_rates())
         return
 
+
     amount = plan["amount"]
     months = plan["months"]
 
@@ -184,6 +185,7 @@ async def choose_rate(cb: CallbackQuery) -> None:
     if plan.get("recurring"):
         first_amount = plan.get("trial_amount", "1.00")
         meta.update({
+            "phase": "trial",
             "is_recurring": "1",
             "trial_hours": str(plan.get("trial_hours", 72)),
             "plan_amount": amount,
@@ -314,7 +316,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
         if event not in ("payment.succeeded", "payment.waiting_for_capture"):
             return 200, f"skip event={event}"
 
-        user_id = int((metadata.get("user_id") or 0))
+        user_id = int(metadata.get("user_id") or 0)
         if not user_id:
             return 400, "missing user_id in metadata"
 
@@ -351,6 +353,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             months = months or TARIFFS["1m"]["months"]
 
         is_recurring = str(metadata.get("is_recurring") or "0") == "1"
+        phase = str(metadata.get("phase") or "").strip()  # "trial" | "renewal" | ""
 
         db.check_and_add_user(user_id)
         paid_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
@@ -363,25 +366,46 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             plan_amount = str(metadata.get("plan_amount") or TARIFFS.get(code, {}).get("amount", "2490.00"))
             interval_m = int(TARIFFS.get(code, {}).get("months", 1))
 
-            trial_until_iso = db.set_trial(user_id, hours=trial_hours)
+            if phase == "trial":
+                # ⚑ Первый платёж на 1 ₽: открываем демо-период и планируем автосписание через trial_hours
+                trial_until_iso = db.set_trial(user_id, hours=trial_hours)
+                db.subscription_upsert(
+                    user_id=user_id,
+                    plan_code=code,
+                    interval_months=interval_m,
+                    amount_value=plan_amount,
+                    amount_currency=str(obj.get("amount", {}).get("currency") or "RUB"),
+                    payment_method_id=pm_id or db.get_variable(user_id, "yk:payment_method_id"),
+                    next_charge_at=datetime.utcnow() + timedelta(hours=trial_hours),
+                    status="active",
+                )
 
-            db.subscription_upsert(
-                user_id=user_id,
-                plan_code=code,
-                interval_months=interval_m,
-                amount_value=plan_amount,
-                amount_currency=str(obj.get("amount", {}).get("currency") or "RUB"),
-                payment_method_id=pm_id or db.get_variable(user_id, "yk:payment_method_id"),
-                next_charge_at=datetime.utcnow() + timedelta(hours=trial_hours),
-                status="active",
-            )
+                # Открываем доступ на период trial
+                db.set_variable(user_id, "have_sub", "1")
+                db.set_variable(user_id, "sub_paid_at", paid_at)
+                db.set_variable(user_id, "sub_until", trial_until_iso[:10])
 
-            # Открываем доступ на период trial
-            db.set_variable(user_id, "have_sub", "1")
-            db.set_variable(user_id, "sub_paid_at", paid_at)
-            db.set_variable(user_id, "sub_until", trial_until_iso[:10])
-
-            sub_until = trial_until_iso[:10]
+                sub_until = trial_until_iso[:10]
+            else:
+                # ⚑ Рекуррентное списание (полная сумма после trial)
+                sub_until = _compute_sub_until(interval_m)
+                db.set_variable(user_id, "have_sub", "1")
+                db.set_variable(user_id, "sub_paid_at", paid_at)
+                db.set_variable(user_id, "sub_until", sub_until)
+                # переносим дату следующего списания только ПОСЛЕ успешного списания
+                try:
+                    from dateutil.relativedelta import relativedelta
+                    next_at = datetime.utcnow() + relativedelta(months=+interval_m)
+                except Exception:
+                    next_at = datetime.utcnow() + timedelta(days=30 * interval_m)
+                try:
+                    db.subscription_mark_charged(metadata.get("subscription_id"), next_charge_at=next_at)
+                except Exception:
+                    # на всякий, если id подписки не передан — апдейтим по user_id
+                    try:
+                        db.subscription_mark_charged_for_user(user_id=user_id, next_charge_at=next_at)
+                    except Exception:
+                        logging.exception("Failed to bump next_charge_at after renewal for user %s", user_id)
         else:
             # Разовый платёж
             db.set_variable(user_id, "have_sub", "1")
