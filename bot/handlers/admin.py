@@ -843,47 +843,68 @@ async def start_edit_mailing_datetime_calendar(callback: CallbackQuery, state: F
     await open_calendar(callback.message, base_dt.date())
     await callback.answer()
 
-async def calendar_date_chosen(callback: CallbackQuery, state: FSMContext):
+# ─────────────────────────────────────────────────────────────────────────────
+# Календарь: финальные действия времени для админ-редактирования
+# ─────────────────────────────────────────────────────────────────────────────
+async def calendar_time_done(callback: CallbackQuery, state: FSMContext):
     """
-    Поймали выбор даты из календаря: cal.date:YYYY-MM-DD
-    Обновляем дату публикации, сохраняя время (HH:MM) от текущей записи.
+    cal.done:YYYY-MM-DDTHH:MM  -> применяем новую дату+время к записи и возвращаем карточку.
     """
     data = await state.get_data()
     if (data or {}).get("step") != "edit_datetime":
-        # Клик не в контексте редактирования времени — игнор
-        await callback.answer("Сейчас не редактируем дату.", show_alert=False)
+        # Не в контексте редактирования — молча пропустим
+        await callback.answer()
         return
-    chosen = callback.data.split(":")[1]  # YYYY-MM-DD
     mid = int((data or {}).get("edit_mailing_id", 0) or 0)
     if not mid:
         await callback.answer("Нет ID записи.", show_alert=True)
         return
+    iso = callback.data.split(":", 1)[1]  # YYYY-MM-DDTHH:MM
+    try:
+        dt = datetime.strptime(iso, "%Y-%m-%dT%H:%M")
+    except Exception:
+        await callback.answer("Некорректная дата/время.", show_alert=True)
+        return
+    adb.update_mailing_publish_at(mid, dt.isoformat(timespec="minutes"))
+    await state.update_data(step=None)
+    origin = (data or {}).get("view_origin", "list")
+    await _render_mailing_item(callback.message, mid, origin=origin)
+    await callback.answer("Дата и время обновлены.")
+
+async def calendar_time_keep(callback: CallbackQuery, state: FSMContext):
+    """
+    cal.keep:YYYY-MM-DD -> оставить текущее время записи, заменить только дату.
+    """
+    data = await state.get_data()
+    if (data or {}).get("step") != "edit_datetime":
+        await callback.answer()
+        return
+    mid = int((data or {}).get("edit_mailing_id", 0) or 0)
+    if not mid:
+        await callback.answer("Нет ID записи.", show_alert=True)
+        return
+    dstr = callback.data.split(":", 1)[1]  # YYYY-MM-DD
     m = adb.get_mailing_by_id(mid)
     if not m:
         await callback.answer("Запись не найдена.", show_alert=True)
         return
-    # сохраняем старое время (HH:MM), меняем только дату
     old = m["publish_at"].replace("T", " ")
-    from datetime import datetime as _dt
     old_dt = None
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
         try:
-            old_dt = _dt.strptime(old, fmt)
+            old_dt = datetime.strptime(old, fmt)
             break
         except Exception:
             pass
     if not old_dt:
-        old_dt = _dt.now()
+        old_dt = datetime.now()
     hhmm = old_dt.strftime("%H:%M")
-    new_iso = f"{chosen} {hhmm}"
-    # сохраняем
-    from datetime import datetime as _dt2
-    new_dt = _dt2.strptime(new_iso, "%Y-%m-%d %H:%M")
+    new_dt = datetime.strptime(f"{dstr} {hhmm}", "%Y-%m-%d %H:%M")
     adb.update_mailing_publish_at(mid, new_dt.isoformat(timespec="minutes"))
-    # перерисуем карточку
+    await state.update_data(step=None)
     origin = (data or {}).get("view_origin", "list")
     await _render_mailing_item(callback.message, mid, origin=origin)
-    await callback.answer("Дата обновлена.")
+    await callback.answer("Дата обновлена (время оставлено прежним).")
 
 
 async def start_edit_mailing_text(callback: CallbackQuery, state: FSMContext):
@@ -1247,10 +1268,11 @@ def router(rt: Router):
     # album_done_edit не используется — финализация альбома идёт автоматически
     # Удаление самой рассылки (кнопка 🗑 Удалить в карточке)
     rt.callback_query.register(delete_mailing, F.data.startswith("admin.mailing.delete:"))
-    # Календарь: выбор даты из виджета
-    rt.callback_query.register(calendar_date_chosen, F.data.startswith("cal.date:"))
-    # Навигация календаря (сам календарь добавляет свои хендлеры)
+    # Сначала подключаем календарный виджет (дата → выбор времени)
     calendar_router(rt)
+    # Финальные действия выбора времени (применение результата)
+    rt.callback_query.register(calendar_time_done, F.data.startswith("cal.done:"))
+    rt.callback_query.register(calendar_time_keep, F.data.startswith("cal.keep:"))
 
     # Оплата (если используется в проекте)
     rt.pre_checkout_query.register(pre_checkout)
