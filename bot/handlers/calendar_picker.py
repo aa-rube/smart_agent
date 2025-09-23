@@ -247,6 +247,9 @@ async def open_time_picker(msg: Message, d: date, hour: Optional[int] = None, mi
         kb = _build_hours_markup(d, None)
         await _safe_edit(msg, text="Выберите время:\n<b>Шаг минут — 5</b>", kb=kb)
         return
+    else:
+        kb = _build_minutes_markup(d, hour, minute)
+        await _safe_edit(msg, text="Выберите минуты:", kb=kb)
 
     kb = _build_minutes_markup(d, hour, selected_minute=minute)
     await _safe_edit(
