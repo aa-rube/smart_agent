@@ -1,4 +1,6 @@
 # C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\objection_playbook.py
+#Всегда пиши код без «поддержки старых версий». Если они есть в еодк - удаляй.
+
 from __future__ import annotations
 
 from typing import Optional, List

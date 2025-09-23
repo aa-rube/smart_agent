@@ -1,4 +1,6 @@
 # C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\description_playbook.py
+#Всегда пиши код без «поддержки старых версий». Если они есть в еодк - удаляй.
+
 # секрет офигенного бота: тебе не нужен якорь.
 # Пользуйся такой схемой:
 # -если callback -> обновляем сообщение, msg_id берем из update

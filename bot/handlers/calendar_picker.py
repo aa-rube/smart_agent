@@ -1,16 +1,19 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\calendar_picker.py
+#Всегда пиши код без «поддержки старых версий». Если они есть в еодк - удаляй.
+
+# smart_agent/bot/handlers/calendar_picker.py
 
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 import calendar as pycal
-from typing import Dict, Optional, Callable
+from typing import Dict, Optional
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
 from aiogram import Router, F
 from aiogram.exceptions import TelegramBadRequest
 
-# опционально используем adb для счётчиков, если есть подходящая функция
+# Опционально используем adb для счётчиков (если есть функция get_mailing_counts_map)
 try:
     import bot.utils.admin_db as adb  # type: ignore
 except Exception:  # pragma: no cover
@@ -26,6 +29,7 @@ MONTHS_RU = [
 # Шаг выбора минут
 MINUTE_STEP = 5  # 5 минут
 
+
 # ───────────────────────── helpers ─────────────────────────
 
 def _month_bounds(y: int, m: int) -> tuple[date, date]:
@@ -36,26 +40,24 @@ def _month_bounds(y: int, m: int) -> tuple[date, date]:
         last = date(y, m + 1, 1) - timedelta(days=1)
     return first, last
 
+
 def _get_counts_map(month_first: date, month_last: date) -> Dict[str, int]:
     """
-    Пытаемся получить словарь {'YYYY-MM-DD': count} для дней месяца.
-    Ищем функцию в adb:
-        - get_mailing_counts_map(start_iso, end_iso) -> dict[str,int]
-    Если нет — вернём пустой словарь (счётчики будут 0).
+    Возвращает словарь {'YYYY-MM-DD': count} для дней месяца.
+    Если adb/get_mailing_counts_map отсутствуют или упали — вернём пустой словарь.
+    Ожидаем сигнатуру:
+        get_mailing_counts_map(start_iso: str, end_iso: str, only_pending: bool) -> dict[str,int]
     """
     try:
         if adb is None:
             return {}
         func = getattr(adb, "get_mailing_counts_map", None)
-        if callable(func):
-            # пробуем новую сигнатуру (с only_pending), если её нет — откатываемся к старой
-            try:
-                return func(month_first.isoformat(), month_last.isoformat(), only_pending=True) or {}
-            except TypeError:
-                return func(month_first.isoformat(), month_last.isoformat()) or {}
+        if not callable(func):
+            return {}
+        return func(month_first.isoformat(), month_last.isoformat(), True) or {}
     except Exception:
-        pass
-    return {}
+        return {}
+
 
 def _fmt_day_button(d: date, selected: Optional[date], today: date, counts: int) -> str:
     """
@@ -74,23 +76,23 @@ def _fmt_day_button(d: date, selected: Optional[date], today: date, counts: int)
         base = f"•{base}"
     return base
 
-def _safe_edit(msg: Message, *, text: str, kb: InlineKeyboardMarkup) -> None:
+
+async def _safe_edit(msg: Message, *, text: str, kb: InlineKeyboardMarkup) -> None:
     """
     Если msg пришло из callback — пробуем редактировать.
     Если падает — отправляем новое.
     """
-    async def _do():
-        try:
-            await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
-        except TelegramBadRequest as e:
-            if "message is not modified" in str(e).lower():
-                try:
-                    await msg.edit_reply_markup(reply_markup=kb)
-                    return
-                except TelegramBadRequest:
-                    pass
-            await msg.answer(text, reply_markup=kb, parse_mode="HTML")
-    return _do()
+    try:
+        await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e).lower():
+            try:
+                await msg.edit_reply_markup(reply_markup=kb)
+                return
+            except TelegramBadRequest:
+                pass
+        await msg.answer(text, reply_markup=kb, parse_mode="HTML")
+
 
 # ───────────────────────── rendering ─────────────────────────
 
@@ -103,9 +105,18 @@ def _build_month_markup(y: int, m: int, selected: Optional[date] = None) -> Inli
     today = date.today()
 
     header = [
-        InlineKeyboardButton(text="◀", callback_data=f"{CB_PREFIX}.nav:{y}-{m:02d}-01|dir=prev|sel={selected.isoformat() if selected else ''}"),
-        InlineKeyboardButton(text=f"{MONTHS_RU[m-1]} {y}", callback_data=f"{CB_PREFIX}.ignore"),
-        InlineKeyboardButton(text="▶", callback_data=f"{CB_PREFIX}.nav:{y}-{m:02d}-01|dir=next|sel={selected.isoformat() if selected else ''}"),
+        InlineKeyboardButton(
+            text="◀",
+            callback_data=f"{CB_PREFIX}.nav:{y}-{m:02d}-01|dir=prev|sel={selected.isoformat() if selected else ''}"
+        ),
+        InlineKeyboardButton(
+            text=f"{MONTHS_RU[m-1]} {y}",
+            callback_data=f"{CB_PREFIX}.ignore"
+        ),
+        InlineKeyboardButton(
+            text="▶",
+            callback_data=f"{CB_PREFIX}.nav:{y}-{m:02d}-01|dir=next|sel={selected.isoformat() if selected else ''}"
+        ),
     ]
 
     wd = [InlineKeyboardButton(text=w, callback_data=f"{CB_PREFIX}.ignore") for w in WEEKDAYS_RU]
@@ -115,27 +126,25 @@ def _build_month_markup(y: int, m: int, selected: Optional[date] = None) -> Inli
         row = []
         for d in week:
             if d.month != m:
-                # дни соседних месяцев — пустышки
+                # Дни соседних месяцев — «пустышки»
                 row.append(InlineKeyboardButton(text=" ", callback_data=f"{CB_PREFIX}.ignore"))
                 continue
             cnt = counts_map.get(d.isoformat(), 0)
             text = _fmt_day_button(d, selected, today, cnt)
-            row.append(
-                InlineKeyboardButton(text=text, callback_data=f"{CB_PREFIX}.date:{d.isoformat()}")
-            )
+            row.append(InlineKeyboardButton(text=text, callback_data=f"{CB_PREFIX}.date:{d.isoformat()}"))
         rows.append(row)
 
-    # нижняя строчка (спец-режим dir=today гарантированно прыгает в текущий месяц/день)
-    today_cb = f"{CB_PREFIX}.nav:{today.year}-{today.month:02d}-01|dir=today|sel={today.isoformat()}"
+    # Нижняя строка — «Сегодня» ведёт сразу к выбору времени
+    today_iso = today.isoformat()
     rows.append([
-        InlineKeyboardButton(text="Сегодня", callback_data=today_cb),
+        InlineKeyboardButton(text="Сегодня", callback_data=f"{CB_PREFIX}.date:{today_iso}"),
         InlineKeyboardButton(text=" ", callback_data=f"{CB_PREFIX}.ignore"),
         InlineKeyboardButton(text=" ", callback_data=f"{CB_PREFIX}.ignore"),
     ])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-# ---------- TIME PICKER UI ----------
+
 def _build_hours_markup(d: date, selected_hour: Optional[int] = None) -> InlineKeyboardMarkup:
     """
     Сетка часов 00–23 (24-часовой формат), 6 колонок × 4 строки.
@@ -151,19 +160,18 @@ def _build_hours_markup(d: date, selected_hour: Optional[int] = None) -> InlineK
         t = f"{h:02d}"
         return f"[{t}]" if (selected_hour is not None and h == selected_hour) else t
 
-    row: list[InlineKeyboardButton] = []
+    row = []
     for h in range(24):
         row.append(InlineKeyboardButton(text=_btn_text(h), callback_data=f"{CB_PREFIX}.hour:{d.isoformat()}|h={h:02d}"))
         if (h + 1) % 6 == 0:
             rows.append(row)
             row = []
     if row:
-        # добиваем пустышками до 6 колонок
         while len(row) < 6:
             row.append(InlineKeyboardButton(text=" ", callback_data=f"{CB_PREFIX}.ignore"))
         rows.append(row)
 
-    # низ
+    # Низ
     rows.append([
         InlineKeyboardButton(text="↩︎ К выбору даты", callback_data=f"{CB_PREFIX}.time.back:{d.isoformat()}"),
         InlineKeyboardButton(text="🕓 Оставить текущее", callback_data=f"{CB_PREFIX}.keep:{d.isoformat()}"),
@@ -174,12 +182,10 @@ def _build_hours_markup(d: date, selected_hour: Optional[int] = None) -> InlineK
 def _build_minutes_markup(d: date, h: int, selected_minute: Optional[int] = None) -> InlineKeyboardMarkup:
     """
     Выбор минут с шагом 5: две строки по 6 кнопок: 00..25 / 30..55.
-    Есть «Изменить час» и «Готово» (кнопка генерит cal.done:YYYY-MM-DDTHH:MM).
+    Есть «Изменить час» и «Готово» (генерит cal.done:YYYY-MM-DDTHH:MM).
     """
     rows = []
-    header = [
-        InlineKeyboardButton(text=f"{d.strftime('%d.%m.%Y')} — {h:02d}:__", callback_data=f"{CB_PREFIX}.ignore")
-    ]
+    header = [InlineKeyboardButton(text=f"{d.strftime('%d.%m.%Y')} — {h:02d}:__", callback_data=f"{CB_PREFIX}.ignore")]
     rows.append(header)
 
     def _btn_text(m: int) -> str:
@@ -187,17 +193,20 @@ def _build_minutes_markup(d: date, h: int, selected_minute: Optional[int] = None
         return f"[{t}]" if (selected_minute is not None and m == selected_minute) else t
 
     # 00..25
-    r1 = [InlineKeyboardButton(text=_btn_text(m), callback_data=f"{CB_PREFIX}.min:{d.isoformat()}|h={h:02d}|m={m:02d}")
-          for m in range(0, 30, MINUTE_STEP)]
+    r1 = [
+        InlineKeyboardButton(text=_btn_text(m), callback_data=f"{CB_PREFIX}.min:{d.isoformat()}|h={h:02d}|m={m:02d}")
+        for m in range(0, 30, MINUTE_STEP)
+    ]
     # 30..55
-    r2 = [InlineKeyboardButton(text=_btn_text(m), callback_data=f"{CB_PREFIX}.min:{d.isoformat()}|h={h:02d}|m={m:02d}")
-          for m in range(30, 60, MINUTE_STEP)]
+    r2 = [
+        InlineKeyboardButton(text=_btn_text(m), callback_data=f"{CB_PREFIX}.min:{d.isoformat()}|h={h:02d}|m={m:02d}")
+        for m in range(30, 60, MINUTE_STEP)
+    ]
 
     rows.append(r1)
     rows.append(r2)
 
-    # Низ: назад к часам / Готово
-    # Кнопка «Готово» активируется только после выбора минуты (иначе — заглушка)
+    # Низ: назад к часам / Готово / Оставить текущее
     if selected_minute is not None:
         done_cb = f"{CB_PREFIX}.done:{d.isoformat()}T{h:02d}:{selected_minute:02d}"
         done_btn = InlineKeyboardButton(text=f"✅ Готово: {h:02d}:{selected_minute:02d}", callback_data=done_cb)
@@ -212,38 +221,40 @@ def _build_minutes_markup(d: date, h: int, selected_minute: Optional[int] = None
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+
 # ───────────────────────── public API ─────────────────────────
 
 async def open_calendar(msg: Message, base: date, selected: Optional[date] = None) -> None:
     """
     Открыть (или перерисовать) календарь.
-    - msg: message, над которым работаем
     - base: дата, месяц которой показываем
-    - selected: дата, которую подсветить (по умолчанию base)
+    - selected: дату подсветим (по умолчанию base)
     """
     selected = selected or base
     kb = _build_month_markup(base.year, base.month, selected)
-    text = "Выберите дату:"
-    await _safe_edit(msg, text=text, kb=kb)
+    await _safe_edit(msg, text="Выберите дату:", kb=kb)
+
 
 async def open_time_picker(msg: Message, d: date, hour: Optional[int] = None, minute: Optional[int] = None) -> None:
     """
     Открыть выбор времени для выбранной даты.
     Если hour не задан — показываем сетку часов 00–23.
-    Если hour задан — показываем сетку минут (шаг 5) и кнопку «Готово».
-
-    ⚠️ После клика по «Готово» прилетит callback с data:
-       cal.done:YYYY-MM-DDTHH:MM  — ловите его во внешнем коде.
+    Если hour задан — показываем сетку минут (шаг 5) + кнопку «Готово».
+    По «Готово» прилетит callback: cal.done:YYYY-MM-DDTHH:MM (ловите снаружи).
+    По «Оставить текущее» прилетит callback: cal.keep:YYYY-MM-DD.
     """
     if hour is None:
         kb = _build_hours_markup(d, None)
-        text = "Выберите время:\n<b>Шаг минут — 5</b>"
-        await _safe_edit(msg, text=text, kb=kb)
+        await _safe_edit(msg, text="Выберите время:\n<b>Шаг минут — 5</b>", kb=kb)
         return
 
     kb = _build_minutes_markup(d, hour, selected_minute=minute)
-    text = f"Выберите минуты для <b>{d.strftime('%d.%m.%Y')} {hour:02d}:__</b>\n<b>Шаг минут — 5</b>"
-    await _safe_edit(msg, text=text, kb=kb)
+    await _safe_edit(
+        msg,
+        text=f"Выберите минуты для <b>{d.strftime('%d.%m.%Y')} {hour:02d}:__</b>\n<b>Шаг минут — 5</b>",
+        kb=kb,
+    )
+
 
 # ───────────────────────── handlers ─────────────────────────
 
@@ -257,9 +268,10 @@ async def _on_date(callback: CallbackQuery):
     except Exception:
         await callback.answer()
         return
-    # показываем сетку часов (далее — минуты)
+
     await open_time_picker(callback.message, d)
     await callback.answer()
+
 
 async def _on_nav(callback: CallbackQuery):
     """
@@ -294,35 +306,31 @@ async def _on_nav(callback: CallbackQuery):
         else:
             m += 1
     elif dir_ == "today":
-        # Жёстко прыгаем в текущий месяц и выделяем сегодняшний день
         t = date.today()
         y, m = t.year, t.month
         selected = t
-    # stay -> оставляем как есть
 
     kb = _build_month_markup(y, m, selected)
     try:
         await callback.message.edit_reply_markup(reply_markup=kb)
     except TelegramBadRequest as e:
-        # Если разметка не изменилась — это нормально (например, уже на текущем месяце)
         low = str(e).lower()
         if "message is not modified" in low:
-            # Попробуем легонько «пошевелить» текст невидимым символом, чтобы Телеграм принял апдейт
             try:
                 await callback.message.edit_text("Выберите дату:\u2060", reply_markup=kb)
             except TelegramBadRequest:
-                # Совсем без изменений — ок, просто молча подтверждаем клик
                 pass
         else:
-            # Другая ошибка — попробуем перерисовать целиком
             try:
                 await callback.message.edit_text("Выберите дату:", reply_markup=kb)
             except TelegramBadRequest:
                 pass
     await callback.answer()
 
+
 async def _on_ignore(callback: CallbackQuery):
     await callback.answer()
+
 
 async def _on_pick_hour(callback: CallbackQuery):
     """
@@ -344,6 +352,7 @@ async def _on_pick_hour(callback: CallbackQuery):
     except TelegramBadRequest:
         await callback.message.edit_reply_markup(reply_markup=kb)
     await callback.answer()
+
 
 async def _on_pick_min(callback: CallbackQuery):
     """
@@ -367,6 +376,7 @@ async def _on_pick_min(callback: CallbackQuery):
         await callback.message.edit_reply_markup(reply_markup=kb)
     await callback.answer()
 
+
 async def _on_time_back(callback: CallbackQuery):
     """
     cal.time.back:YYYY-MM-DD -> вернуться к месячному календарю с выделенным днём.
@@ -375,6 +385,7 @@ async def _on_time_back(callback: CallbackQuery):
     d = datetime.strptime(date_str, "%Y-%m-%d").date()
     await open_calendar(callback.message, base=d, selected=d)
     await callback.answer()
+
 
 async def _on_hour_back(callback: CallbackQuery):
     """
@@ -393,17 +404,20 @@ async def _on_hour_back(callback: CallbackQuery):
         await callback.message.edit_reply_markup(reply_markup=kb)
     await callback.answer()
 
+
 def router(rt: Router):
     """
     Регистрируем навигацию календаря и выбор времени.
-    День (cal.date:YYYY-MM-DD) и подтверждение времени (cal.done:...)
-    ловит внешний код (например, чтобы сохранить дату/время).
+    Последовательность:
+      1) Дата (cal.date:YYYY-MM-DD)
+      2) Время (час → минуты → cal.done:YYYY-MM-DDTHH:MM) или cal.keep:YYYY-MM-DD
+    Внешний код ловит cal.done / cal.keep, чтобы сохранить результат и «выйти».
     """
-    # Выбор дня → сразу переходим к выбору времени
+    # Дата
     rt.callback_query.register(_on_date, F.data.startswith(f"{CB_PREFIX}.date:"))
     rt.callback_query.register(_on_nav, F.data.startswith(f"{CB_PREFIX}.nav:"))
     rt.callback_query.register(_on_ignore, F.data.startswith(f"{CB_PREFIX}.ignore"))
-    # Выбор времени
+    # Время
     rt.callback_query.register(_on_pick_hour, F.data.startswith(f"{CB_PREFIX}.hour:"))
     rt.callback_query.register(_on_pick_min, F.data.startswith(f"{CB_PREFIX}.min:"))
     rt.callback_query.register(_on_time_back, F.data.startswith(f"{CB_PREFIX}.time.back:"))

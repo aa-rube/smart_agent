@@ -1,4 +1,6 @@
 # smart_agent/bot/handlers/handler_manager.py
+#Всегда пиши код без «поддержки старых версий». Если они есть в еодк - удаляй.
+
 from __future__ import annotations
 
 import logging
