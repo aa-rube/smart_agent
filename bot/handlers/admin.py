@@ -906,6 +906,24 @@ async def calendar_time_keep(callback: CallbackQuery, state: FSMContext):
     await _render_mailing_item(callback.message, mid, origin=origin)
     await callback.answer("Дата обновлена (время оставлено прежним).")
 
+async def calendar_date_chosen(callback: CallbackQuery, state: FSMContext):
+    """
+    cal.date:YYYY-MM-DD → переход к выбору времени для выбранной даты.
+    """
+    data = await state.get_data()
+    if (data or {}).get("step") != "edit_datetime":
+        await callback.answer()
+        return
+    from bot.handlers.calendar_picker import open_time_picker
+    from datetime import date as _date
+    dstr = callback.data.split(":", 1)[1]  # YYYY-MM-DD
+    try:
+        d = _date.fromisoformat(dstr)
+        await open_time_picker(callback.message, d)
+        await callback.answer()
+    except Exception:
+        await callback.answer("Некорректная дата.", show_alert=True)
+
 
 async def start_edit_mailing_text(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != cfg.ADMIN_ID:
@@ -1271,6 +1289,7 @@ def router(rt: Router):
     # Сначала подключаем календарный виджет (дата → выбор времени)
     calendar_router(rt)
     # Финальные действия выбора времени (применение результата)
+    rt.callback_query.register(calendar_date_chosen, F.data.startswith("cal.date:"))
     rt.callback_query.register(calendar_time_done, F.data.startswith("cal.done:"))
     rt.callback_query.register(calendar_time_keep, F.data.startswith("cal.keep:"))
 
