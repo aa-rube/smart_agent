@@ -20,7 +20,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     Message,
     CallbackQuery,
-    ChatInviteLink,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
     InputMediaPhoto,
@@ -64,18 +63,6 @@ CONFIRM_MAILING_TEXT_TPL = (
     "{extra}"
 )
 MAIL_SCHEDULED_OK = "Рассылка поставлена в планировщик."
-MAILING_DONE = "Рассылка завершена!"
-SUCCESS_PAYMENT_TPL = (
-    "Оплата прошла успешно!\n"
-    "Сумма: {amount:.2f} {currency}\n"
-    "Тариф: {months} месяц(ев)"
-)
-PERSONAL_INVITE_TPL = "Ваша персональная ссылка для вступления:\n{}"
-INVITE_ERROR_TPL = "Ошибка при создании ссылки: {}"
-POSTS_HEADER = "Ниже посты этого месяца ↓"
-SUB_EXPIRED_MSG = (
-    "Ваша подписка истекла. Чтобы восстановить доступ, оформите новую подписку."
-)
 
 
 # =============================================================================
@@ -1129,73 +1116,7 @@ async def delete_mailing(callback: CallbackQuery):
         await callback.answer()
 
 
-# =============================================================================
-# ОПЛАТА (пользовательский поток из общей логики)
-# =============================================================================
-async def pre_checkout(pre_checkout_q, bot: Bot):
-    await bot.answer_pre_checkout_query(pre_checkout_q.id, ok=True)
 
-
-async def successful_payment(message: Message, bot: Bot):
-    payment_info = message.successful_payment
-    months = int(payment_info.invoice_payload)
-    amount_rub = payment_info.total_amount / 100
-    await message.answer(
-        SUCCESS_PAYMENT_TPL.format(amount=amount_rub, currency=payment_info.currency, months=months)
-    )
-    adb.add_sub_user(message.from_user.id, months)
-    await create_invite(message, message.bot)
-    await message.answer(POSTS_HEADER)
-    await notify_admin_about_new_sub(message.from_user.id, bot)
-
-
-# =============================================================================
-# ВСПОМОГАТЕЛЬНЫЕ
-# =============================================================================
-async def create_invite(message: Message, bot: Bot):
-    try:
-        invite_link: ChatInviteLink = await bot.create_chat_invite_link(
-            chat_id=cfg.CONTENT_GROUP_ID,
-            expire_date=None,
-            member_limit=1,
-            creates_join_request=False,
-        )
-        await message.answer(PERSONAL_INVITE_TPL.format(invite_link.invite_link), parse_mode=None)
-    except Exception as e:
-        await message.answer(INVITE_ERROR_TPL.format(e))
-
-
-async def notify_admin_about_new_sub(user_id: int, bot: Bot):
-    user_info = adb.check_user(user_id)
-    if not user_info:
-        return
-    text = f"<a href='https://t.me/{user_info[2]}'>Пользователь</a> оплатил подписку на: {user_info[0]} месяц(ев)."
-    await bot.send_message(chat_id=cfg.ADMIN_GROUP_ID, text=text, parse_mode="HTML")
-
-
-# =============================================================================
-# ПЛАНОВЫЕ ЗАДАЧИ (scheduler)
-# =============================================================================
-async def check_user_sub(bot: Bot):
-    expired_users = adb.remove_expired_subscriptions()
-    for user_id in expired_users:
-        try:
-            await bot.send_message(chat_id=int(user_id), text=SUB_EXPIRED_MSG, parse_mode="HTML")
-        except Exception as e:
-            print(f"Не удалось уведомить {user_id}: {e}")
-
-
-async def notify_expiring_users(bot: Bot):
-    for days in [10, 7, 3, 1]:
-        users = adb.get_users_with_expiring_subscription(days_before=days)
-        msg = adb.get_notification_message(days)
-        if not msg or not users:
-            continue
-        for uid in users:
-            try:
-                await bot.send_message(chat_id=int(uid), text=msg, parse_mode="HTML")
-            except Exception as e:
-                print(f"Не удалось отправить {uid}: {e}")
 
 
 async def run_mailing_scheduler(bot: Bot):
@@ -1303,6 +1224,3 @@ def router(rt: Router):
     rt.callback_query.register(calendar_time_done, F.data.startswith("cal.done:"))
     rt.callback_query.register(calendar_time_keep, F.data.startswith("cal.keep:"))
 
-    # Оплата (если используется в проекте)
-    rt.pre_checkout_query.register(pre_checkout)
-    rt.message.register(successful_payment, F.successful_payment)
