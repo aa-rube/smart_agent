@@ -5,9 +5,10 @@ from __future__ import annotations
 
 from typing import Optional, Any, List, Dict
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
-    create_engine,
+    create_engine, text,
     String, Integer, BigInteger, ForeignKey, DateTime, Text
 )
 from sqlalchemy.orm import (
@@ -17,6 +18,8 @@ from sqlalchemy.orm import (
 
 from bot.config import DB_URL
 import json
+
+MSK = ZoneInfo("Europe/Moscow")
 
 
 # =========================
@@ -388,6 +391,33 @@ class UserRepository:
                 })
             return items
 
+    # -------- Mailing recipients (from variables) --------
+    def list_active_subscriber_ids(self, *, include_grace_days: int = 0) -> List[int]:
+        """
+        Возвращает user_id тех, у кого есть платная подписка:
+          - have_sub = '1'
+          - sub_until >= today(MSK) - grace_days
+        Триал НЕ учитываем.
+        """
+        today = datetime.now(MSK).date()
+        if include_grace_days and include_grace_days > 0:
+            today = today - timedelta(days=include_grace_days)
+        today_str = today.strftime("%Y-%m-%d")
+
+        sql = text("""
+            SELECT DISTINCT v1.user_id
+            FROM variables v1
+            JOIN variables v2
+              ON v2.user_id = v1.user_id
+             AND v2.variable_name = 'sub_until'
+             AND v2.variable_value >= :today
+            WHERE v1.variable_name = 'have_sub'
+              AND v1.variable_value = '1'
+        """)
+        with self._session() as s:
+            rows = s.execute(sql, {"today": today_str}).fetchall()
+            return [int(r[0]) for r in rows]
+
     def subscription_cancel(self, user_id: int, plan_code: str) -> None:
         with self._session() as s, s.begin():
             rec = (
@@ -623,3 +653,7 @@ def subscription_mark_charged(sub_id: int, *, next_charge_at: datetime) -> None:
 
 def subscription_cancel(user_id: int, plan_code: str) -> None:
     _repo.subscription_cancel(user_id, plan_code)
+
+# -------- Mailing recipients (compat wrapper) --------
+def list_active_subscriber_ids(include_grace_days: int = 0) -> List[int]:
+    return _repo.list_active_subscriber_ids(include_grace_days=include_grace_days)

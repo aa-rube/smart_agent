@@ -13,6 +13,7 @@ from aiogram import Bot
 from aiogram.types import InputMediaPhoto, InputMediaVideo
 
 import bot.utils.admin_db as adb
+import bot.utils.database as db
 
 MSK = ZoneInfo("Europe/Moscow")
 
@@ -124,8 +125,8 @@ async def run_mailing_scheduler(bot: Bot) -> None:
     if not pending:
         return
 
-    user_ids = adb.get_active_user_ids()
-    logging.info("[mailing] recipients=%s", len(user_ids))
+    user_ids = db.list_active_subscriber_ids(include_grace_days=0)
+    logging.info("[mailing] recipients(from variables)=%s", len(user_ids))
 
     if not user_ids:
         for m in pending:
