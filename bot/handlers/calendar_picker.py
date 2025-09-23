@@ -23,6 +23,9 @@ MONTHS_RU = [
     "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь",
 ]
 
+# Шаг выбора минут
+MINUTE_STEP = 5  # 5 минут
+
 # ───────────────────────── helpers ─────────────────────────
 
 def _month_bounds(y: int, m: int) -> tuple[date, date]:
@@ -132,6 +135,83 @@ def _build_month_markup(y: int, m: int, selected: Optional[date] = None) -> Inli
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+# ---------- TIME PICKER UI ----------
+def _build_hours_markup(d: date, selected_hour: Optional[int] = None) -> InlineKeyboardMarkup:
+    """
+    Сетка часов 00–23 (24-часовой формат), 6 колонок × 4 строки.
+    Клик по часу переводит на выбор минут.
+    """
+    rows = []
+    header = [
+        InlineKeyboardButton(text=f"{d.strftime('%d.%m.%Y')}: выберите час", callback_data=f"{CB_PREFIX}.ignore")
+    ]
+    rows.append(header)
+
+    def _btn_text(h: int) -> str:
+        t = f"{h:02d}"
+        return f"[{t}]" if (selected_hour is not None and h == selected_hour) else t
+
+    row: list[InlineKeyboardButton] = []
+    for h in range(24):
+        row.append(InlineKeyboardButton(text=_btn_text(h), callback_data=f"{CB_PREFIX}.hour:{d.isoformat()}|h={h:02d}"))
+        if (h + 1) % 6 == 0:
+            rows.append(row)
+            row = []
+    if row:
+        # добиваем пустышками до 6 колонок
+        while len(row) < 6:
+            row.append(InlineKeyboardButton(text=" ", callback_data=f"{CB_PREFIX}.ignore"))
+        rows.append(row)
+
+    # низ
+    rows.append([
+        InlineKeyboardButton(text="↩︎ К выбору даты", callback_data=f"{CB_PREFIX}.time.back:{d.isoformat()}"),
+        InlineKeyboardButton(text="🕓 Оставить текущее", callback_data=f"{CB_PREFIX}.keep:{d.isoformat()}"),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _build_minutes_markup(d: date, h: int, selected_minute: Optional[int] = None) -> InlineKeyboardMarkup:
+    """
+    Выбор минут с шагом 5: две строки по 6 кнопок: 00..25 / 30..55.
+    Есть «Изменить час» и «Готово» (кнопка генерит cal.done:YYYY-MM-DDTHH:MM).
+    """
+    rows = []
+    header = [
+        InlineKeyboardButton(text=f"{d.strftime('%d.%m.%Y')} — {h:02d}:__", callback_data=f"{CB_PREFIX}.ignore")
+    ]
+    rows.append(header)
+
+    def _btn_text(m: int) -> str:
+        t = f"{m:02d}"
+        return f"[{t}]" if (selected_minute is not None and m == selected_minute) else t
+
+    # 00..25
+    r1 = [InlineKeyboardButton(text=_btn_text(m), callback_data=f"{CB_PREFIX}.min:{d.isoformat()}|h={h:02d}|m={m:02d}")
+          for m in range(0, 30, MINUTE_STEP)]
+    # 30..55
+    r2 = [InlineKeyboardButton(text=_btn_text(m), callback_data=f"{CB_PREFIX}.min:{d.isoformat()}|h={h:02d}|m={m:02d}")
+          for m in range(30, 60, MINUTE_STEP)]
+
+    rows.append(r1)
+    rows.append(r2)
+
+    # Низ: назад к часам / Готово
+    # Кнопка «Готово» активируется только после выбора минуты (иначе — заглушка)
+    if selected_minute is not None:
+        done_cb = f"{CB_PREFIX}.done:{d.isoformat()}T{h:02d}:{selected_minute:02d}"
+        done_btn = InlineKeyboardButton(text=f"✅ Готово: {h:02d}:{selected_minute:02d}", callback_data=done_cb)
+    else:
+        done_btn = InlineKeyboardButton(text="✅ Готово", callback_data=f"{CB_PREFIX}.ignore")
+
+    rows.append([
+        InlineKeyboardButton(text="⏪ Изменить час", callback_data=f"{CB_PREFIX}.hour.back:{d.isoformat()}"),
+        done_btn,
+        InlineKeyboardButton(text="🕓 Оставить текущее", callback_data=f"{CB_PREFIX}.keep:{d.isoformat()}"),
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
 # ───────────────────────── public API ─────────────────────────
 
 async def open_calendar(msg: Message, base: date, selected: Optional[date] = None) -> None:
@@ -146,7 +226,40 @@ async def open_calendar(msg: Message, base: date, selected: Optional[date] = Non
     text = "Выберите дату:"
     await _safe_edit(msg, text=text, kb=kb)
 
+async def open_time_picker(msg: Message, d: date, hour: Optional[int] = None, minute: Optional[int] = None) -> None:
+    """
+    Открыть выбор времени для выбранной даты.
+    Если hour не задан — показываем сетку часов 00–23.
+    Если hour задан — показываем сетку минут (шаг 5) и кнопку «Готово».
+
+    ⚠️ После клика по «Готово» прилетит callback с data:
+       cal.done:YYYY-MM-DDTHH:MM  — ловите его во внешнем коде.
+    """
+    if hour is None:
+        kb = _build_hours_markup(d, None)
+        text = "Выберите время:\n<b>Шаг минут — 5</b>"
+        await _safe_edit(msg, text=text, kb=kb)
+        return
+
+    kb = _build_minutes_markup(d, hour, selected_minute=minute)
+    text = f"Выберите минуты для <b>{d.strftime('%d.%m.%Y')} {hour:02d}:__</b>\n<b>Шаг минут — 5</b>"
+    await _safe_edit(msg, text=text, kb=kb)
+
 # ───────────────────────── handlers ─────────────────────────
+
+async def _on_date(callback: CallbackQuery):
+    """
+    cal.date:YYYY-MM-DD  -> после выбора дня сразу открываем выбор времени.
+    """
+    date_str = callback.data.split(":", 1)[1]
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except Exception:
+        await callback.answer()
+        return
+    # показываем сетку часов (далее — минуты)
+    await open_time_picker(callback.message, d)
+    await callback.answer()
 
 async def _on_nav(callback: CallbackQuery):
     """
@@ -211,10 +324,87 @@ async def _on_nav(callback: CallbackQuery):
 async def _on_ignore(callback: CallbackQuery):
     await callback.answer()
 
+async def _on_pick_hour(callback: CallbackQuery):
+    """
+    cal.hour:YYYY-MM-DD|h=HH  -> открываем выбор минут.
+    """
+    payload = callback.data.split(":", 1)[1]
+    date_str, rest = payload.split("|", 1)
+    params = dict(kv.split("=", 1) for kv in rest.split("|") if "=" in kv)
+    h = int(params.get("h", "0"))
+    d = datetime.strptime(date_str, "%Y-%m-%d").date()
+
+    kb = _build_minutes_markup(d, h, selected_minute=None)
+    try:
+        await callback.message.edit_text(
+            f"Выберите минуты для <b>{d.strftime('%d.%m.%Y')} {h:02d}:__</b>\n<b>Шаг минут — 5</b>",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+    except TelegramBadRequest:
+        await callback.message.edit_reply_markup(reply_markup=kb)
+    await callback.answer()
+
+async def _on_pick_min(callback: CallbackQuery):
+    """
+    cal.min:YYYY-MM-DD|h=HH|m=MM  -> подсветить минуту и показать «Готово».
+    """
+    payload = callback.data.split(":", 1)[1]
+    date_str, rest = payload.split("|", 1)
+    params = dict(kv.split("=", 1) for kv in rest.split("|") if "=" in kv)
+    h = int(params.get("h", "0"))
+    m = int(params.get("m", "0"))
+    d = datetime.strptime(date_str, "%Y-%m-%d").date()
+
+    kb = _build_minutes_markup(d, h, selected_minute=m)
+    try:
+        await callback.message.edit_text(
+            f"Выберите минуты для <b>{d.strftime('%d.%m.%Y')} {h:02d}:{m:02d}</b>\n<b>Шаг минут — 5</b>",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+    except TelegramBadRequest:
+        await callback.message.edit_reply_markup(reply_markup=kb)
+    await callback.answer()
+
+async def _on_time_back(callback: CallbackQuery):
+    """
+    cal.time.back:YYYY-MM-DD -> вернуться к месячному календарю с выделенным днём.
+    """
+    date_str = callback.data.split(":", 1)[1]
+    d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    await open_calendar(callback.message, base=d, selected=d)
+    await callback.answer()
+
+async def _on_hour_back(callback: CallbackQuery):
+    """
+    cal.hour.back:YYYY-MM-DD -> вернуться к сетке часов.
+    """
+    date_str = callback.data.split(":", 1)[1]
+    d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    kb = _build_hours_markup(d, None)
+    try:
+        await callback.message.edit_text(
+            "Выберите время:\n<b>Шаг минут — 5</b>",
+            reply_markup=kb,
+            parse_mode="HTML",
+        )
+    except TelegramBadRequest:
+        await callback.message.edit_reply_markup(reply_markup=kb)
+    await callback.answer()
+
 def router(rt: Router):
     """
-    Регистрируем только навигацию календаря.
-    День (cal.date:YYYY-MM-DD) ловит внешний код.
+    Регистрируем навигацию календаря и выбор времени.
+    День (cal.date:YYYY-MM-DD) и подтверждение времени (cal.done:...)
+    ловит внешний код (например, чтобы сохранить дату/время).
     """
+    # Выбор дня → сразу переходим к выбору времени
+    rt.callback_query.register(_on_date, F.data.startswith(f"{CB_PREFIX}.date:"))
     rt.callback_query.register(_on_nav, F.data.startswith(f"{CB_PREFIX}.nav:"))
     rt.callback_query.register(_on_ignore, F.data.startswith(f"{CB_PREFIX}.ignore"))
+    # Выбор времени
+    rt.callback_query.register(_on_pick_hour, F.data.startswith(f"{CB_PREFIX}.hour:"))
+    rt.callback_query.register(_on_pick_min, F.data.startswith(f"{CB_PREFIX}.min:"))
+    rt.callback_query.register(_on_time_back, F.data.startswith(f"{CB_PREFIX}.time.back:"))
+    rt.callback_query.register(_on_hour_back, F.data.startswith(f"{CB_PREFIX}.hour.back:"))
