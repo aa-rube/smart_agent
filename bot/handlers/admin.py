@@ -22,12 +22,11 @@ from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
-    InputMediaPhoto,
-    InputMediaVideo,
 )
 
 import bot.config as cfg
 import bot.utils.admin_db as adb
+from bot.utils.mailing import preview_to_chat  # новый импорт для превью
 from bot.states.states import CreateMailing  # оставляем только рассылку
 from bot.handlers.calendar_picker import open_calendar, router as calendar_router  # КАЛЕНДАРЬ
 
@@ -227,8 +226,7 @@ def _extract_single_content(msg: Message) -> Dict[str, Any] | None:
     return None
 
 
-def _chunk(lst: List[Any], n: int) -> List[List[Any]]:
-    return [lst[i:i + n] for i in range(0, len(lst), n)]
+
 
 
 def _clean_leading_at(text: str) -> str:
@@ -315,38 +313,7 @@ async def _finalize_album_edit(message: Message, state: FSMContext) -> None:
     await _render_mailing_item(message, mid, origin=origin)
 
 
-async def _preview_mailing_to_chat(m: Dict[str, Any], chat_id: int, bot: Bot):
-    ctype = m["content_type"]
-    caption = m.get("caption")
-    payload = m.get("payload") or {}
-    if ctype == "text":
-        await bot.send_message(chat_id, payload.get("text", ""))
-    elif ctype == "photo":
-        await bot.send_photo(chat_id, payload["file_id"], caption=caption or None)
-    elif ctype == "video":
-        await bot.send_video(chat_id, payload["file_id"], caption=caption or None)
-    elif ctype == "audio":
-        await bot.send_audio(chat_id, payload["file_id"], caption=caption or None)
-    elif ctype == "animation":
-        await bot.send_animation(chat_id, payload["file_id"], caption=caption or None)
-    elif ctype == "media_group":
-        # Новая схема: payload.items = [{"type":"photo|video","file_id":"..."}]
-        items = payload.get("items")
-        if not items:
-            # back-compat: старая схема file_ids = [..] → трактуем как фото
-            file_ids: List[str] = payload.get("file_ids", [])
-            items = [{"type": "photo", "file_id": fid} for fid in file_ids]
-        for chunk in _chunk(items, 10):
-            media = []
-            for i, it in enumerate(chunk):
-                t = (it.get("type") or "photo").lower()
-                fid = it.get("file_id")
-                cap = caption if (i == 0 and caption) else None
-                if t == "video":
-                    media.append(InputMediaVideo(media=fid, caption=cap))
-                else:
-                    media.append(InputMediaPhoto(media=fid, caption=cap))
-            await bot.send_media_group(chat_id, media)
+
 
 async def _edit_or_send(msg: Message, *, text: str, kb: InlineKeyboardMarkup | None = None, parse_mode: str | None = "HTML") -> None:
     """
@@ -382,15 +349,10 @@ async def _render_mailing_item(message: Message, mailing_id: int, origin: str = 
     if ctype == "text":
         extra = f"Текст: {(m.get('payload', {}) or {}).get('text','')[:160]}"
     elif ctype == "media_group":
-        pl = (m.get("payload") or {})
-        items = pl.get("items")
-        if items:
-            photos = sum(1 for it in items if (it.get("type") or "photo").lower() == "photo")
-            videos = sum(1 for it in items if (it.get("type") or "photo").lower() == "video")
-            extra = f"Альбом • фото: {photos} • видео: {videos} • caption: {cap}"
-        else:
-            # back-compat
-            extra = f"Медиа в альбоме: {len(pl.get('file_ids', []))} • caption: {cap}"
+        items = (m.get("payload") or {}).get("items") or []
+        photos = sum(1 for it in items if (it.get("type") or "photo").lower() == "photo")
+        videos = sum(1 for it in items if (it.get("type") or "photo").lower() == "video")
+        extra = f"Альбом • фото: {photos} • видео: {videos} • caption: {cap}"
     else:
         extra = f"Caption: {cap}"
     await _edit_or_send(
@@ -629,9 +591,8 @@ async def mailing_accept(message: Message, state: FSMContext):
         elif ctype in ("photo", "video", "audio", "animation"):
             extra = f"Caption: {caption or '—'}"
         elif ctype == "media_group":
-            items = payload.get("items")
-            cnt = len(items or payload.get("file_ids", []))
-            extra = f"Медиа в альбоме: {cnt}"
+            items = payload.get("items") or []
+            extra = f"Медиа в альбоме: {len(items)}"
         else:
             extra = "—"
 
@@ -699,7 +660,7 @@ async def use_default_datetime(callback: CallbackQuery, state: FSMContext):
     elif ctype in ("photo", "video", "audio", "animation"):
         extra = f"Caption: {caption or '—'}"
     elif ctype == "media_group":
-        extra = f"Фотографий в альбоме: {len(payload.get('file_ids', []))}"
+        extra = f"Медиа в альбоме: {len((payload.get('items') or []))}"
     else:
         extra = "—"
     await state.update_data(step="confirm", publish_at=def_str)
@@ -770,7 +731,7 @@ async def preview_mailing(callback: CallbackQuery, bot: Bot, state: FSMContext):
     if not m:
         await callback.answer("Не найдено", show_alert=True)
         return
-    await _preview_mailing_to_chat(m, callback.message.chat.id, bot)
+    await preview_to_chat(bot, callback.message.chat.id, m)
     # После превью оставляем карточку с нужной кнопкой «Назад»
     data = await state.get_data()
     origin = (data or {}).get("view_origin", "list")
@@ -1116,73 +1077,6 @@ async def delete_mailing(callback: CallbackQuery):
         await callback.answer()
 
 
-
-
-
-async def run_mailing_scheduler(bot: Bot):
-    """
-    Вызывать из внешнего планировщика (APScheduler/cron).
-    Берёт все Mailings, у которых:
-      - mailing_on = 1
-      - mailing_completed = 0
-      - publish_at <= now
-    Шлёт подписчикам контент и помечает как выполненную.
-    """
-    pending = adb.get_pending_mailings()
-    if not pending:
-        return
-
-    user_ids = adb.get_active_user_ids()
-    if not user_ids:
-        # Некому отправлять — сразу пометим как completed, чтобы не висело (опционально)
-        for m in pending:
-            adb.mark_mailing_completed(m["id"])
-        return
-
-    for m in pending:
-        ctype = m["content_type"]
-        caption = m.get("caption")
-        payload = m.get("payload") or {}
-
-        for uid in user_ids:
-            try:
-                if ctype == "text":
-                    await bot.send_message(int(uid), payload.get("text", ""))
-                elif ctype == "photo":
-                    await bot.send_photo(int(uid), payload["file_id"], caption=caption or None)
-                elif ctype == "video":
-                    await bot.send_video(int(uid), payload["file_id"], caption=caption or None)
-                elif ctype == "audio":
-                    await bot.send_audio(int(uid), payload["file_id"], caption=caption or None)
-                elif ctype == "animation":
-                    await bot.send_animation(int(uid), payload["file_id"], caption=caption or None)
-                elif ctype == "media_group":
-                    items = payload.get("items")
-                    if not items:
-                        # back-compat: старая схема — только фото
-                        file_ids: List[str] = payload.get("file_ids", [])
-                        items = [{"type": "photo", "file_id": fid} for fid in file_ids]
-                    # Telegram ограничивает медиа-группу 10 элементами. Режем на чанки.
-                    for chunk in _chunk(items, 10):
-                        media = []
-                        for i, it in enumerate(chunk):
-                            t = (it.get("type") or "photo").lower()
-                            fid = it.get("file_id")
-                            cap = caption if (i == 0 and caption) else None
-                            if t == "video":
-                                media.append(InputMediaVideo(media=fid, caption=cap))
-                            else:
-                                media.append(InputMediaPhoto(media=fid, caption=cap))
-                        await bot.send_media_group(int(uid), media)
-                else:
-                    # неизвестный тип — пропускаем
-                    pass
-            except Exception as e:
-                print(f"Mailing send error to {uid}: {e}")
-
-        adb.mark_mailing_completed(m["id"])
-
-
 # =============================================================================
 # РОУТЕР
 # =============================================================================
@@ -1223,4 +1117,3 @@ def router(rt: Router):
     rt.callback_query.register(calendar_date_chosen, F.data.startswith("cal.date:"))
     rt.callback_query.register(calendar_time_done, F.data.startswith("cal.done:"))
     rt.callback_query.register(calendar_time_keep, F.data.startswith("cal.keep:"))
-

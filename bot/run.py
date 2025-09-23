@@ -11,11 +11,11 @@ from aiohttp import web
 from bot import setup
 from bot.config import TOKEN
 import bot.utils.database as db
+from bot.utils.mailing import run_mailing_scheduler  # ✅ планировщик рассылок
 
 from bot.handlers.payment_handler import process_yookassa_webhook
 from bot.utils import youmoney
 from datetime import datetime
-import bot.utils.database as db
 from dateutil.relativedelta import relativedelta
 
 
@@ -55,6 +55,27 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", 8000)
     await site.start()
     logging.info("Webhook server started on http://0.0.0.0:8000")
+
+    async def mailing_loop():
+        """
+        Фоновый цикл рассылок.
+        Раз в 30 секунд проверяет «созревшие» записи и отправляет подписчикам.
+        """
+        # Опционально: на старте «прожечь» всё, что просрочено
+        try:
+            await run_mailing_scheduler(bot)
+        except Exception:
+            logging.exception("mailing_loop initial tick failed")
+
+        while True:
+            try:
+                await run_mailing_scheduler(bot)
+            except Exception:
+                # Любая ошибка внутри — логируем и продолжаем цикл
+                logging.exception("mailing_loop tick failed")
+            finally:
+                # Период запуска (можешь сделать 60с, если база большая)
+                await asyncio.sleep(30)
 
     async def billing_loop():
         """
@@ -100,6 +121,7 @@ async def main():
         # Запускаем фоновый биллинг-процесс и поллинг бота параллельно
         await asyncio.gather(
             billing_loop(),
+            mailing_loop(),          # ✅ добавили цикл рассылок
             dp.start_polling(bot),
         )
     except Exception as e:
