@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import asyncio
 from typing import List, Dict, Any
 
 from aiogram import Router, F, Bot
@@ -43,7 +44,8 @@ NO_ACCESS_TEXT = "У вас нет доступа к админ панели."
 ASK_MAILING_CONTENT = (
     "Отправьте новое сообщение для рассылки.\n\n"
     "Поддерживается: текст, фото, <u>альбом (фото/видео)</u>, видео, аудио, GIF/анимация.\n"
-    "Если отправляете <b>альбом</b>, загрузите все медиа одним пакетом (Telegram пометит их общим group_media_id), затем нажмите «Далее». "
+    "Если отправляете <b>альбом</b>, загрузите все медиа одним пакетом (Telegram пометит их общим group_media_id). "
+    "Я дождусь весь пакет и оформлю один черновик автоматически. Ничего дополнительно нажимать не нужно. "
     "Подпись (caption) возьмём с первого медиа с подписью."
 )
 
@@ -112,21 +114,7 @@ BTN_MAILING_CONFIRM = InlineKeyboardMarkup(
     ]
 )
 
-BTN_ALBUM_FLOW = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="➡️ Далее", callback_data="admin.mailing.album_done")],
-        [InlineKeyboardButton(text="↩️ Отмена", callback_data="stop_mailing")],
-        [InlineKeyboardButton(text="⬅️ В админ-меню", callback_data="admin.home")],
-    ]
-)
-
-BTN_ALBUM_FLOW_EDIT = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="➡️ Далее", callback_data="admin.mailing.album_done_edit")],
-        [InlineKeyboardButton(text="↩️ Отмена", callback_data="stop_mailing")],
-        [InlineKeyboardButton(text="⬅️ В админ-меню", callback_data="admin.home")],
-    ]
-)
+# Альбом теперь собираем автоматически — кнопки «Далее» не нужны.
 
 
 def kb_mailing_item_controls(mailing_id: int, origin: str = "list") -> InlineKeyboardMarkup:
@@ -260,6 +248,75 @@ def _clean_leading_at(text: str) -> str:
     return text
 
 
+# =========================
+# АЛЬБОМ: дебаунс-сборка
+# =========================
+ALBUM_DEBOUNCE_SEC = 1.2  # время ожидания «хвоста» альбома от Telegram
+_album_tasks: dict[int, asyncio.Task] = {}
+
+def _cancel_album_task(chat_id: int) -> None:
+    t = _album_tasks.pop(chat_id, None)
+    if t:
+        t.cancel()
+
+def _schedule_album_task(chat_id: int, task: asyncio.Task) -> None:
+    _cancel_album_task(chat_id)
+    _album_tasks[chat_id] = task
+
+async def _finalize_album_create(message: Message, state: FSMContext) -> None:
+    """Создание новой записи после того, как все части альбома получены."""
+    data = await state.get_data()
+    items = data.get("album_items") or []
+    if not items:
+        return
+    # дефолтная дата — как в обычном потоке
+    last = adb.get_last_publish_at()
+    if last:
+        parsed = None
+        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+            try:
+                parsed = datetime.strptime(last, fmt)
+                break
+            except Exception:
+                pass
+        def_dt = parsed or datetime.now()
+    else:
+        def_dt = datetime.now()
+    def_dt = def_dt + timedelta(days=1)
+    publish_at_iso = def_dt.isoformat(timespec="minutes")
+    caption = data.get("caption")
+
+    mailing_id = adb.create_scheduled_mailing(
+        content_type="media_group",
+        caption=caption,
+        payload={"items": items},
+        publish_at=publish_at_iso,
+        mailing_on=True,
+    )
+    await state.clear()
+    await state.update_data(view_mailing_id=mailing_id, view_origin="create")
+    # Отрисуем один раз карточку без промежуточных служебных сообщений
+    await _render_mailing_item(message, mailing_id, origin="create")
+
+async def _finalize_album_edit(message: Message, state: FSMContext) -> None:
+    """Обновление контента существующей записи (редактирование) после сборки альбома."""
+    data = await state.get_data()
+    items = data.get("album_items") or []
+    if not items:
+        return
+    caption = data.get("caption")
+    mid = int(data.get("edit_mailing_id"))
+    adb.update_mailing_payload(
+        mailing_id=mid,
+        content_type="media_group",
+        payload={"items": items},
+        caption=caption,
+    )
+    await state.update_data(step=None, album_gid=None, album_items=[], caption=None, new_content=None, view_mailing_id=mid)
+    origin = (await state.get_data()).get("view_origin", "list")
+    await _render_mailing_item(message, mid, origin=origin)
+
+
 async def _preview_mailing_to_chat(m: Dict[str, Any], chat_id: int, bot: Bot):
     ctype = m["content_type"]
     caption = m.get("caption")
@@ -335,7 +392,7 @@ async def _render_mailing_item(message: Message, mailing_id: int, origin: str = 
             extra = f"Альбом • фото: {photos} • видео: {videos} • caption: {cap}"
         else:
             # back-compat
-            extra = f"Альбом • фото: {len(pl.get('file_ids', []))} • caption: {cap}"
+            extra = f"Медиа в альбоме: {len(pl.get('file_ids', []))} • caption: {cap}"
     else:
         extra = f"Caption: {cap}"
     await _edit_or_send(
@@ -389,40 +446,7 @@ async def mailing_stop(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-async def album_done(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    items: List[Dict[str, str]] = data.get("album_items") or []
-    if not items:
-        await callback.answer("Альбом пуст — пришлите медиа (фото/видео).", show_alert=True)
-        return
-    # Создаём запись сразу с дефолтной датой и открываем карточку
-    last = adb.get_last_publish_at()
-    def_dt: datetime
-    if last:
-        parsed = None
-        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
-            try:
-                parsed = datetime.strptime(last, fmt)
-                break
-            except Exception:
-                pass
-        def_dt = parsed or datetime.now()
-    else:
-        def_dt = datetime.now()
-    def_dt = def_dt + timedelta(days=1)
-    publish_at_iso = def_dt.isoformat(timespec="minutes")
-    caption = data.get("caption")
-    mailing_id = adb.create_scheduled_mailing(
-        content_type="media_group",
-        caption=caption,
-        payload={"items": items},
-        publish_at=publish_at_iso,
-        mailing_on=True,
-    )
-    await state.clear()
-    await state.update_data(view_mailing_id=mailing_id, view_origin="create")
-    await _render_mailing_item(callback.message, mailing_id, origin="create")
-    await callback.answer("Черновик создан. Можете изменить дату/контент в карточке.")
+# Кнопка album_done больше не используется (сборка идёт автоматически).
 
 
 async def mailing_accept(message: Message, state: FSMContext):
@@ -463,7 +487,8 @@ async def mailing_accept(message: Message, state: FSMContext):
 
     # Редактирование: замена контента
     if step == "edit_content_wait":
-        # Альбом для редактирования? Копим фото/видео, предлагаем «Сохранить/Назад».
+        # Альбом для редактирования? Копим фото/видео, НИЧЕГО не отвечаем на каждую часть,
+        # и по таймауту одного пакета обновляем запись один раз.
         if message.media_group_id:
             gid = message.media_group_id
             st_gid = data.get("album_gid")
@@ -480,22 +505,20 @@ async def mailing_accept(message: Message, state: FSMContext):
                 if (message.caption or "") and not caption:
                     caption = message.caption
             else:
-                await message.answer(
-                    "В альбоме допустимы только фото/видео. Пришлите медиа либо используйте «Назад».",
-                    reply_markup=BTN_CONTENT_SAVE_BACK,
-                )
+                # игнорируем неподдерживаемые элементы в медиагруппе
                 return
             if st_gid is None:
                 await state.update_data(album_gid=gid)
             elif st_gid != gid:
-                # новая медиагруппа — начинаем новый набор
+                # Поступил другой альбом — перезапускаем набор с новой группой
                 await state.update_data(album_gid=gid, album_items=[], caption=None)
-                # уже добавили текущий элемент выше
+                items = [{"type": it["type"], "file_id": it["file_id"]} for it in items[-1:]]  # начнём с текущего
             await state.update_data(album_items=items, caption=caption, new_content=None)
-            await message.answer(
-                f"Добавлено медиа в альбом: {len(items)}. Нажмите «Сохранить», когда закончите.",
-                reply_markup=BTN_CONTENT_SAVE_BACK,
-            )
+            # Запланируем одноразовую финализацию через небольшой таймаут
+            async def _debounced():
+                await asyncio.sleep(ALBUM_DEBOUNCE_SEC)
+                await _finalize_album_edit(message, state)
+            _schedule_album_task(message.chat.id, asyncio.create_task(_debounced()))
             return
 
         # Одиночный контент — кладём в буфер, ждём «Сохранить/Назад»
@@ -533,26 +556,21 @@ async def mailing_accept(message: Message, state: FSMContext):
                 if (message.caption or "") and not caption:
                     caption = message.caption
             else:
-                await message.answer(
-                    "В альбом допустимы только фото/видео. Повторите отправку.",
-                    reply_markup=BTN_ALBUM_FLOW,
-                )
+                # игнорируем неподдерживаемые элементы в медиагруппе
                 return
 
             if st_gid is None:
                 await state.update_data(album_gid=gid)
             elif st_gid != gid:
-                await message.answer(
-                    "Получен другой альбом — завершите текущий кнопкой «Далее» или нажмите «Отмена».",
-                    reply_markup=BTN_ALBUM_FLOW,
-                )
-                return
+                # Поступил другой альбом — перезапускаем набор с новой группой
+                await state.update_data(album_gid=gid, album_items=[], caption=None)
 
             await state.update_data(album_items=items, caption=caption, step="await_content")
-            await message.answer(
-                f"Принято медиа в альбом: {len(items)}. Когда отправите все — нажмите «Далее».",
-                reply_markup=BTN_ALBUM_FLOW,
-            )
+            # Ничего не отвечаем на каждую часть; финализируем альбом 1 раз по таймауту
+            async def _debounced():
+                await asyncio.sleep(ALBUM_DEBOUNCE_SEC)
+                await _finalize_album_create(message, state)
+            _schedule_album_task(message.chat.id, asyncio.create_task(_debounced()))
             return
 
         # Одиночный контент (текст/фото/видео/аудио/GIF)
@@ -964,37 +982,17 @@ async def start_edit_mailing_content(callback: CallbackQuery, state: FSMContext)
     )
     await _edit_or_send(
         callback.message,
-        text=("Пришлите новый контент (текст/фото/видео/аудио/GIF) или несколько фото подряд "
-              "для альбома. Когда будете готовы — нажмите «Сохранить», либо «Назад» чтобы выйти без изменений."),
+        text=("Пришлите новый контент (текст/фото/видео/аудио/GIF) или медиа-группу (альбом) одним пакетом.\n"
+              "• Для <b>альбома</b> ничего нажимать не нужно — я дождусь все элементы и сохраню автоматически одним файлом.\n"
+              "• Для одиночного контента используйте «Сохранить» или «Назад»."),
         kb=kb_content_edit_open(mailing_id, keep_origin=True),
+        parse_mode="HTML",
     )
     await state.set_state(CreateMailing.GetText)
     await callback.answer()
 
 
-async def album_done_edit(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    if not data or data.get("step") != "edit_content_wait":
-        await callback.answer("Нет активного редактирования альбома.", show_alert=True)
-        return
-    items: List[Dict[str, str]] = data.get("album_items") or []
-    caption = data.get("caption")
-    if not items:
-        await callback.answer("Альбом пуст — пришлите медиа.", show_alert=True)
-        return
-    mid = int(data.get("edit_mailing_id"))
-    adb.update_mailing_payload(
-        mailing_id=mid,
-        content_type="media_group",
-        payload={"items": items},
-        caption=caption,
-    )
-    await state.update_data(step=None, album_gid=None, album_items=[], caption=None)
-    await _edit_or_send(callback.message, text="Контент (альбом) обновлён.", kb=None)
-    data2 = await state.get_data()
-    origin = (data2 or {}).get("view_origin", "list")
-    await _render_mailing_item(callback.message, mid, origin=origin)
-    await callback.answer()
+# Кнопка album_done_edit больше не используется (редактирование альбома завершается автоматически).
 
 async def content_edit_save(callback: CallbackQuery, state: FSMContext):
     """Сохранить новые медиа/текст и вернуться к карточке рассылки."""
@@ -1225,7 +1223,7 @@ def router(rt: Router):
     # Рассылка (контент -> дата -> подтверждение)
     rt.callback_query.register(start_mailing, F.data == "admin.mailing")
     rt.callback_query.register(mailing_stop, F.data == "stop_mailing")
-    rt.callback_query.register(album_done, F.data == "admin.mailing.album_done")
+    # Кнопка «Далее» для альбома больше не используется
     rt.message.register(mailing_accept, CreateMailing.GetText)  # принимает и контент, и дату
     rt.callback_query.register(go_mailing, F.data == "go_mailing")
     rt.callback_query.register(use_default_datetime, F.data == "admin.mailing.use_default")
@@ -1245,8 +1243,7 @@ def router(rt: Router):
     rt.callback_query.register(content_edit_delete, F.data.startswith("admin.mailing.content.del:"))
     rt.callback_query.register(content_edit_save, F.data == "admin.mailing.content.save")
     rt.callback_query.register(content_edit_back, F.data == "admin.mailing.content.back")
-    # (опционально оставляем album_done_edit для обратной совместимости)
-    rt.callback_query.register(album_done_edit, F.data == "admin.mailing.album_done_edit")
+    # album_done_edit не используется — финализация альбома идёт автоматически
     # Удаление самой рассылки (кнопка 🗑 Удалить в карточке)
     rt.callback_query.register(delete_mailing, F.data.startswith("admin.mailing.delete:"))
     # Календарь: выбор даты из виджета
