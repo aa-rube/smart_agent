@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Tuple, Callable
 
 import re
-from aiogram import Router, F, Bot
+from aiogram import Router, F
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 )
@@ -348,7 +348,7 @@ async def _show(message_or_cb, text: str, kb: InlineKeyboardMarkup):
     try:
         await message_or_cb.message.edit_text(f"{text}\n\n{_progress_line(ResultModel(**(await message_or_cb.bot.session.state.get_data(message_or_cb.from_user.id) or {})))}", reply_markup=kb)
     except Exception:
-        # безопаснее просто отправить новое сообщение
+
         if isinstance(message_or_cb, CallbackQuery):
             await message_or_cb.message.answer(f"{text}", reply_markup=kb)
         else:
@@ -1013,5 +1013,5 @@ async def show_final_msg(msg: Message, m: ResultModel):
 # Регистрация наружу
 # ======================================================================
 
-def router() -> Router:
-    return rt
+def router(parent: Router) -> None:
+    parent.include_router(rt)
