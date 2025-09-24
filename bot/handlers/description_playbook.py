@@ -71,6 +71,7 @@ ASK_FORM_KITCHEN_AREA    = "8️⃣ Введите площадь кухни (в
 ASK_FORM_ROOMS           = "9️⃣ Укажите количество комнат (для жилых объектов). Если не применимо — укажите 0. Пример: 2"
 ASK_FORM_YEAR_COND       = "🔟 Укажите год постройки ИЛИ состояние: «новостройка», «вторичка», «требуется ремонт». Примеры: 2012 / новостройка"
 ASK_FORM_UTILITIES       = "1️⃣1️⃣ Перечислите коммуникации через запятую: отопление, вода, газ, электричество, интернет. Пример: отопление, вода, электричество"
+ASK_FORM_APT_COND        = "🔟 Выберите состояние квартиры:"
 ASK_FORM_LOCATION        = "1️⃣2️⃣ Укажите локацию: район и ближайшее метро/транспорт. Пример: Пресненский, м. Улица 1905 года"
 ASK_FORM_FEATURES        = "1️⃣3️⃣ Укажите особенности/удобства через запятую (балкон, парковка, лифт, охрана и т.д.). Пример: балкон, лифт, консьерж"
 ASK_FREE_COMMENT         = "1️⃣4️⃣ При желании добавьте свободный комментарий про объект — детали планировки, состояние, окружение и т.п.\n\n✍️ Отправьте текст одним сообщением (минимум 50 символов).\nЕсли комментарий не нужен — нажмите «Пропустить»."
@@ -191,6 +192,29 @@ def kb_retry() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🔁 Ещё раз", callback_data="description")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")]
     ])
+
+def kb_apt_condition() -> InlineKeyboardMarkup:
+    """
+    Блок выбора состояния квартиры (кнопки) + «Назад».
+    """
+    rows = [
+        [InlineKeyboardButton(text="1. Дизайнерский ремонт",      callback_data="desc_cond_designer")],
+        [InlineKeyboardButton(text="2. «Евро-ремонт»",            callback_data="desc_cond_euro")],
+        [InlineKeyboardButton(text="3. Косметический",            callback_data="desc_cond_cosmetic")],
+        [InlineKeyboardButton(text="4. Требует ремонта",          callback_data="desc_cond_need_repair")],
+        [InlineKeyboardButton(text="5. Требует капитального ремонта", callback_data="desc_cond_capital_repair")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="desc_cond_back")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+# Маппинг к читаемому значению
+APT_COND_LABELS = {
+    "designer":        "дизайнерский ремонт",
+    "euro":            "евро-ремонт",
+    "cosmetic":        "косметический ремонт",
+    "need_repair":     "требует ремонта",
+    "capital_repair":  "требует капитального ремонта",
+}
 
 # Кнопка к офферу подписки
 SUBSCRIBE_KB = InlineKeyboardMarkup(
@@ -322,7 +346,7 @@ async def handle_area(cb: CallbackQuery, state: FSMContext):
             "floor",
             "kitchen_area",
             "rooms",
-            "year_or_condition",
+            "apt_condition",   # <-- для квартиры состояние по кнопкам
             "utilities",
             "location",
             "features",
@@ -362,7 +386,12 @@ async def handle_area(cb: CallbackQuery, state: FSMContext):
     await state.update_data(__form_keys=form_keys, __form_step=0, __awaiting_free_comment=False)
 
     # Попросим первый шаг
-    await _edit_text_or_caption(cb.message, _form_prompt_for_key(form_keys[0]))
+    first_key = form_keys[0]
+    if first_key == "apt_condition":
+        # если по какой-то причине первым идёт состояние — показываем кнопки
+        await _edit_text_or_caption(cb.message, ASK_FORM_APT_COND, kb_apt_condition())
+    else:
+        await _edit_text_or_caption(cb.message, _form_prompt_for_key(first_key))
     await state.set_state(DescriptionStates.waiting_for_comment)  # используем существующий стейт как «анкета»
     await cb.answer()
 
@@ -399,6 +428,7 @@ def _form_prompt_for_key(key: str) -> str:
         "kitchen_area":     ASK_FORM_KITCHEN_AREA,
         "rooms":            ASK_FORM_ROOMS,
         "year_or_condition":ASK_FORM_YEAR_COND,
+        "apt_condition":    ASK_FORM_APT_COND,
         "utilities":        ASK_FORM_UTILITIES,
         "location":         ASK_FORM_LOCATION,
         "features":         ASK_FORM_FEATURES,
@@ -627,7 +657,12 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
     step += 1
     if step < len(form_keys):
         await state.update_data(__form_step=step)
-        await message.answer(_form_prompt_for_key(form_keys[step]))
+        next_key = form_keys[step]
+        if next_key == "apt_condition":
+            # Для apt_condition ожидаем выбор кнопкой, а не текст
+            await message.answer(ASK_FORM_APT_COND, reply_markup=kb_apt_condition())
+            return
+        await message.answer(_form_prompt_for_key(next_key))
         return
 
     # Все структурированные поля собраны — спрашиваем свободный комментарий
@@ -646,6 +681,71 @@ async def handle_comment_skip(cb: CallbackQuery, state: FSMContext, bot: Bot):
     await cb.answer()
 
 # ==========================
+# Обработчики блока «Состояние квартиры» (кнопки)
+# ==========================
+async def handle_apt_condition_select(cb: CallbackQuery, state: FSMContext):
+    """
+    Принимает выбор состояния квартиры (кнопки) в рамках анкеты.
+    Сохраняет значение и переводит на следующий шаг анкеты.
+    """
+    data = await state.get_data()
+    form_keys: List[str] = data.get("__form_keys") or []
+    step: int = int(data.get("__form_step") or 0)
+
+    # Защита: если текущий шаг не про apt_condition — игнорируем
+    if step >= len(form_keys) or form_keys[step] != "apt_condition":
+        await cb.answer()
+        return
+
+    code = cb.data.removeprefix("desc_cond_")
+    label = APT_COND_LABELS.get(code)
+    if not label:
+        await cb.answer()
+        return
+
+    # Сохраняем «человеческое» значение
+    await state.update_data(apt_condition=label)
+
+    # Переходим к следующему шагу
+    step += 1
+    await state.update_data(__form_step=step)
+    if step < len(form_keys):
+        next_key = form_keys[step]
+        # Если вдруг подряд снова apt_condition (не должно быть) — повторим клавиатуру
+        if next_key == "apt_condition":
+            await _edit_text_or_caption(cb.message, ASK_FORM_APT_COND, kb_apt_condition())
+        else:
+            await _edit_text_or_caption(cb.message, _form_prompt_for_key(next_key))
+    else:
+        # анкета завершена — переходим к свободному комментарию
+        await state.update_data(__awaiting_free_comment=True)
+        await _edit_text_or_caption(cb.message, ASK_FREE_COMMENT, kb_skip_comment())
+    await cb.answer("Выбрано: " + label)
+
+async def handle_apt_condition_back(cb: CallbackQuery, state: FSMContext):
+    """
+    Кнопка «Назад» внутри блока состояния:
+    Возвращаемся на предыдущий текстовый шаг анкеты.
+    """
+    data = await state.get_data()
+    form_keys: List[str] = data.get("__form_keys") or []
+    step: int = int(data.get("__form_step") or 0)
+
+    # Если мы не на apt_condition — игнор
+    if step >= len(form_keys) or form_keys[step] != "apt_condition":
+        await cb.answer()
+        return
+
+    # Шаг назад
+    prev_step = max(0, step - 1)
+    await state.update_data(__form_step=prev_step)
+    prev_key = form_keys[prev_step]
+
+    # Показываем предыдущий вопрос (текстовый ввод)
+    await _edit_text_or_caption(cb.message, _form_prompt_for_key(prev_key))
+    await cb.answer()
+
+# ==========================
 # Router
 # ==========================
 def router(rt: Router):
@@ -658,6 +758,10 @@ def router(rt: Router):
     rt.callback_query.register(handle_class,   F.data.startswith("desc_class_"))
     rt.callback_query.register(handle_complex, F.data.startswith("desc_complex_"))
     rt.callback_query.register(handle_area,    F.data.startswith("desc_area_"))
+
+    # состояние квартиры (кнопки) — в рамках анкеты
+    rt.callback_query.register(handle_apt_condition_select, F.data.startswith("desc_cond_"), DescriptionStates.waiting_for_comment)
+    rt.callback_query.register(handle_apt_condition_back,   F.data == "desc_cond_back",      DescriptionStates.waiting_for_comment)
 
     # анкета + свободный комментарий / пропуск
     rt.message.register(handle_comment_message, DescriptionStates.waiting_for_comment, F.text)
