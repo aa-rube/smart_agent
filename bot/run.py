@@ -1,6 +1,8 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\run.py
 import asyncio
 import logging
+import signal
+import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -23,6 +25,9 @@ from dateutil.relativedelta import relativedelta
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
 dp = Dispatcher(storage=MemoryStorage())
 setup(dp)
+
+# Флаг для graceful shutdown
+shutdown_event = asyncio.Event()
 
 
 async def yookassa_webhook_handler(request: web.Request):
@@ -69,27 +74,34 @@ async def main():
         except Exception:
             logging.exception("mailing_loop initial tick failed")
 
-        while True:
+        while not shutdown_event.is_set():
             try:
                 await run_mailing_scheduler(bot)
             except Exception:
                 # Любая ошибка внутри — логируем и продолжаем цикл
                 logging.exception("mailing_loop tick failed")
-            finally:
-                # Период запуска (можешь сделать 60с, если база большая)
-                await asyncio.sleep(30)
+            
+            # Прерываемый sleep
+            try:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=30)
+                break
+            except asyncio.TimeoutError:
+                continue
 
     async def billing_loop():
         """
         Простой фоновый цикл рекуррентного биллинга.
         Забирает «просроченные» подписки и создаёт платёж по сохранённому способу оплаты.
         """
-        while True:
+        while not shutdown_event.is_set():
             try:
                 # timezone-aware MSK:
                 now_msk = datetime.now(MSK)
                 due = db.subscriptions_due(now=now_msk, limit=100)
                 for sub in due:
+                    if shutdown_event.is_set():
+                        break
+                    
                     user_id = sub["user_id"]
                     pm_id = sub["payment_method_id"]
                     # если токена нет (триал был без сохранённой карты) — пропускаем
@@ -117,20 +129,42 @@ async def main():
                     # перенос next_charge_at и продление — только по вебхуку
             except Exception as e:
                 logging.exception("billing_loop error: %s", e)
-            finally:
-                await asyncio.sleep(60)  # раз в минуту
+            
+            # Прерываемый sleep
+            try:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=60)
+                break
+            except asyncio.TimeoutError:
+                continue
 
+    def signal_handler(signum, frame):
+        logging.info(f"Получен сигнал {signum}, начинаю graceful shutdown...")
+        shutdown_event.set()
+    
+    # Регистрируем обработчики сигналов
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
     try:
         logging.info("Бот запущен")
         # Запускаем фоновый биллинг-процесс и поллинг бота параллельно
-        await asyncio.gather(
+        tasks = await asyncio.gather(
             billing_loop(),
             mailing_loop(),          # ✅ добавили цикл рассылок
             dp.start_polling(bot),
+            return_exceptions=True
         )
+        
+        # Логируем результаты задач
+        for i, result in enumerate(tasks):
+            if isinstance(result, Exception):
+                logging.error(f"Задача {i} завершилась с ошибкой: {result}")
+                
     except Exception as e:
         logging.error(f"Ошибка при запуске бота: {e}")
     finally:
+        logging.info("Завершаю работу...")
+        shutdown_event.set()
         await runner.cleanup()
         await bot.session.close()
         logging.info("Бот и веб-сервер остановлены")
