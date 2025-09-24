@@ -151,6 +151,64 @@ BTN_ENTER_OWN = "✏️ Ввести своё"
 def _h(text: str) -> str:
     return _esc(text or "")
 
+# Читабельные русские лейблы для ключей, используемых в чек-листе «Собрано»
+KEY_LABELS: Dict[str, str] = {
+    # Общие/служебные
+    "__root": "Тип объекта",
+
+    # Квартира
+    "flat_market": "Рынок",
+    "newbuild_deadline": "Срок сдачи",
+    "newbuild_sale": "Способ продажи",
+    "rooms": "Комнат",
+    "mortgage": "Ипотека",
+    "total_area": "Общая площадь, м²",
+    "kitchen_area": "Площадь кухни, м²",
+    "floor": "Этаж",
+    "floors_total": "Этажность",
+    "bath": "Санузел",
+    "windows": "Окна",
+    "house_type": "Тип дома",
+    "elevator": "Лифт",
+    "parking": "Парковка",
+    "renovation": "Ремонт",
+    "layout": "Планировка",
+    "balcony": "Балкон/лоджия",
+    "height": "Высота потолков, м",
+
+    # Загородная — дом/дача/коттедж/таунхаус
+    "country_kind": "Тип загородного объекта",
+    "house_sq": "Площадь дома, м²",
+    "plot_sot": "Площадь участка, сот.",
+    "distance": "Расстояние от города, км",
+    "storeys": "Этажей в доме",
+    "land_cat_house": "Категория земель",
+    "country_renov": "Состояние/ремонт",
+    "toilet_country": "Санузел",
+    "utils_country": "Коммуникации",
+    "fun_country": "Для отдыха",
+    "walls": "Материал стен",
+    "parking_country": "Парковка",
+    "access": "Транспортная доступность",
+
+    # Загородная — участок
+    "land_cat_plot": "Категория земель",
+    "plot_sot_only": "Площадь участка, сот.",
+    "distance_only": "Расстояние до города, км",
+    "utils_plot": "Коммуникации",
+
+    # Коммерческая
+    "comm_kind": "Вид объекта",
+    "comm_area": "Площадь, м²",
+    "comm_land": "Площадь участка",
+    "comm_building": "Тип здания",
+    "comm_whole": "Объект целиком",
+    "finish": "Отделка",
+    "entrance": "Вход",
+    "comm_parking": "Парковка",
+    "layout_comm": "Тип планировки",
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
 # FSM
 # ──────────────────────────────────────────────────────────────────────────────
@@ -214,7 +272,9 @@ def split_summary(payload: Dict[str, Any]) -> str:
         return "Пока ничего не выбрано."
     keys = list(non_empty.keys())
     show = keys[:8]  # короткий чек-лист
-    return "Собрано: " + ", ".join(show) + (" …" if len(keys) > 8 else "")
+    # Печатаем читабельные русские названия полей
+    pretty = [KEY_LABELS.get(k, k) for k in show]
+    return "Собрано: " + ", ".join(pretty) + (" …" if len(keys) > 8 else "")
 
 def try_parse_float(txt: str) -> Optional[float]:
     try:
@@ -681,11 +741,12 @@ def build_payload(data: Dict[str, Any]) -> Dict[str, Any]:
 def render_summary(p: Dict[str, Any]) -> str:
     lines = []
     for k, v in p.items():
+        label = KEY_LABELS.get(k, k)
         if isinstance(v, list):
             vv = ", ".join(map(str, v))
         else:
             vv = str(v)
-        lines.append(f"• {k}: {vv}")
+        lines.append(f"• {label}: {vv}")
     return "\n".join(lines) if lines else "Пусто."
 
 # ──────────────────────────────────────────────────────────────────────────────
