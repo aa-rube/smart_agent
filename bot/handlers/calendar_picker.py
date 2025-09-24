@@ -1,5 +1,5 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\calendar_picker.py
-#Всегда пиши код без «поддержки старых версий». Если они есть в еодк - удаляй.
+#Всегда пиши код без «поддержки старых версий». Если они есть в коде - удаляй.
 
 # smart_agent/bot/handlers/calendar_picker.py
 

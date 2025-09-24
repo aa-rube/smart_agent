@@ -1,5 +1,5 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\plans.py
-#Всегда пиши код без «поддержки старых версий». Если они есть в еодк - удаляй.
+#Всегда пиши код без «поддержки старых версий». Если они есть в коде - удаляй.
 
 from __future__ import annotations
 
@@ -17,42 +17,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.enums.chat_action import ChatAction
 from aiogram.exceptions import TelegramBadRequest
 
-import bot.utils.database as db
 from bot.config import get_file_path
-from bot.utils.database import is_trial_active, trial_remaining_hours
 from bot.states.states import FloorPlanStates
 from executor.prompt_factory import create_floor_plan_prompt
 from bot.utils.chat_actions import run_long_operation_with_action
 from bot.utils.ai_processor import generate_floor_plan
 from bot.utils.file_utils import safe_remove
-
-
-# ===========================
-# Доступ / подписка
-# ===========================
-
-def _is_sub_active(user_id: int) -> bool:
-    raw = db.get_variable(user_id, "sub_until") or ""
-    if not raw:
-        return False
-    try:
-        from datetime import datetime
-        today = datetime.utcnow().date()
-        return today <= datetime.fromisoformat(raw).date()
-    except Exception:
-        return False
-
-def _format_access_text(user_id: int) -> str:
-    trial_hours = trial_remaining_hours(user_id)
-    if _is_sub_active(user_id):
-        sub_until = db.get_variable(user_id, "sub_until")
-        return f'✅ Подписка активна до *{sub_until}*'
-    if trial_hours > 0:
-        return f'🆓 Бесплатный доступ активен ещё *~{trial_hours} ч.*'
-    return '😢 Бесплатный период завершён. Оформи подписку, чтобы продолжить.'
-
-def _has_access(user_id: int) -> bool:
-    return is_trial_active(user_id) or _is_sub_active(user_id)
+from bot.utils.redis_repo import quota_repo
 
 
 # ===========================
@@ -66,13 +37,12 @@ _TEXT_GET_FILE_PLAN_TPL = """
 
 3️⃣ Получи макет за 1–2 минуты 💡
 
-{tokens_text}
-
 Готов? Кидай файл сюда 👇
 """.strip()
 
 def text_get_file_plan(user_id: int) -> str:
-    return _TEXT_GET_FILE_PLAN_TPL.format(tokens_text=_format_access_text(user_id))
+    # Подписка/триал не проверяются — возвращаем статичный текст
+    return _TEXT_GET_FILE_PLAN_TPL
 
 TEXT_GET_VIZ = "Выберите стиль визуализации плана:"
 TEXT_GET_STYLE = "Отлично! Теперь выберите интерьерный стиль 🖼️"
@@ -82,34 +52,10 @@ ERROR_PDF_PAGES = "❌ В PDF должно быть не больше одной
 ERROR_LINK = "❌ Не удалось скачать изображение по ссылке. Нужна прямая ссылка на файл (jpg/png)."
 SORRY_TRY_AGAIN = "😔 Не удалось сгенерировать изображение. Попробуйте ещё раз."
 
-SUB_FREE = """
-🎁 Бесплатный период завершён
-Пробный доступ на 72 часа истёк — дальше только по подписке.
-
-📦* Что даёт подписка:*
- — Полный доступ ко всем инструментам
- — Без ограничений по количеству запусков в период подписки*
-Стоимость пакета всего 2500 рублей!
-""".strip()
-
-SUB_PAY = """
-🪫 Подписка не активна
-Срок подписки истёк или не был оформлен.
-
-📦* Что даёт подписка:*
- — Полный доступ ко всем инструментам
- — Без ограничений по количеству запусков в период подписки*
-Стоимость пакета всего 2500 рублей!
-""".strip()
-
 
 # ===========================
 # Клавиатуры
 # ===========================
-
-SUBSCRIBE_KB = InlineKeyboardMarkup(
-    inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
-)
 
 def kb_back_to_tools() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -139,6 +85,13 @@ def kb_result_back() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="↩️ Загрузить другой план", callback_data="plan.back_to_upload")]]
     )
+
+
+# ===========================
+# Квоты
+# ===========================
+GEN_LIMIT_PER_DAY = 3          # попыток на пользователя
+GEN_WINDOW_SEC    = 86400      # 24 часа
 
 
 # ===========================
@@ -200,21 +153,15 @@ async def start_plans_flow(callback: CallbackQuery, state: FSMContext, bot: Bot)
     Стартовый коллбек: "floor_plan"
     """
     user_id = callback.message.chat.id
-
-    if _has_access(user_id):
-        await state.set_state(FloorPlanStates.waiting_for_file)
-        await _edit_or_replace_with_photo_file(
-            bot=bot,
-            msg=callback.message,
-            file_path=get_file_path('img/bot/plan.png'),
-            caption=text_get_file_plan(user_id),
-            kb=kb_back_to_tools(),
-        )
-    else:
-        if not _is_sub_active(user_id):
-            await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
-        else:
-            await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
+    # Подписка/триал не проверяются — сразу переходим к загрузке
+    await state.set_state(FloorPlanStates.waiting_for_file)
+    await _edit_or_replace_with_photo_file(
+        bot=bot,
+        msg=callback.message,
+        file_path=get_file_path('img/bot/plan.png'),
+        caption=text_get_file_plan(user_id),
+        kb=kb_back_to_tools(),
+    )
 
     await callback.answer()
 
@@ -292,17 +239,31 @@ async def handle_style_plan(callback: CallbackQuery, state: FSMContext, bot: Bot
     await callback.answer("Принято! Начинаю генерацию...")
 
     user_id = callback.from_user.id
-    if not _has_access(user_id):
-        if not _is_sub_active(user_id):
-            await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
-        else:
-            await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
-        await state.clear()
-        return
-
     data = await state.get_data()
     plan_path = data.get("plan_path")
     viz = data.get("visualization_style")
+
+    # --- Лимит 3 генерации за 24 часа (скользящее окно) ---
+    ok, remaining, reset_at = await quota_repo.try_consume(
+        user_id,
+        scope="fp",            # floor plans
+        limit=GEN_LIMIT_PER_DAY,
+        window_sec=GEN_WINDOW_SEC,
+    )
+    if not ok:
+        # посчитаем сколько часов/минут до сброса
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        reset_dt = datetime.fromtimestamp(reset_at, tz=timezone.utc)
+        delta = reset_dt - now
+        # красивый текст ETA
+        total_min = max(1, int(delta.total_seconds() // 60))
+        hours = total_min // 60
+        mins = total_min % 60
+        eta_text = (f"{hours} ч. {mins} мин." if hours else f"{mins} мин.")
+        await _edit_text_or_caption(callback.message, f"⛔ Дневной лимит исчерпан.\nВы сможете запустить генерацию снова через ~{eta_text}.", kb=kb_back_to_tools())
+        await state.clear()
+        return
 
     try:
         _, style_raw = (callback.data or "").split("_", 1)

@@ -1,5 +1,5 @@
 # smart_agent/bot/utils/redis_repo.py
-#Всегда пиши код без «поддержки старых версий». Если они есть в еодк - удаляй.
+#Всегда пиши код без «поддержки старых версий». Если они есть в коде - удаляй.
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     # redis-py 5.x с async API
@@ -32,6 +32,10 @@ def _make_redis() -> Redis:
     )
 
 _redis = _make_redis()
+
+def _now_ts() -> int:
+    """Unix time seconds."""
+    return int(time.time())
 
 
 class FeedbackRedisRepo:
@@ -243,6 +247,82 @@ class SummaryRedisRepo:
         return out
 
 
+# === Quota (ограничения на количество действий в скользящем окне) ============
+class QuotaRedisRepo:
+    """
+    Лёгкий лимитер на Redis с ZSET и скользящим окном.
+    Ключ: {prefix}:q:{scope}:{user_id}  (ZSET с таймстемпами попыток)
+
+    Поддерживает N попыток за window_sec (например, 3 за 86400 секунд).
+    """
+    def __init__(self, redis: Redis, prefix: str = "sa"):
+        self.r = redis
+        self.prefix = prefix
+
+    def _key(self, user_id: int, scope: str) -> str:
+        return f"{self.prefix}:q:{scope}:{user_id}"
+
+    async def _purge_old(self, key: str, *, now_ts: Optional[int], window_sec: int) -> None:
+        now_ts = _now_ts() if now_ts is None else now_ts
+        cutoff = now_ts - window_sec
+        # Удаляем всё, что старше окна
+        await self.r.zremrangebyscore(key, 0, cutoff)
+
+    async def get_count(self, user_id: int, *, scope: str, window_sec: int = 86400) -> int:
+        key = self._key(user_id, scope)
+        await self._purge_old(key, now_ts=None, window_sec=window_sec)
+        return await self.r.zcard(key)
+
+    async def try_consume(
+        self,
+        user_id: int,
+        *,
+        scope: str,
+        limit: int,
+        window_sec: int = 86400,
+        now_ts: Optional[int] = None,
+    ) -> Tuple[bool, int, int]:
+        """
+        Пытаемся «потратить» один токен.
+        Возвращает (ok, remaining, reset_at_ts).
+          ok          — можно ли выполнять действие сейчас
+          remaining   — сколько попыток осталось в окне после (успешного) расхода; если ok=False — сколько осталось (0)
+          reset_at_ts — когда полностью снимется блок (секундный UNIX ts)
+        """
+        now_ts = _now_ts() if now_ts is None else now_ts
+        key = self._key(user_id, scope)
+        pipe = self.r.pipeline()
+        # 1) подчистим окно
+        pipe.zremrangebyscore(key, 0, now_ts - window_sec)
+        # 2) узнаем текущий размер
+        pipe.zcard(key)
+        res = await pipe.execute()
+        cur = int(res[1] or 0)
+
+        if cur >= limit:
+            # вычислим ближайший reset_at: это min timestamp в ZSET + window_sec
+            oldest = await self.r.zrange(key, 0, 0, withscores=True)
+            if oldest:
+                oldest_ts = int(oldest[0][1])
+                reset_at = oldest_ts + window_sec
+            else:
+                reset_at = now_ts + window_sec
+            return False, 0, reset_at
+
+        # есть квота — записываем попытку
+        pipe = self.r.pipeline()
+        pipe.zadd(key, {str(now_ts): now_ts})
+        # TTL как страховка (чуть больше окна)
+        pipe.expire(key, window_sec + 3600)
+        await pipe.execute()
+        remaining = max(0, limit - (cur + 1))
+        # reset_at по самой старой записи после добавления
+        oldest = await self.r.zrange(key, 0, 0, withscores=True)
+        reset_at = (int(oldest[0][1]) + window_sec) if oldest else (now_ts + window_sec)
+        return True, remaining, reset_at
+
+
 # Глобальные экземпляры
 feedback_repo = FeedbackRedisRepo(_redis, prefix=os.getenv("REDIS_PREFIX", "sa"))
 summary_repo  = SummaryRedisRepo(_redis,  prefix=os.getenv("REDIS_PREFIX", "sa"))
+quota_repo    = QuotaRedisRepo(_redis,    prefix=os.getenv("REDIS_PREFIX", "sa"))

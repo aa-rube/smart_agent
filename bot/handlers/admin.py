@@ -26,8 +26,8 @@ from aiogram.types import (
 
 import bot.config as cfg
 import bot.utils.admin_db as adb
-from bot.utils.mailing import preview_to_chat  # новый импорт для превью
-from bot.states.states import CreateMailing  # оставляем только рассылку
+from bot.utils.mailing import preview_to_chat
+from bot.states.states import CreateMailing
 from bot.handlers.calendar_picker import open_calendar, router as calendar_router  # КАЛЕНДАРЬ
 
 
