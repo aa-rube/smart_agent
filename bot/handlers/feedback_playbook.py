@@ -26,7 +26,7 @@ from bot.utils.redis_repo import feedback_repo
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-# Доступ / подписка (как в plans)
+# Доступ / подписка
 # =============================================================================
 import bot.utils.database as db
 from bot.utils.database import is_trial_active, trial_remaining_hours
@@ -147,7 +147,7 @@ MAIN_MENU_TITLE = ('''
 
 • 3 готовых варианта с нужным тоном и длиной
 • ясную композицию: вводные → процесс → результат → ценность для клиента
-• возможность править, сохранять в историю и экспортировать (.txt/.md).
+• возможность править, сохранять в историю и экспортировать (.txt).
 
 🎯 Готовы? Жмите «Создать отзыв»
 '''
@@ -552,7 +552,6 @@ def kb_variant(index: int, total: int) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="Ещё вариант", callback_data=f"gen.more.{index}")])
     rows.append([
         InlineKeyboardButton(text="Экспорт .txt", callback_data=f"export.{index}.txt"),
-        InlineKeyboardButton(text="Экспорт .md", callback_data=f"export.{index}.md"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -569,7 +568,6 @@ def kb_final() -> InlineKeyboardMarkup:
     rows = [
         [
             InlineKeyboardButton(text="Экспорт .txt", callback_data="export.final.txt"),
-            InlineKeyboardButton(text="Экспорт .md", callback_data="export.final.md"),
         ],
         [InlineKeyboardButton(text="Создать похожий", callback_data="clone.from.final")],
         [InlineKeyboardButton(text="В меню", callback_data="nav.menu")],
@@ -1535,7 +1533,6 @@ async def history_open_item(callback: CallbackQuery, state: FSMContext):
                 [InlineKeyboardButton(text="Создать похожий", callback_data=f"hist.{item.id}.clone")],
                 [
                     InlineKeyboardButton(text="Экспорт .txt", callback_data=f"hist.{item.id}.export.txt"),
-                    InlineKeyboardButton(text="Экспорт .md", callback_data=f"hist.{item.id}.export.md"),
                 ],
                 [InlineKeyboardButton(text="В историю", callback_data="hist.back")],
             ]

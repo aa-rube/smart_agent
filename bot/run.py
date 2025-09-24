@@ -2,7 +2,6 @@
 import asyncio
 import logging
 import signal
-import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -13,13 +12,12 @@ from aiohttp import web
 from bot import setup
 from bot.config import TOKEN
 import bot.utils.database as db
-from bot.utils.mailing import run_mailing_scheduler  # ✅ планировщик рассылок
+from bot.utils.mailing import run_mailing_scheduler
 
 from bot.handlers.payment_handler import process_yookassa_webhook
 from bot.utils import youmoney
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from dateutil.relativedelta import relativedelta
 
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))

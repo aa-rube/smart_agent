@@ -218,6 +218,8 @@ async def _build_payload(user_id: int, chat_id: int) -> dict:
         "input": draft.get("input") or {},  # {'type':'text',...} | {'type':'audio',...}
     }
 
+
+
 async def _analyze(payload: dict, *, timeout_sec: int = 120) -> dict:
     """
     Ждём от бэкенда такой ответ:
@@ -241,26 +243,90 @@ async def _analyze(payload: dict, *, timeout_sec: int = 120) -> dict:
                 raise RuntimeError(f"HTTP {r.status}: {err}")
             return await r.json()
 
-def _render_result(res: dict) -> str:
-    s = res.get("summary") or "—"
-    strengths = res.get("strengths") or []
-    mistakes = res.get("mistakes") or []
-    decisions = res.get("decisions") or []
+def _clean_point(s: str) -> str:
+    """
+    Нормализуем пункты для «нормис»-UI:
+    - убираем префикс 'MISSING:' и подобные,
+    - превращаем хвост в скобках в короткое пояснение через тире,
+    - схлопываем повторяющуюся пунктуацию,
+    - убираем финальную точку у коротких строк.
+    """
+    s = (s or "").strip()
+    for pref in ("MISSING:", "Missing:", "missing:", "MISSING —", "MISSING -"):
+        if s.startswith(pref):
+            s = s[len(pref):].strip(" -—:")
+            break
+    import re
+    s = re.sub(r"\s*\(([^()]{1,120})\)\s*$", r" — \1", s)
+    s = re.sub(r"[，､]+", ",", s)
+    s = re.sub(r"[;；]+", ";", s)
+    s = re.sub(r"[.。…]{2,}", ".", s)
+    s = re.sub(r"\s*—\s*—\s*", " — ", s)
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    if not s:
+        return "—"
+    if len(s) <= 80 and s.endswith("."):
+        s = s[:-1]
+    return s
 
-    fmt = [
-        "✅ *Краткое резюме*",
-        s.strip(),
+def _split_mistakes(mistakes: list[str]) -> tuple[list[str], list[str]]:
+    """
+    Делим «Ошибки» на:
+    - gaps: пункты, помеченные MISSING (что не уточнили),
+    - errs: остальные ошибки/риски.
+    """
+    gaps, errs = [], []
+    for m in mistakes or []:
+        m = (m or "").strip()
+        if m.upper().startswith("MISSING"):
+            gaps.append(_clean_point(m))
+        else:
+            errs.append(_clean_point(m))
+    def _uniq(seq: list[str]) -> list[str]:
+        seen = set(); out = []
+        for x in seq:
+            if x and x not in seen:
+                out.append(x); seen.add(x)
+        return out
+    return _uniq(gaps), _uniq(errs)
+
+def _bullets(items: list[str]) -> str:
+    items = [i for i in (items or []) if i and i != "—"]
+    return "\n".join(f"• {i}" for i in items) if items else "—"
+
+def _render_result(res: dict) -> str:
+    """
+    Человекочитаемый вывод:
+    - MISSING:* уходит в «Что не уточнили»,
+    - остальное остаётся в «Ошибки и риски».
+    Эмодзи ставим в КОНЕЦ заголовка, чтобы Telegram не делал их огромными.
+    """
+    summary   = (res.get("summary") or "—").strip() or "—"
+    strengths = [_clean_point(x) for x in (res.get("strengths") or [])]
+    decisions = [_clean_point(x) for x in (res.get("decisions") or [])]
+    gaps, errs = _split_mistakes(res.get("mistakes") or [])
+
+    parts: list[str] = []
+    parts += [
+        "*Итог по разговору* ✅",
+        summary,
         "",
-        "💪 *Сильные стороны*",
-        ("\n".join(f"• {x}" for x in strengths) or "—"),
+        "*Что сработало* 👍",
+        _bullets(strengths),
         "",
-        "⚠️ *Ошибки / риски*",
-        ("\n".join(f"• {x}" for x in mistakes) or "—"),
+        "*Ошибки и риски* ⚠️",
+        _bullets(errs),
         "",
-        "📌 *Договорённости и next steps*",
-        ("\n".join(f"• {x}" for x in decisions) or "—"),
+        "*Что не уточнили (закрыть на следующем контакте)* ❓",
+        _bullets(gaps),
+        "",
+        "*Договорились и следующие шаги* 📌",
+        _bullets(decisions),
     ]
-    return "\n".join(fmt)
+    return "\n".join(parts)
+
+
+
 
 # ============= Экраны =============
 async def summary_home(callback: CallbackQuery, state: FSMContext, bot: Bot):
