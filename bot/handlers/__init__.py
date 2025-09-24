@@ -17,6 +17,7 @@ def register_routers(rt: Router):
     handler_manager.router(rt)
     design.router(rt)
     plans.router(rt)
+    description_playbook.router(rt)
     objection_playbook.router(rt)
     summary_playbook.router(rt)
     admin.router(rt)
