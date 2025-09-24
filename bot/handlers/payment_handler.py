@@ -21,11 +21,11 @@ from bot.utils import youmoney
 # ──────────────────────────────────────────────────────────────────────────────
 
 TARIFFS: Dict[str, Dict] = {
-    # Рекуррентной делаем 1m: пробный платёж 1 ₽ на 72 часа, далее авто списание
+    # Все планы рекуррентные: 1 ₽ на 72 часа, далее автосписание по периоду плана
     "1m":  {"label": "1 месяц",   "months": 1,  "amount": "2490.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
-    "3m":  {"label": "3 месяца",  "months": 3,  "amount": "6590.00"},
-    "6m":  {"label": "6 месяцев", "months": 6,  "amount": "11390.00"},
-    "12m": {"label": "12 месяцев","months": 12, "amount": "19900.00"},
+    "3m":  {"label": "3 месяца",  "months": 3,  "amount": "6590.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
+    "6m":  {"label": "6 месяцев", "months": 6,  "amount": "11390.00","recurring": True, "trial_amount": "1.00", "trial_hours": 72},
+    "12m": {"label": "12 месяцев","months": 12, "amount": "19900.00","recurring": True, "trial_amount": "1.00", "trial_hours": 72},
 }
 
 
@@ -64,12 +64,13 @@ def kb_rates() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def kb_pay_with_consent(*, consent: bool, pay_url: Optional[str]) -> InlineKeyboardMarkup:
+def kb_pay_with_consent(*, consent: bool, pay_url: Optional[str], show_manage: bool = False) -> InlineKeyboardMarkup:
     """
     Экран оплаты:
       - чекбокс «Я ознакомлен и согласен»
       - если чекбокс нажат — показываем кнопку с URL
       - если не нажат — показываем кнопку-заглушку, которая просит поставить галочку
+      - если у пользователя активный триал/подписка — показываем «Управлять подпиской»
     """
     check = "✅ Я ознакомлен и согласен" if consent else "⬜️ Я ознакомлен и согласен"
     rows = [
@@ -80,7 +81,24 @@ def kb_pay_with_consent(*, consent: bool, pay_url: Optional[str]) -> InlineKeybo
     # else:
     #     rows.append([InlineKeyboardButton(text="💳 Оплатить", callback_data="tos:need")])
 
+    if show_manage:
+        rows.append([InlineKeyboardButton(text="⚙️ Управлять подпиской", callback_data="sub:manage")])
+
     rows.append([InlineKeyboardButton(text="⬅️ Выбрать другой тариф", callback_data="show_rates")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def kb_manage_menu(user_id: int) -> InlineKeyboardMarkup:
+    rows = []
+    cur_code = _current_plan_code(user_id)
+    rows.append([InlineKeyboardButton(text=f"Текущий план: {TARIFFS[cur_code]['label']}", callback_data="noop")])
+    upgrades = _upgrade_options(user_id)
+    if upgrades:
+        for code, label in upgrades:
+            rows.append([InlineKeyboardButton(text=f"Повысить до: {label}", callback_data=f"sub:upgrade:{code}")])
+    else:
+        rows.append([InlineKeyboardButton(text="Доступны все планы", callback_data="noop")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="show_rates")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -138,6 +156,38 @@ def _mark_payment_processed(user_id: int, payment_id: str) -> None:
     db.set_variable(user_id, key, "1")
 
 
+def _is_subscription_active(user_id: int) -> bool:
+    """Есть активный доступ (триал или оплаченный период)."""
+    try:
+        until = db.get_variable(user_id, "sub_until") or ""
+        if not until:
+            return False
+        d_until = datetime.fromisoformat(until).date()
+        return d_until >= datetime.utcnow().date()
+    except Exception:
+        return False
+
+
+def _current_plan_code(user_id: int) -> str:
+    """Текущий план пользователя (для апгрейда)."""
+    code = db.get_variable(user_id, "sub_plan_code") or ""
+    return code if code in TARIFFS else "1m"
+
+
+def _upgrade_options(user_id: int) -> list[tuple[str, str]]:
+    """
+    Вернёт пары (code, label) только для планов, у которых months > current.
+    """
+    cur = _current_plan_code(user_id)
+    cur_m = TARIFFS[cur]["months"]
+    opts: list[tuple[str, str]] = []
+    for code, pl in TARIFFS.items():
+        if pl["months"] > cur_m:
+            opts.append((code, pl["label"]))
+    opts.sort(key=lambda x: TARIFFS[x[0]]["months"])
+    return opts
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # PUBLIC HANDLERS: Показ тарифов → Выбор тарифа → Ссылка на оплату
 # ──────────────────────────────────────────────────────────────────────────────
@@ -168,7 +218,6 @@ async def choose_rate(cb: CallbackQuery) -> None:
     if not plan:
         await _edit_safe(cb, "Такого тарифа нет. Выберите из списка.", kb_rates())
         return
-
 
     amount = plan["amount"]
     months = plan["months"]
@@ -228,6 +277,7 @@ async def choose_rate(cb: CallbackQuery) -> None:
                 await _edit_safe(cb, "Не удалось создать платёж. Попробуйте позже.", kb_rates())
                 return
     else:
+        # сейчас все планы рекуррентные; этот блок не должен выполниться
         try:
             pay_url = youmoney.create_pay_ex(
                 user_id=user_id,
@@ -251,8 +301,13 @@ async def choose_rate(cb: CallbackQuery) -> None:
     # Читаем состояние согласия (только влияет на показ URL)
     consent_raw = db.get_variable(user_id, "tos:accepted_at")
     consent = bool(consent_raw)
+    show_manage = _is_subscription_active(user_id)
 
-    msg_id = await _edit_safe(cb, text, kb_pay_with_consent(consent=consent, pay_url=pay_url if consent else None))
+    msg_id = await _edit_safe(
+        cb,
+        text,
+        kb_pay_with_consent(consent=consent, pay_url=pay_url if consent else None, show_manage=show_manage)
+    )
 
     # Сохраняем id сообщения с кнопкой, чтобы удалить после успешной оплаты
     try:
@@ -283,7 +338,11 @@ async def toggle_tos(cb: CallbackQuery) -> None:
 
     try:
         await cb.message.edit_reply_markup(
-            reply_markup=kb_pay_with_consent(consent=consent, pay_url=pay_url if consent else None)
+            reply_markup=kb_pay_with_consent(
+                consent=consent,
+                pay_url=pay_url if consent else None,
+                show_manage=_is_subscription_active(user_id)
+            )
         )
     except Exception:
         pass
@@ -304,6 +363,25 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
     Возвращает (http_status, message_for_log).
     """
     try:
+        # локальные хелперы управления меню подписки
+        async def _notify_success_and_menu(_user_id: int, _code: str, _sub_until: str) -> None:
+            try:
+                await bot.send_message(
+                    chat_id=_user_id,
+                    text=(
+                        f"✅ Оплата прошла успешно!\n\n"
+                        f"Тариф: *{TARIFFS.get(_code, {}).get('label', _code)}*\n"
+                        f"Подписка активна до: *{_sub_until}*"
+                    )
+                )
+                try:
+                    from bot.handlers.handler_manager import send_menu_with_logo as _send_menu_with_logo
+                    await _send_menu_with_logo(bot, _user_id)
+                except Exception as e:
+                    logging.warning("Failed to send main menu after payment for user %s: %s", _user_id, e)
+            except Exception as e:
+                logging.warning("Failed to notify user %s after payment: %s", _user_id, e)
+
         event = payload.get("event")
         obj = payload.get("object") or {}
         payment_id = obj.get("id")
@@ -337,7 +415,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                     logging.warning("Failed to send fail payment notice to %s: %s", user_id_fail, e)
             return 200, f"fail event={event} status={status}"
 
-        #Интересуют только успешные кейсы (или ожидание подтверждения/capture)
+        # Интересуют только успешные кейсы (или ожидание подтверждения/capture)
         if event not in ("payment.succeeded", "payment.waiting_for_capture"):
             return 200, f"skip event={event}"
 
@@ -410,14 +488,16 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                 db.set_variable(user_id, "have_sub", "1")
                 db.set_variable(user_id, "sub_paid_at", paid_at)
                 db.set_variable(user_id, "sub_until", trial_until_iso[:10])
+                db.set_variable(user_id, "sub_plan_code", code)
 
                 sub_until = trial_until_iso[:10]
             elif phase == "renewal":
-                # Успешное автосписание после триала
+                # Успешное автосписание после триала (или последующих периодов)
                 sub_until = _compute_sub_until(interval_m)
                 db.set_variable(user_id, "have_sub", "1")
                 db.set_variable(user_id, "sub_paid_at", paid_at)
                 db.set_variable(user_id, "sub_until", sub_until)
+                db.set_variable(user_id, "sub_plan_code", code)
                 # перенос next_charge_at только после успеха
                 try:
                     from dateutil.relativedelta import relativedelta
@@ -444,12 +524,14 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                 db.set_variable(user_id, "sub_paid_at", paid_at)
                 db.set_variable(user_id, "sub_until", trial_until_iso[:10])
                 sub_until = trial_until_iso[:10]
+                db.set_variable(user_id, "sub_plan_code", code)
             else:
-                # Обычный разовый платёж
+                # Обычный разовый платёж (не должен встречаться в текущей схеме)
                 db.set_variable(user_id, "have_sub", "1")
                 sub_until = _compute_sub_until(months)
                 db.set_variable(user_id, "sub_paid_at", paid_at)
                 db.set_variable(user_id, "sub_until", sub_until)
+                db.set_variable(user_id, "sub_plan_code", code)
 
         # Идемпотентность
         try:
@@ -472,29 +554,86 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             logging.exception("Failed to delete last pay message for user %s", user_id)
 
         # Уведомление пользователю
-        try:
-            await bot.send_message(
-                chat_id=user_id,
-                text=(
-                    f"✅ Оплата прошла успешно!\n\n"
-                    f"Тариф: *{TARIFFS.get(code, {}).get('label', code)}*\n"
-                    f"Подписка активна до: *{sub_until}*"
-                )
-            )
-            # ленивый импорт, чтобы избежать циклических зависимостей
-            try:
-                from bot.handlers.handler_manager import send_menu_with_logo as _send_menu_with_logo
-                await _send_menu_with_logo(bot, user_id)
-            except Exception as e:
-                logging.warning("Failed to send main menu after payment for user %s: %s", user_id, e)
-        except Exception as e:
-            logging.warning("Failed to notify user %s after payment: %s", user_id, e)
+        await _notify_success_and_menu(user_id, code, sub_until)
 
         return 200, "ok"
 
     except Exception as e:
         logging.exception("Webhook processing error: %s", e)
         return 500, f"error: {e}"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Управление подпиской: меню и апгрейд
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def open_manage(cb: CallbackQuery) -> None:
+    user_id = cb.from_user.id
+    if not _is_subscription_active(user_id):
+        await _edit_safe(cb, "Подписка не активна. Выберите тариф для оформления:", kb_rates())
+        return
+    await _edit_safe(
+        cb,
+        "Управление подпиской:\nВы можете повысить тариф. Изменения вступят в силу со следующего списания.",
+        kb_manage_menu(user_id)
+    )
+
+
+async def upgrade_plan(cb: CallbackQuery) -> None:
+    user_id = cb.from_user.id
+    try:
+        _, _, code = cb.data.split(":", 2)  # sub:upgrade:<code>
+    except Exception:
+        await _edit_safe(cb, "Не удалось определить новый тариф.", kb_manage_menu(user_id))
+        return
+
+    if code not in TARIFFS:
+        await _edit_safe(cb, "Такого тарифа нет.", kb_manage_menu(user_id))
+        return
+
+    # Если рекурренты недоступны для магазина — предлагаем переоформить вручную
+    if db.get_variable(user_id, "yk:recurring_disabled"):
+        await _edit_safe(
+            cb,
+            "Автопродления недоступны. Пожалуйста, переоформите подписку из списка тарифов.",
+            kb_rates()
+        )
+        return
+
+    new_plan = TARIFFS[code]
+    try:
+        # Предпочтительно обновить существующую подписку без изменения next_charge_at
+        db.subscription_update_plan(
+            user_id=user_id,
+            plan_code=code,
+            interval_months=new_plan["months"],
+            amount_value=new_plan["amount"],
+        )
+    except Exception:
+        try:
+            sub = getattr(db, "subscription_get_for_user", lambda **_: None)(user_id=user_id)  # может не существовать
+            next_charge_at = (sub or {}).get("next_charge_at", datetime.utcnow() + timedelta(days=3))
+            db.subscription_upsert(
+                user_id=user_id,
+                plan_code=code,
+                interval_months=new_plan["months"],
+                amount_value=new_plan["amount"],
+                amount_currency="RUB",
+                payment_method_id=db.get_variable(user_id, "yk:payment_method_id"),
+                next_charge_at=next_charge_at,
+                status="active",
+            )
+        except Exception as e:
+            logging.exception("Failed to upgrade plan for user %s: %s", user_id, e)
+            await _edit_safe(cb, "Не удалось обновить подписку. Попробуйте позже.", kb_manage_menu(user_id))
+            return
+
+    db.set_variable(user_id, "sub_plan_code", code)
+    await _edit_safe(
+        cb,
+        f"Готово! Новый план: *{new_plan['label']}*.\nИзменения вступят в силу со следующего автосписания.",
+        kb_manage_menu(user_id)
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -509,3 +648,6 @@ def router(rt: Router) -> None:
     # Чекбокс согласия и блокирующая «Оплатить» без согласия
     rt.callback_query.register(toggle_tos, F.data == "tos:toggle")
     rt.callback_query.register(need_tos,   F.data == "tos:need")
+    # Меню управления подпиской и апгрейд
+    rt.callback_query.register(open_manage, F.data == "sub:manage")
+    rt.callback_query.register(upgrade_plan, F.data.startswith("sub:upgrade:"))
