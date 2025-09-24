@@ -21,7 +21,7 @@ from bot.utils import youmoney
 # ──────────────────────────────────────────────────────────────────────────────
 
 TARIFFS: Dict[str, Dict] = {
-    # Рекуррентной делаем 1m: пробный платёж 1 ₽ на 72 часа, далее автосписание
+    # Рекуррентной делаем 1m: пробный платёж 1 ₽ на 72 часа, далее авто списание
     "1m":  {"label": "1 месяц",   "months": 1,  "amount": "2490.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
     "3m":  {"label": "3 месяца",  "months": 3,  "amount": "6590.00"},
     "6m":  {"label": "6 месяцев", "months": 6,  "amount": "11390.00"},
@@ -269,7 +269,7 @@ async def toggle_tos(cb: CallbackQuery) -> None:
     """
     Переключатель чекбокса.
     Никаких пересозданий платежа: читаем сохранённый URL и просто
-    показываем/прячем кнопку с ссылкой.
+    показываем/прячем кнопку со ссылкой.
     """
     user_id = cb.from_user.id
     cur = db.get_variable(user_id, "tos:accepted_at")
@@ -337,7 +337,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                     logging.warning("Failed to send fail payment notice to %s: %s", user_id_fail, e)
             return 200, f"fail event={event} status={status}"
 
-        # Интересуют только успешные кейсы (или ожидание подтверждения/capture)
+        #Интересуют только успешные кейсы (или ожидание подтверждения/capture)
         if event not in ("payment.succeeded", "payment.waiting_for_capture"):
             return 200, f"skip event={event}"
 

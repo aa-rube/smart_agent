@@ -30,14 +30,14 @@ class Base(DeclarativeBase):
 
 
 def _make_engine():
-    engine = create_engine(
+    bluhbluhbluh = create_engine(
         DB_URL,  # Используем DB_URL вместо DB_PATH
         future=True,
         echo=False,
         pool_pre_ping=True,
     )
 
-    return engine
+    return bluhbluhbluh
 
 
 engine = _make_engine()
@@ -201,18 +201,18 @@ class Subscription(Base):
 # =========================
 #       Repository
 # =========================
+def init_schema() -> None:
+    Base.metadata.create_all(bind=engine)
+
+
 class UserRepository:
     """
-    Аналог spring-repository: короткоживущие сессии, чистые методы,
     никакого сырого SQL.
     """
 
     def __init__(self, session_factory: sessionmaker[Session]):
         self._session_factory = session_factory
 
-    # --- schema ---
-    def init_schema(self) -> None:
-        Base.metadata.create_all(bind=engine)
 
     # --- utils ---
     def _session(self) -> Session:
@@ -364,6 +364,30 @@ class UserRepository:
                 rec.last_charge_at = datetime.utcnow()
                 rec.next_charge_at = next_charge_at
                 rec.updated_at = datetime.utcnow()
+
+    def subscription_mark_charged_for_user(self, user_id: int, *, next_charge_at: datetime) -> Optional[int]:
+        """
+        Помечает как списанную актуальную (active) подписку пользователя.
+        Выбираем «самую релевантную» запись:
+          1) статус active
+          2) упорядочиваем по next_charge_at DESC (последняя ближайшая дата),
+             затем по updated_at DESC — берём первую.
+        Возвращает id подписки, если удалось обновить, иначе None.
+        """
+        with self._session() as s, s.begin():
+            rec = (
+                s.query(Subscription)
+                .filter(Subscription.user_id == user_id, Subscription.status == "active")
+                .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
+                .first()
+            )
+            if not rec:
+                return None
+            rec.last_charge_at = datetime.utcnow()
+            rec.next_charge_at = next_charge_at
+            rec.updated_at = datetime.utcnow()
+            s.flush()
+            return rec.id
 
     def subscriptions_due(self, *, now: datetime, limit: int = 200) -> List[Dict[str, Any]]:
         with self._session() as s:
@@ -558,33 +582,25 @@ class UserRepository:
 
 # Глобальный «репозиторий» для обратной совместимости
 _repo = UserRepository(SessionLocal)
-_repo.init_schema()
+init_schema()
 
 
 # =========================
 #   Совместимые функции
 # =========================
 def init_db() -> None:
-    """Оставлено для совместимости."""
-    _repo.init_schema()
+    init_schema()
 
 
 def set_variable(user_id: int, variable_name: str, variable_value: Any) -> Any:
-    """Оставлено для совместимости."""
     return _repo.set_var(user_id, variable_name, variable_value)
 
 
 def get_variable(user_id: int, variable_name: str) -> Optional[str]:
-    """Оставлено для совместимости."""
     return _repo.get_var(user_id, variable_name)
 
 
 def check_and_add_user(user_id: int) -> bool:
-    """
-    Совместимость с прежним контрактом:
-    True  — пользователь уже был,
-    False — только что добавлен (проставлены дефолтные переменные).
-    """
     return _repo.ensure_user(user_id)
 
 
@@ -653,6 +669,10 @@ def subscription_mark_charged(sub_id: int, *, next_charge_at: datetime) -> None:
 
 def subscription_cancel(user_id: int, plan_code: str) -> None:
     _repo.subscription_cancel(user_id, plan_code)
+
+def subscription_mark_charged_for_user(user_id: int, *, next_charge_at: datetime) -> Optional[int]:
+    """Совместимая обёртка для обновления подписки по user_id."""
+    return _repo.subscription_mark_charged_for_user(user_id, next_charge_at=next_charge_at)
 
 # -------- Mailing recipients (compat wrapper) --------
 def list_active_subscriber_ids(include_grace_days: int = 0) -> List[int]:
