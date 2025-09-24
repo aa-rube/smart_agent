@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Callable, Literal
+from html import escape as _esc
 
 import re
 from aiogram import Router, F, Bot
@@ -146,6 +147,9 @@ BTN_SKIP = "⏭ Пропустить"
 BTN_RESET = "🗑 Сброс"
 BTN_DONE = "✅ Готово"
 BTN_ENTER_OWN = "✏️ Ввести своё"
+
+def _h(text: str) -> str:
+    return _esc(text or "")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # FSM
@@ -341,19 +345,19 @@ def visible_steps(flow: List[Step], data: Dict[str, Any]) -> List[Step]:
     return out
 
 async def show_root(message: Message) -> None:
-    text = f"{INTRO}\n\n{ASK_OBJECT_TYPE}"
+    text = f"{_h(INTRO)}\n\n<b>{_h(ASK_OBJECT_TYPE)}</b>"
     kb = make_kb_single(OBJECT_TYPES, "root")
     await safe_edit_or_send(message, text, kb)
 
 async def safe_edit_or_send(message: Message, text: str, kb: Optional[InlineKeyboardMarkup] = None) -> None:
     try:
-        await message.edit_text(text, reply_markup=kb)
+        await message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except TelegramBadRequest:
-        await message.answer(text, reply_markup=kb)
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 def build_prompt(step: Step, data: Dict[str, Any]) -> Tuple[str, InlineKeyboardMarkup]:
     summary = split_summary({k: v for k, v in data.items() if not k.startswith("__")})
-    header = f"{step.question}\n\n_{summary}_"
+    header = f"<b>{_h(step.question)}</b>\n\n<i>{_h(summary)}</i>"
     if step.stype == "choice":
         return header, make_kb_single(step.options or [], step.key)
     if step.stype == "multichoice":
@@ -361,9 +365,12 @@ def build_prompt(step: Step, data: Dict[str, Any]) -> Tuple[str, InlineKeyboardM
         return header, make_kb_multiselect(step.options or [], step.key, selected)
     if step.stype == "number":
         kb = make_kb_numeric_presets(step.presets or [], step.key, allow_own=True)
-        return f"{header}\n\nФормат: {step.number_kind or 'число'}" + (f" ({step.hint_units})" if step.hint_units else ""), kb
+        details = f"Формат: {step.number_kind or 'число'}"
+        if step.hint_units:
+            details += f" ({step.hint_units})"
+        return f"{header}\n\n{_h(details)}", kb
     # text
-    return header, make_kb_single([BTN_ENTER_OWN], step.key)  # редкий кейс
+    return header, make_kb_single([BTN_ENTER_OWN], step.key)
 # ──────────────────────────────────────────────────────────────────────────────
 # РОУТЕР И ХЕНДЛЕРЫ
 # ──────────────────────────────────────────────────────────────────────────────
@@ -581,13 +588,18 @@ async def finalize(msg: Message, state: FSMContext):
     except Exception:
         pass
 
+    def _render_json_for_html(obj: Dict[str, Any]) -> str:
+        import json
+        return _h(json.dumps(obj, ensure_ascii=False, indent=2))
+
+    json_block = _render_json_for_html(payload)
     text = (
         "Готово! Собрали предварительную информацию по объекту.\n\n"
-        f"{summary}\n\n"
-        "*JSON payload:*\n"
-        f"`{payload}`"
+        f"{_h(summary)}\n\n"
+        "<b>JSON payload:</b>\n"
+        f"<pre><code>{json_block}</code></pre>"
     )
-    await msg.answer(text, reply_markup=kb, parse_mode="Markdown")
+    await msg.answer(text, reply_markup=kb, parse_mode="HTML")
     await state.set_state(PropertyWizard.finish)
 
 # ──────────────────────────────────────────────────────────────────────────────

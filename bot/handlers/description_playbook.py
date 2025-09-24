@@ -7,6 +7,7 @@ from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.exceptions import TelegramBadRequest
+from html import escape as _esc
 
 # ====== Доступ / подписка ======
 import bot.utils.database as db
@@ -86,11 +87,11 @@ def _kb_intro() -> InlineKeyboardMarkup:
     )
 
 async def _edit_or_send_intro(cb: CallbackQuery) -> None:
-    text = f"{INTRO}\n\n{_format_access_text(cb.message.chat.id)}"
+    text = f"{_esc(INTRO)}\n\n{_esc(_format_access_text(cb.message.chat.id))}"
     try:
-        await cb.message.edit_text(text, reply_markup=_kb_intro(), parse_mode="Markdown")
+        await cb.message.edit_text(text, reply_markup=_kb_intro(), parse_mode="HTML")
     except TelegramBadRequest:
-        await cb.message.answer(text, reply_markup=_kb_intro(), parse_mode="Markdown")
+        await cb.message.answer(text, reply_markup=_kb_intro(), parse_mode="HTML")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -105,9 +106,9 @@ async def start_description_entry(cb: CallbackQuery, state: FSMContext):
     if not _has_access(user_id):
         text = SUB_FREE if not _is_sub_active(user_id) else SUB_PAY
         try:
-            await cb.message.edit_text(text, reply_markup=SUBSCRIBE_KB, parse_mode="Markdown")
+            await cb.message.edit_text(_esc(text), reply_markup=SUBSCRIBE_KB, parse_mode="HTML")
         except TelegramBadRequest:
-            await cb.message.answer(text, reply_markup=SUBSCRIBE_KB, parse_mode="Markdown")
+            await cb.message.answer(_esc(text), reply_markup=SUBSCRIBE_KB, parse_mode="HTML")
         await cb.answer()
         return
 
