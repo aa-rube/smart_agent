@@ -777,7 +777,6 @@
 # Всегда пиши код без «поддержки старых версий». Если они есть в коде - удаляй.
 
 from __future__ import annotations
-from typing import Optional
 
 from aiogram import Router, F
 from aiogram.types import (
@@ -794,7 +793,7 @@ from bot.utils.database import is_trial_active, trial_remaining_hours
 # ====== Визард (мастер сбора параметров) ======
 # Ожидается, что в этом модуле подключены все хендлеры визарда,
 # включая точку входа на callback_data="nav.description".
-from smart_agent.bot.handlers.property_wizard import router as wizard_router
+from bot.handlers.property_wizard import router as wizard_router
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Доступ / подписка
