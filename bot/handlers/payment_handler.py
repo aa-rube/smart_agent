@@ -29,7 +29,6 @@ TARIFFS: Dict[str, Dict] = {
     "12m": {"label": "12 месяцев","months": 12, "amount": "19900.00","recurring": True, "trial_amount": "1.00", "trial_hours": 72},
 }
 
-
 RATES_TEXT = (
 """Тут вы можете оформить подписку на доступ:
 
@@ -39,13 +38,20 @@ RATES_TEXT = (
 12 месяцев / ̶2̶9̶8̶8̶0̶  19.990₽ 🔥🔥🔥"""
 )
 
+PRE_PAY_TEXT = (
+    "📦 Что даёт подписка:\n"
+    " — Доступ ко всем инструментам на выбранный срок\n"
+    " — Доступ ко всем инструментам\n"
+    "Нажимая «Я ознакомлен и согласен», вы принимаете "
+    "<a href=\"https://setrealtora.ru/agreement\">условия</a>."
+)
+
 PAY_TEXT = (
     "📦 Что даёт подписка:\n"
     " — Доступ ко всем инструментам на выбранный срок\n"
     " — Доступ ко всем инструментам\n"
     "Нажмите «Оплатить» для оформления."
 )
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # КЛАВИАТУРЫ
@@ -143,15 +149,15 @@ async def _edit_safe(cb: CallbackQuery, text: str, kb: InlineKeyboardMarkup | No
     """
     msg_id: Optional[int] = None
     try:
-        m = await cb.message.edit_text(text, reply_markup=kb)
+        m = await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
         msg_id = m.message_id if isinstance(m, Message) else cb.message.message_id
     except Exception:
         try:
-            m = await cb.message.edit_caption(caption=text, reply_markup=kb)
+            m = await cb.message.edit_caption(caption=text, reply_markup=kb, parse_mode="HTML")
             if isinstance(m, Message):
                 msg_id = m.message_id
         except Exception:
-            m = await cb.message.answer(text, reply_markup=kb)
+            m = await cb.message.answer(text, reply_markup=kb, parse_mode="HTML")
             if isinstance(m, Message):
                 msg_id = m.message_id
     await cb.answer()
@@ -320,7 +326,16 @@ async def choose_rate(cb: CallbackQuery) -> None:
             await _edit_safe(cb, "Не удалось создать платёж. Попробуйте позже.", kb_rates())
             return
 
-    text = f"{description}\n\n{PAY_TEXT}"
+    # Сохраняем заголовок (описание), чтобы уметь подменять текст при переключении чекбокса
+    try:
+        db.set_variable(user_id, "yk:last_pay_header", description)
+    except Exception:
+        logging.exception("Failed to store last pay header for user %s", user_id)
+
+    # Если согласие уже проставлено — показываем текст без ссылки, иначе с кликабельной ссылкой
+    consent_raw = db.get_variable(user_id, "tos:accepted_at")
+    consent = bool(consent_raw)
+    text = f"{description}\n\n{PAY_TEXT if consent else PRE_PAY_TEXT}"
 
     # Сохраняем URL, чтобы не пересоздавать при кликах чекбокса
     try:
@@ -328,9 +343,6 @@ async def choose_rate(cb: CallbackQuery) -> None:
     except Exception:
         logging.exception("Failed to store last pay url for user %s", user_id)
 
-    # Читаем состояние согласия (только влияет на показ URL)
-    consent_raw = db.get_variable(user_id, "tos:accepted_at")
-    consent = bool(consent_raw)
     show_manage = _is_subscription_active(user_id)
 
     msg_id = await _edit_safe(
@@ -365,18 +377,19 @@ async def toggle_tos(cb: CallbackQuery) -> None:
 
     consent = not bool(cur)
     pay_url = db.get_variable(user_id, "yk:last_pay_url") or None
+    header = db.get_variable(user_id, "yk:last_pay_header") or "Оплата подписки"
+    # Меняем и текст, и клавиатуру: до согласия — текст с кликабельной ссылкой, после — обычный текст без ссылки
+    new_text = f"{header}\n\n{PAY_TEXT if consent else PRE_PAY_TEXT}"
 
-    try:
-        await cb.message.edit_reply_markup(
-            reply_markup=kb_pay_with_consent(
-                consent=consent,
-                pay_url=pay_url if consent else None,
-                show_manage=_is_subscription_active(user_id)
-            )
+    await _edit_safe(
+        cb,
+        new_text,
+        kb_pay_with_consent(
+            consent=consent,
+            pay_url=pay_url if consent else None,
+            show_manage=_is_subscription_active(user_id)
         )
-    except Exception:
-        pass
-    await cb.answer()
+    )
 
 
 async def need_tos(cb: CallbackQuery) -> None:
