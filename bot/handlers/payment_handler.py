@@ -1,7 +1,7 @@
 # # smart_agent/bot/handlers/payment_handler.py
 # #Всегда пиши код без «поддержки старых версий». Если они есть - удаляй
 from __future__ import annotations
-
+ 
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Tuple
@@ -14,6 +14,7 @@ from aiogram.types import (
 from bot.config import get_file_path
 import bot.utils.database as db
 from bot.utils import youmoney
+from aiogram.filters import Command
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -60,6 +61,35 @@ def kb_rates() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton(text="12 месяцев", callback_data="sub:choose:12m")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def kb_settings_main(user_id: int) -> InlineKeyboardMarkup:
+    """
+    Меню настроек, доступно только по команде /settings.
+    Здесь доступна кнопка удаления подписки и карты.
+    """
+    rows = []
+    # Показать краткий статус
+    cur_code = db.get_variable(user_id, "sub_plan_code") or "—"
+    sub_until = db.get_variable(user_id, "sub_until") or "—"
+    rows.append([InlineKeyboardButton(text=f"Статус: до {sub_until} (план: {cur_code})", callback_data="noop")])
+    # Управление (без удаления)
+    if _is_subscription_active(user_id):
+        rows.append([InlineKeyboardButton(text="⚙️ Управлять подпиской", callback_data="sub:manage")])
+    # Кнопка удалить и отказаться (только тут)
+    rows.append([InlineKeyboardButton(text="🗑️ Удалить и отказаться", callback_data="sub:cancel_all")])
+    rows.append([InlineKeyboardButton(text="⬅️ К тарифам", callback_data="show_rates")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def kb_cancel_confirm() -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(text="✅ Да, отменить и удалить", callback_data="sub:cancel_yes"),
+        ],
+        [
+            InlineKeyboardButton(text="⬅️ Назад", callback_data="sub:cancel_no"),
+        ],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -564,6 +594,94 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Настройки (/settings) и безопасная отмена подписки + удаление карты
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def open_settings_cmd(msg: Message) -> None:
+    """
+    Команда /settings открывает меню настроек.
+    Только здесь доступна кнопка «Удалить и отказаться».
+    """
+    user_id = msg.from_user.id
+    text = (
+        "⚙️ *Настройки подписки*\n"
+        "Здесь вы можете управлять подпиской, а также полностью удалить подписку и привязанную карту.\n\n"
+        "• *Управлять подпиской* — повысить тариф, посмотреть статус.\n"
+        "• *Удалить и отказаться* — немедленно отключит доступ и удалит сохранённую карту."
+    )
+    await msg.answer(text, reply_markup=kb_settings_main(user_id), parse_mode="Markdown")
+
+async def cancel_request(cb: CallbackQuery) -> None:
+    """
+    Шаг подтверждения перед окончательной отменой.
+    """
+    text = (
+        "Вы уверены, что хотите *немедленно отменить подписку* и *удалить карту*?\n\n"
+        "• Доступ будет закрыт сразу.\n"
+        "• Автосписания прекращаются.\n"
+        "• Привязанный способ оплаты будет удалён."
+    )
+    await _edit_safe(cb, text, kb_cancel_confirm())
+
+async def cancel_no(cb: CallbackQuery) -> None:
+    """Возврат в настройки без отмены."""
+    user_id = cb.from_user.id
+    await _edit_safe(cb, "Действие отменено. Вы в настройках подписки.", kb_settings_main(user_id))
+
+async def cancel_yes(cb: CallbackQuery) -> None:
+    """
+    Полная отмена: закрыть доступ, отменить подписку, удалить способ оплаты.
+    """
+    user_id = cb.from_user.id
+    # 1) Пытаемся отменить подписку в БД
+    try:
+        # если есть специализированная функция
+        if hasattr(db, "subscription_cancel_for_user"):
+            db.subscription_cancel_for_user(user_id=user_id)
+        else:
+            # мягкая деактивация: ставим статус inactive/next_charge_at None (если есть апсерт-функция)
+            if hasattr(db, "subscription_upsert"):
+                db.subscription_upsert(
+                    user_id=user_id,
+                    plan_code="",
+                    interval_months=0,
+                    amount_value="0.00",
+                    amount_currency="RUB",
+                    payment_method_id="",
+                    next_charge_at=None,
+                    status="inactive",
+                )
+    except Exception:
+        logging.exception("Failed to cancel subscription for user %s", user_id)
+
+    # 2) Удаляем карту у платёжного провайдера (если поддерживается)
+    try:
+        pm_id = db.get_variable(user_id, "yk:payment_method_id")
+        if pm_id:
+            if hasattr(youmoney, "detach_payment_method"):
+                youmoney.detach_payment_method(pm_id)
+    except Exception:
+        logging.exception("Failed to detach payment method for user %s", user_id)
+
+    # 3) Чистим локальные ключи доступа
+    try:
+        db.set_variable(user_id, "have_sub", "")
+        db.set_variable(user_id, "sub_paid_at", "")
+        db.set_variable(user_id, "sub_until", (datetime.utcnow() - timedelta(days=1)).date().isoformat())
+        db.set_variable(user_id, "sub_plan_code", "")
+        db.set_variable(user_id, "yk:payment_method_id", "")
+    except Exception:
+        logging.exception("Failed to clear sub state for user %s", user_id)
+
+    # 4) Сообщение пользователю
+    await _edit_safe(
+        cb,
+        "✅ Подписка отменена, карта удалена.\nДоступ закрыт. Вы всегда можете оформить новый тариф из раздела тарифов.",
+        kb_rates()
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Управление подпиской: меню и апгрейд
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -641,6 +759,8 @@ async def upgrade_plan(cb: CallbackQuery) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def router(rt: Router) -> None:
+    # Команда настроек (только здесь доступно удаление подписки и карты)
+    rt.message.register(open_settings_cmd, Command("settings"))
     # Показ тарифов
     rt.callback_query.register(show_rates, F.data == "show_rates")
     # Выбор тарифа
@@ -651,3 +771,7 @@ def router(rt: Router) -> None:
     # Меню управления подпиской и апгрейд
     rt.callback_query.register(open_manage, F.data == "sub:manage")
     rt.callback_query.register(upgrade_plan, F.data.startswith("sub:upgrade:"))
+    # Отмена подписки и удаление карты (доступно только из /settings)
+    rt.callback_query.register(cancel_request, F.data == "sub:cancel_all")
+    rt.callback_query.register(cancel_yes,     F.data == "sub:cancel_yes")
+    rt.callback_query.register(cancel_no,      F.data == "sub:cancel_no")
