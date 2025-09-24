@@ -1,8 +1,6 @@
 # C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\summary_playbook.py
 #Всегда пиши код без «поддержки старых версий». Если они есть в коде - удаляй.
 
-from __future__ import annotations
-
 import os
 from typing import List, Optional, Dict
 from datetime import datetime, timezone
@@ -29,6 +27,9 @@ from bot.utils.database import (
 )
 import bot.utils.database as db
 from bot.utils.database import is_trial_active, trial_remaining_hours
+
+# Максимальная длительность аудиозаписи (в секундах): 10 минут
+MAX_AUDIO_SECONDS = 10 * 60
 
 # ============= Доступ / подписка (как в других скриптах) =============
 
@@ -97,7 +98,7 @@ def home_text(user_id: int) -> str:
     return HOME_TEXT_TPL.format(access_text=_format_access_text(user_id))
 
 ASK_TEXT = "✍️ Пришлите сюда текст переписки (можно несколькими сообщениями). Когда закончите — нажмите «Сгенерировать саммари»."
-ASK_AUDIO = "🎙️ Пришлите аудио (voice, audio или документ с аудио). Затем нажмите «Сгенерировать саммари»."
+ASK_AUDIO = "🎙️ Пришлите аудио (voice или audio) длительностью до 10 минут. Затем нажмите «Сгенерировать саммари». Аудио в виде документа не принимается."
 GEN_HINT = "Готово? Нажмите «Сгенерировать саммари» ниже."
 
 GEN_RUNNING = "⏳ Обрабатываю запись… Идёт транскрибация и анализ."
@@ -382,16 +383,32 @@ async def handle_audio(message: Message, state: FSMContext, bot: Bot):
     user_id = message.from_user.id
 
     if message.voice:
-        local = await _save_tg_file_locally(bot, message.voice.file_id, f"audio/tmp/sum_{user_id}_{message.message_id}.ogg")
-        tg_meta = {"kind": "voice", "file_id": message.voice.file_id, "duration": message.voice.duration}
+        duration = int(message.voice.duration or 0)
+        if duration > MAX_AUDIO_SECONDS:
+            await message.answer("Запись длиннее 10 минут. Пожалуйста, отправьте более короткое voice-сообщение (до 10 минут).")
+            return
+        local = await _save_tg_file_locally(
+            bot, message.voice.file_id, f"audio/tmp/sum_{user_id}_{message.message_id}.ogg"
+        )
+        tg_meta = {"kind": "voice", "file_id": message.voice.file_id, "duration": duration}
     elif message.audio:
+        duration = int(message.audio.duration or 0)
+        if duration > MAX_AUDIO_SECONDS:
+            await message.answer("Запись длиннее 10 минут. Пожалуйста, отправьте файл короче (до 10 минут).")
+            return
         # расширение по mime
         ext = ".mp3" if (message.audio.mime_type or "").endswith("mpeg") else ".ogg"
-        local = await _save_tg_file_locally(bot, message.audio.file_id, f"audio/tmp/sum_{user_id}_{message.message_id}{ext}")
-        tg_meta = {"kind": "audio", "file_id": message.audio.file_id, "duration": message.audio.duration}
+        local = await _save_tg_file_locally(
+            bot, message.audio.file_id, f"audio/tmp/sum_{user_id}_{message.message_id}{ext}"
+        )
+        tg_meta = {"kind": "audio", "file_id": message.audio.file_id, "duration": duration}
     elif message.document and (message.document.mime_type or "").startswith("audio/"):
-        local = await _save_tg_file_locally(bot, message.document.file_id, f"audio/tmp/sum_{user_id}_{message.message_id}.ogg")
-        tg_meta = {"kind": "doc-audio", "file_id": message.document.file_id}
+        # У документов с аудио нет надёжного duration — отказываем, чтобы не принять > 10 минут.
+        await message.answer(
+            "Аудио в виде документа сейчас не принимается, так как нельзя проверить длительность. "
+            "Пожалуйста, отправьте voice или audio до 10 минут."
+        )
+        return
     else:
         await message.answer("Это не аудио. Пришлите voice, audio или документ с аудио.")
         return
