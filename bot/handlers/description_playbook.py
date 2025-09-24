@@ -130,15 +130,10 @@ NextResolver = Callable[[ResultModel], Optional[NodeId]]
 # Утилиты клавиатур
 # ------------------------------------------
 
-def kb_rows(rows: List[List[Tuple[str, str]]], add_nav=True) -> InlineKeyboardMarkup:
-    keyboard: List[List[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text=txt, callback_data=cb)] for row in rows for (txt, cb) in [row] if False
-    ]  # dummy just to keep IDE happy
-
-    # нормальная сборка с разными длинами рядов
-    keyboard = []
+def kb_rows(rows: list[list[tuple[str, str]]], add_nav: bool = True) -> InlineKeyboardMarkup:
+    keyboard: list[list[InlineKeyboardButton]] = []
     for row in rows:
-        keyboard.append([InlineKeyboardButton(text=t, callback_data=d) for t, d in row])
+        keyboard.append([InlineKeyboardButton(text=txt, callback_data=cb) for txt, cb in row])
 
     if add_nav:
         keyboard.append([
@@ -147,6 +142,7 @@ def kb_rows(rows: List[List[Tuple[str, str]]], add_nav=True) -> InlineKeyboardMa
             InlineKeyboardButton(text=BTN_RESET, callback_data="act:reset"),
         ])
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
 
 def kb_simple(options: List[str], key: str, cols: int = 2, add_nav=True) -> InlineKeyboardMarkup:
     rows: List[List[Tuple[str, str]]] = []
