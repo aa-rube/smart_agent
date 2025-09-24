@@ -81,7 +81,7 @@ async def main():
             
             # Прерываемый sleep
             try:
-                await asyncio.wait_for(shutdown_event.wait(), timeout=30)
+                await asyncio.wait_for(shutdown_event.wait(), timeout=120)
                 break
             except asyncio.TimeoutError:
                 continue
@@ -148,7 +148,7 @@ async def main():
         # Запускаем фоновый биллинг-процесс и поллинг бота параллельно
         tasks = await asyncio.gather(
             billing_loop(),
-            mailing_loop(),          # ✅ добавили цикл рассылок
+            mailing_loop(),
             dp.start_polling(bot),
             return_exceptions=True
         )
