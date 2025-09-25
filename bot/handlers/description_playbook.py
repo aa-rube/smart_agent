@@ -308,6 +308,73 @@ COUNTRY_MULTI_ENUMS: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
+# ==========================
+# Коммерческая: тексты / опции
+# ==========================
+COMM_ASK_GROUP                = "1️⃣ Выберите вид объекта коммерческой недвижимости:"
+COMM_ASK_TOTAL_AREA           = "Площадь помещения (м²). Пример: 250"
+COMM_ASK_LAND_AREA            = "Площадь участка (если применимо, м²/сотки). Если не нужно — укажите 0."
+COMM_ASK_BUILDING_TYPE        = "Тип здания: выберите вариант"
+COMM_ASK_WHOLE_OBJECT         = "Объект целиком? Выберите вариант"
+COMM_ASK_FINISH               = "Состояние/отделка: выберите вариант"
+COMM_ASK_ENTRANCE             = "Вход: выберите вариант"
+COMM_ASK_PARKING_COMM         = "Парковка: выберите вариант"
+COMM_ASK_LAYOUT               = "Тип планировки: выберите вариант"
+
+# одиночные перечисления для коммерческой недвижимости
+COMM_ENUMS: dict[str, list[tuple[str, str]]] = {
+    "comm_object_type": [
+        ("office", "Офис"),
+        ("psn", "Свободного назначения (ПСН)"),
+        ("retail", "Торговая площадь"),
+        ("warehouse", "Склад"),
+        ("production", "Производство"),
+        ("food", "Общепит"),
+        ("hotel", "Гостиница"),
+    ],
+    "comm_building_type": [
+        ("bc", "Бизнес-центр"),
+        ("mall", "ТЦ"),
+        ("admin", "Админздание"),
+        ("residential", "Жилой дом"),
+        ("other", "Другое"),
+    ],
+    "comm_whole_object": [
+        ("yes", "Да"), ("no", "Нет"),
+    ],
+    "comm_finish": [
+        ("none", "Без отделки"),
+        ("shell", "Черновая"),
+        ("clean", "Чистовая"),
+        ("office", "Офисная"),
+    ],
+    "comm_entrance": [
+        ("street", "С улицы"),
+        ("yard", "Со двора"),
+        ("second", "Отдельный второй вход"),
+    ],
+    "comm_parking": [
+        ("none", "Нет"),
+        ("street", "На улице"),
+        ("covered", "Крытая"),
+        ("underground", "Подземная"),
+        ("guest", "Гостевая"),
+    ],
+    "comm_layout": [
+        ("open", "Open space"),
+        ("cabinets", "Кабинетная"),
+        ("mixed", "Смешанная"),
+    ],
+}
+
+# Клавиатура выбора вида в «Коммерческой»
+def kb_commercial_entry() -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for code, label in COMM_ENUMS["comm_object_type"]:
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"desc_comm_entry_{code}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 # ==========================
 # Клавиатуры
@@ -433,8 +500,8 @@ def _kb_from_map(m: Dict[str, str], prefix: str, columns: int = 1) -> InlineKeyb
 
 def _kb_enum(key: str) -> InlineKeyboardMarkup:
     """Клавиатура для перечислимого поля + «Свой вариант…»."""
-    # поддержка и FLAT, и COUNTRY
-    opts = FLAT_ENUMS.get(key, []) or COUNTRY_ENUMS.get(key, [])
+    # поддержка FLAT / COUNTRY / COMM
+    opts = FLAT_ENUMS.get(key, []) or COUNTRY_ENUMS.get(key, []) or COMM_ENUMS.get(key, [])
     rows: list[list[InlineKeyboardButton]] = []
     for code, label in opts:
         rows.append([InlineKeyboardButton(text=label, callback_data=f"desc_enum_{key}_{code}")])
@@ -600,6 +667,20 @@ async def handle_type(cb: CallbackQuery, state: FSMContext):
         # СКИП «новостройка/ЖК» для дома, идём сразу к расположению
         await _edit_text_or_caption(cb.message, ASK_AREA, kb_area())
         await state.set_state(DescriptionStates.waiting_for_area)
+    elif val in {"commercial", "commerce"}:
+        # Вход в коммерческую недвижимость: сначала вид объекта
+        await state.update_data(
+            __commercial_mode=True,
+            __country_mode=False,
+            __flat_mode=False,
+            __form_keys=["comm_object_type"],
+            __form_step=0,
+            __awaiting_other_key=None,
+            __awaiting_free_comment=False,
+        )
+        await _edit_text_or_caption(cb.message, COMM_ASK_GROUP, kb_commercial_entry())
+        await state.set_state(DescriptionStates.waiting_for_comment)
+        return
     else:
         await _edit_text_or_caption(cb.message, ASK_COMPLEX, kb_complex())
         await state.set_state(DescriptionStates.waiting_for_complex)
@@ -750,6 +831,43 @@ async def _ask_next_flat_step(msg: Message, state: FSMContext):
     # На всякий случай (не должно сработать в квартирном сценарии)
     await _edit_text_or_caption(msg, _form_prompt_for_key(key))
 
+# ==========================
+# Коммерческая: шаги/подсказки
+# ==========================
+def _commercial_prompt_for_key(key: str) -> str:
+    return {
+        "comm_object_type":   COMM_ASK_GROUP,
+        "total_area":         COMM_ASK_TOTAL_AREA,
+        "land_area":          COMM_ASK_LAND_AREA,
+        "comm_building_type": COMM_ASK_BUILDING_TYPE,
+        "comm_whole_object":  COMM_ASK_WHOLE_OBJECT,
+        "comm_finish":        COMM_ASK_FINISH,
+        "comm_entrance":      COMM_ASK_ENTRANCE,
+        "comm_parking":       COMM_ASK_PARKING_COMM,
+        "comm_layout":        COMM_ASK_LAYOUT,
+    }.get(key, "Выберите вариант:")
+
+async def _ask_next_commercial_step(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    keys: list[str] = data.get("__form_keys") or []
+    step: int = int(data.get("__form_step") or 0)
+
+    if step >= len(keys):
+        await state.update_data(__awaiting_free_comment=True)
+        await _edit_text_or_caption(msg, ASK_FREE_COMMENT, kb_skip_comment())
+        return
+
+    key = keys[step]
+    # перечисления
+    if key in {
+        "comm_object_type", "comm_building_type", "comm_whole_object",
+        "comm_finish", "comm_entrance", "comm_parking", "comm_layout"
+    }:
+        await _edit_text_or_caption(msg, _commercial_prompt_for_key(key), _kb_enum(key))
+        return
+    # числовые поля — текстовый ввод
+    await _edit_text_or_caption(msg, _commercial_prompt_for_key(key))
+
 def _country_prompt_for_key(key: str) -> str:
     return {
         "country_object_type":        COUNTRY_ASK_OBJECT_TYPE,
@@ -820,6 +938,7 @@ def _normalize_list(val: str) -> str:
 def _form_prompt_for_key(key: str) -> str:
     return {
         "total_area":       ASK_FORM_TOTAL_AREA,
+        "land_area":        COMM_ASK_LAND_AREA,
         "floors_total":     ASK_FORM_FLOORS_TOTAL,
         "floor":            ASK_FORM_FLOOR,
         "kitchen_area":     ASK_FORM_KITCHEN_AREA,
@@ -831,6 +950,13 @@ def _form_prompt_for_key(key: str) -> str:
         "features":         ASK_FORM_FEATURES,
         "completion_term":  FLAT_ASK_COMPLETION_TERM,
         "ceiling_height_m": FLAT_ASK_CEILING,
+        # commercial
+        "comm_building_type": COMM_ASK_BUILDING_TYPE,
+        "comm_whole_object":  COMM_ASK_WHOLE_OBJECT,
+        "comm_finish":        COMM_ASK_FINISH,
+        "comm_entrance":      COMM_ASK_ENTRANCE,
+        "comm_parking":       COMM_ASK_PARKING_COMM,
+        "comm_layout":        COMM_ASK_LAYOUT,
     }.get(key, "Введите значение:")
 
 def _validate_and_store(key: str, text: str, data: Dict) -> Optional[str]:
@@ -841,6 +967,12 @@ def _validate_and_store(key: str, text: str, data: Dict) -> Optional[str]:
         if v is None or v <= 0:
             return "Введите положительное число в формате м². Пример: 56.4"
         data["total_area"] = v
+        return None
+    if key == "land_area":
+        v = _parse_float(t)
+        if v is None or v < 0:
+            return "Введите число (м²/сотки) или 0, если не применимо."
+        data["land_area"] = v
         return None
     if key == "floors_total":
         v = _parse_int(t)
@@ -988,6 +1120,15 @@ async def _generate_and_output(
         # plot-ветка
         "country_land_category_plot": data.get("country_land_category_plot"),
         "country_communications_plot":data.get("country_communications_plot"),
+        # --- для Коммерческой (новая карта) ---
+        "comm_object_type":   data.get("comm_object_type"),
+        "land_area":          data.get("land_area"),
+        "comm_building_type": data.get("comm_building_type"),
+        "comm_whole_object":  data.get("comm_whole_object"),
+        "comm_finish":        data.get("comm_finish"),
+        "comm_entrance":      data.get("comm_entrance"),
+        "comm_parking":       data.get("comm_parking"),
+        "comm_layout":        data.get("comm_layout"),
     }
     # Для ДОМА — принудительно обнуляем in_complex (не применимо)
     if data.get("type") == "house":
@@ -1121,6 +1262,20 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
                 await message.answer("Пожалуйста, выберите вариант кнопкой ниже.", reply_markup=_kb_enum(current_key))
                 return
 
+    # Блокируем произвольный ввод для commercial: только кнопки для перечислений
+    if data.get("__commercial_mode"):
+        form_keys: List[str] = data.get("__form_keys") or []
+        step: int = int(data.get("__form_step") or 0)
+        if form_keys and step < len(form_keys):
+            current_key = form_keys[step]
+            if current_key in {
+                "comm_object_type", "comm_building_type", "comm_whole_object",
+                "comm_finish", "comm_entrance", "comm_parking", "comm_layout"
+            }:
+                await message.answer("Пожалуйста, выберите вариант кнопкой ниже.", reply_markup=_kb_enum(current_key))
+                return
+            # для числовых полей разрешаем ввод
+
     form_keys: List[str] = data.get("__form_keys") or []
     step: int = int(data.get("__form_step") or 0)
 
@@ -1152,6 +1307,9 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
         return
     if data.get("__country_mode"):
         await _ask_next_country_step(message, state)
+        return
+    if data.get("__commercial_mode"):
+        await _ask_next_commercial_step(message, state)
         return
 
     if step < len(form_keys):
@@ -1248,7 +1406,7 @@ async def handle_apt_condition_back(cb: CallbackQuery, state: FSMContext):
 async def handle_enum_select(cb: CallbackQuery, state: FSMContext):
     await _cb_ack(cb)
     data = await state.get_data()
-    if not (data.get("__flat_mode") or data.get("__country_mode")):
+    if not (data.get("__flat_mode") or data.get("__country_mode") or data.get("__commercial_mode")):
         return
 
     payload = cb.data.removeprefix("desc_enum_")  # key_code
@@ -1257,10 +1415,12 @@ async def handle_enum_select(cb: CallbackQuery, state: FSMContext):
     except ValueError:
         return
 
-    # ищем опцию и в FLAT, и в COUNTRY
+    # ищем опцию в FLAT / COUNTRY / COMM
     label = next((lbl for c, lbl in (FLAT_ENUMS.get(key, []) or [] ) if c == code), None)
     if label is None:
-        label = next((lbl for c, lbl in (COUNTRY_ENUMS.get(key, []) or [] ) if c == code), code)
+        label = next((lbl for c, lbl in (COUNTRY_ENUMS.get(key, []) or [] ) if c == code), None)
+    if label is None:
+        label = next((lbl for c, lbl in (COMM_ENUMS.get(key, []) or [] ) if c == code), code)
     # поддержка «Пропустить» для опциональных полей
     if key == "ceiling_height_m" and code == "skip":
         await state.update_data(**{key: None})
@@ -1311,6 +1471,8 @@ async def handle_enum_select(cb: CallbackQuery, state: FSMContext):
         await _ask_next_flat_step(cb.message, state)
     elif data.get("__country_mode"):
         await _ask_next_country_step(cb.message, state)
+    elif data.get("__commercial_mode"):
+        await _ask_next_commercial_step(cb.message, state)
 
 # --- НОВОЕ: обработчик первого шага внутри «Загородная» (Дом / Земельный участок)
 async def handle_country_entry(cb: CallbackQuery, state: FSMContext):
@@ -1370,6 +1532,34 @@ async def handle_country_entry(cb: CallbackQuery, state: FSMContext):
     # Технически считаем, что первый ключ уже выбран → начинаем со следующего шага
     await state.update_data(__form_keys=new_keys, __form_step=1)
     await _ask_next_country_step(cb.message, state)
+
+# --- НОВОЕ: обработчик выбора вида для «Коммерческой»
+async def handle_commercial_entry(cb: CallbackQuery, state: FSMContext):
+    await _cb_ack(cb)
+    data = await state.get_data()
+    if not data.get("__commercial_mode"):
+        return
+    if not cb.data.startswith("desc_comm_entry_"):
+        return
+    code = cb.data.removeprefix("desc_comm_entry_")
+    # сохранить «человеческую» метку
+    label = next((lbl for c, lbl in COMM_ENUMS["comm_object_type"] if c == code), code)
+    await state.update_data(comm_object_type=label)
+    # Настроить последовательность общих параметров
+    new_keys = [
+        "comm_object_type",
+        "total_area",
+        "land_area",
+        "comm_building_type",
+        "comm_whole_object",
+        "comm_finish",
+        "comm_entrance",
+        "comm_parking",
+        "comm_layout",
+    ]
+    # Технически первый ключ уже выбран → шаг со следующего
+    await state.update_data(__form_keys=new_keys, __form_step=1)
+    await _ask_next_commercial_step(cb.message, state)
 
 async def handle_enum_other(cb: CallbackQuery, state: FSMContext):
     await _cb_ack(cb)
@@ -1454,6 +1644,8 @@ def router(rt: Router):
 
     # Загородная: первый упрощённый шаг (Дом/Земельный участок)
     rt.callback_query.register(handle_country_entry, F.data.in_(["desc_country_entry_house", "desc_country_entry_plot"]), DescriptionStates.waiting_for_comment)
+    # Коммерческая: выбор вида объекта
+    rt.callback_query.register(handle_commercial_entry, F.data.startswith("desc_comm_entry_"), DescriptionStates.waiting_for_comment)
 
     # анкета + свободный комментарий / пропуск
     rt.message.register(handle_comment_message, DescriptionStates.waiting_for_comment, F.text)
