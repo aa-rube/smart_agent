@@ -323,16 +323,21 @@ def kb_type_merged() -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     # Сначала добавим Квартиру (если есть) и прочие типы, исключив house/land
     for key, label in ai_cfg.DESCRIPTION_TYPES.items():
-        if key in {"house", "land"}:
+        # скрываем «Дом», «Земельный участок» и «Офис» (будут агрегированы)
+        if key in {"house", "land", "office"}:
             continue
         # Переименовывать «country»/«zagorod» из конфига не нужно — мы сами добавим агрегирующую кнопку
         if key in {"country", "zagorod"}:
             # пропускаем, т.к. выводим свою агрегированную кнопку ниже
             continue
+        # также пропускаем любые «commercial»-варианты из конфига, если присутствуют
+        if key in {"commercial", "commerce"}:
+            continue
         btn = InlineKeyboardButton(text=label, callback_data=f"desc_type_{key}")
         rows.append([btn])
     # Добавляем объединённую кнопку
     rows.append([InlineKeyboardButton(text="Загородная недвижимость", callback_data="desc_type_country")])
+    rows.append([InlineKeyboardButton(text="Коммерческая недвижимость", callback_data="desc_type_commercial")])
     # «Назад»
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
