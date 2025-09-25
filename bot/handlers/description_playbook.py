@@ -218,6 +218,7 @@ FLAT_ENUMS: dict[str, list[tuple[str, str]]] = {
 # ==========================
 # Загородная: тексты / опции
 # ==========================
+COUNTRY_GROUP_ASK            = "Выберите группу загородного объекта:"
 COUNTRY_ASK_OBJECT_TYPE      = "1️⃣ Выберите тип загородного объекта:"
 COUNTRY_ASK_HOUSE_AREA       = "Площадь дома (м²): выберите диапазон"
 COUNTRY_ASK_PLOT_AREA        = "Площадь участка (сотки): выберите диапазон"
@@ -312,6 +313,42 @@ COUNTRY_MULTI_ENUMS: dict[str, list[tuple[str, str]]] = {
 # Клавиатуры
 # ==========================
 def kb_type()    -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_TYPES,   "desc_type_",   1)
+
+# --- НОВОЕ: стартовая клавиатура с объединением «Дом» + «Земельный участок» в «Загородная недвижимость»
+def kb_type_merged() -> InlineKeyboardMarkup:
+    """
+    Стартовый экран типов: объединяем две исходные кнопки (house, land) в одну «Загородная недвижимость».
+    Все остальные кнопки из ai_cfg.DESCRIPTION_TYPES сохраняются.
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    # Сначала добавим Квартиру (если есть) и прочие типы, исключив house/land
+    for key, label in ai_cfg.DESCRIPTION_TYPES.items():
+        if key in {"house", "land"}:
+            continue
+        # Переименовывать «country»/«zagorod» из конфига не нужно — мы сами добавим агрегирующую кнопку
+        if key in {"country", "zagorod"}:
+            # пропускаем, т.к. выводим свою агрегированную кнопку ниже
+            continue
+        btn = InlineKeyboardButton(text=label, callback_data=f"desc_type_{key}")
+        rows.append([btn])
+    # Добавляем объединённую кнопку
+    rows.append([InlineKeyboardButton(text="Загородная недвижимость", callback_data="desc_type_country")])
+    # «Назад»
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+# --- НОВОЕ: первый шаг внутри «Загородная» — только два варианта
+def kb_country_entry() -> InlineKeyboardMarkup:
+    """
+    Два укороченных варианта для входа в загородные сценарии: Дом / Земельный участок.
+    Дальше используется существующая логика house/plot.
+    """
+    rows = [
+        [InlineKeyboardButton(text="Дом",               callback_data="desc_country_entry_house")],
+        [InlineKeyboardButton(text="Земельный участок", callback_data="desc_country_entry_plot")],
+        [InlineKeyboardButton(text="⬅️ Назад",          callback_data="nav.descr_home")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 def kb_class()   -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_CLASSES,"desc_class_",  1)
 def kb_complex() -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_COMPLEX,"desc_complex_",1)
 def kb_area()    -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_AREA,   "desc_area_",   1)
@@ -512,9 +549,9 @@ async def start_description_flow(cb: CallbackQuery, state: FSMContext, bot: Bot)
     img_path = get_file_path(DESCR_HOME_IMG_REL)
 
     if os.path.exists(img_path):
-        await _edit_or_replace_with_photo_file(bot, cb.message, img_path, caption, kb_type())
+        await _edit_or_replace_with_photo_file(bot, cb.message, img_path, caption, kb_type_merged())
     else:
-        await _edit_text_or_caption(cb.message, caption, kb_type())
+        await _edit_text_or_caption(cb.message, caption, kb_type_merged())
 
     await state.set_state(DescriptionStates.waiting_for_type)
 
@@ -542,16 +579,16 @@ async def handle_type(cb: CallbackQuery, state: FSMContext):
         await state.set_state(DescriptionStates.waiting_for_comment)
         return
     elif val in {"country", "zagorod"}:
-        # Новый сценарий «Загородная»
+        # Объединённая точка входа в «Загородную»: предлагаем только Дом / Земельный участок
         await state.update_data(
             __country_mode=True,
             __flat_mode=False,
-            __form_keys=["country_object_type"],
+            __form_keys=[],            # заполним после выбора варианта
             __form_step=0,
             __awaiting_other_key=None,
             __awaiting_free_comment=False
         )
-        await _edit_text_or_caption(cb.message, COUNTRY_ASK_OBJECT_TYPE, _kb_enum("country_object_type"))
+        await _edit_text_or_caption(cb.message, COUNTRY_GROUP_ASK, kb_country_entry())
         await state.set_state(DescriptionStates.waiting_for_comment)
         return
     elif val == "house" or val == "land":
@@ -1270,6 +1307,65 @@ async def handle_enum_select(cb: CallbackQuery, state: FSMContext):
     elif data.get("__country_mode"):
         await _ask_next_country_step(cb.message, state)
 
+# --- НОВОЕ: обработчик первого шага внутри «Загородная» (Дом / Земельный участок)
+async def handle_country_entry(cb: CallbackQuery, state: FSMContext):
+    """
+    Пользователь выбрал «Дом» или «Земельный участок» с объединённой кнопки «Загородная недвижимость».
+    Здесь маппим выбор на существующую логику country_object_type: house/plot.
+    """
+    await _cb_ack(cb)
+    data = await state.get_data()
+    if not data.get("__country_mode"):
+        return
+
+    payload = cb.data
+    if payload not in {"desc_country_entry_house", "desc_country_entry_plot"}:
+        return
+
+    # Возьмём «человеческие» метки из справочника
+    def _label_for(enum_key: str, code: str) -> str:
+        opts = COUNTRY_ENUMS.get(enum_key, [])
+        for c, lbl in opts:
+            if c == code:
+                return lbl
+        return code
+
+    if payload.endswith("_house"):
+        # как будто пользователь выбрал country_object_type=house
+        label = _label_for("country_object_type", "house")
+        await state.update_data(country_object_type=label)
+        new_keys = [
+            "country_object_type",
+            "country_house_area_m2",
+            "country_plot_area_sotki",
+            "country_distance_km",
+            "country_floors",
+            "country_rooms",
+            "country_land_category_house",
+            "country_renovation",
+            "country_toilet",
+            "country_utilities",
+            "country_leisure",
+            "country_wall_material",
+            "country_parking",
+            "country_transport",
+        ]
+    else:
+        # plot
+        label = _label_for("country_object_type", "plot")
+        await state.update_data(country_object_type=label)
+        new_keys = [
+            "country_object_type",
+            "country_land_category_plot",
+            "country_plot_area_sotki",
+            "country_distance_km",
+            "country_communications_plot",
+        ]
+
+    # Технически считаем, что первый ключ уже выбран → начинаем со следующего шага
+    await state.update_data(__form_keys=new_keys, __form_step=1)
+    await _ask_next_country_step(cb.message, state)
+
 async def handle_enum_other(cb: CallbackQuery, state: FSMContext):
     await _cb_ack(cb)
     data = await state.get_data()
@@ -1350,6 +1446,9 @@ def router(rt: Router):
     # Загородная: мультивыбор
     rt.callback_query.register(handle_country_multi_toggle, F.data.startswith("desc_multi_"), DescriptionStates.waiting_for_comment)
     rt.callback_query.register(handle_country_multi_done,   F.data.startswith("desc_multi_done_"), DescriptionStates.waiting_for_comment)
+
+    # Загородная: первый упрощённый шаг (Дом/Земельный участок)
+    rt.callback_query.register(handle_country_entry, F.data.in_(["desc_country_entry_house", "desc_country_entry_plot"]), DescriptionStates.waiting_for_comment)
 
     # анкета + свободный комментарий / пропуск
     rt.message.register(handle_comment_message, DescriptionStates.waiting_for_comment, F.text)
