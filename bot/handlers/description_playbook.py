@@ -562,7 +562,7 @@ def _kb_multi_enum(key: str, selected: Optional[Set[str]] = None) -> InlineKeybo
         # Требование: смайлик только у выбранных, у остальных — «чистая» метка
         text = f"✅ {label}" if code in sel else label
         rows.append([InlineKeyboardButton(text=text, callback_data=f"desc_multi_{key}_{code}")])
-    rows.append([InlineKeyboardButton(text="✅ Готово", callback_data=f"desc_multi_done_{key}")])
+    rows.append([InlineKeyboardButton(text="Готово ➡️", callback_data=f"desc_multi_done_{key}")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")])  # внутренняя «Назад»
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
