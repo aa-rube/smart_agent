@@ -9,6 +9,7 @@
 # Все, никаких anchors которые нужно настраивать, никаких залипаний, кучи сообщение и мисс-кликов.
 
 from typing import Optional, List, Dict
+from aiogram.types import CallbackQuery as _CbType  # type hint clarity
 import os
 import re
 
@@ -53,6 +54,23 @@ def _format_access_text(user_id: int) -> str:
 
 def _has_access(user_id: int) -> bool:
     return is_trial_active(user_id) or _is_sub_active(user_id)
+
+# ==========================
+# Безопасный ACK callback-запроса (чтобы не получить "query is too old")
+# ==========================
+async def _cb_ack(cb: _CbType, text: Optional[str] = None, show_alert: bool = False) -> None:
+    """
+    Немедленно отвечаем на callback, а любые ошибки игнорируем.
+    Так мы снимаем "песочные часы" у пользователя и избегаем TelegramBadRequest.
+    """
+    try:
+        await cb.answer(text=text, show_alert=show_alert, cache_time=0)
+    except TelegramBadRequest:
+        # query уже протух/закрыт — просто игнорируем
+        pass
+    except Exception:
+        # на всякий случай — не роняем обработчик
+        pass
 
 # ==========================
 # Тексты
@@ -378,6 +396,7 @@ async def start_description_flow(cb: CallbackQuery, state: FSMContext, bot: Bot)
     Старт: пытаемся заменить текущее сообщение на картинку (главный экран раздела)
     с подписью (DESC_INTRO + ASK_TYPE) и кнопками. Если файла нет — фолбэк на текст.
     """
+    await _cb_ack(cb)
     user_id = cb.message.chat.id
     # Контроль доступа (как в plans/design)
     if not _has_access(user_id):
@@ -386,7 +405,6 @@ async def start_description_flow(cb: CallbackQuery, state: FSMContext, bot: Bot)
             await _edit_text_or_caption(cb.message, SUB_FREE, SUBSCRIBE_KB)
         else:
             await _edit_text_or_caption(cb.message, SUB_PAY, SUBSCRIBE_KB)
-        await cb.answer()
         return
 
     await state.clear()
@@ -399,7 +417,6 @@ async def start_description_flow(cb: CallbackQuery, state: FSMContext, bot: Bot)
         await _edit_text_or_caption(cb.message, caption, kb_type())
 
     await state.set_state(DescriptionStates.waiting_for_type)
-    await cb.answer()
 
 async def handle_type(cb: CallbackQuery, state: FSMContext):
     """
@@ -408,6 +425,7 @@ async def handle_type(cb: CallbackQuery, state: FSMContext):
     - house → пропускаем «новостройка/ЖК», сразу спрашиваем расположение
     - иное → спрашиваем «новостройка/ЖК» (как раньше)
     """
+    await _cb_ack(cb)
     val = cb.data.removeprefix("desc_type_")
     await state.update_data(type=val)
 
@@ -422,7 +440,6 @@ async def handle_type(cb: CallbackQuery, state: FSMContext):
         )
         await _edit_text_or_caption(cb.message, FLAT_ASK_MARKET, _kb_enum("market"))
         await state.set_state(DescriptionStates.waiting_for_comment)
-        await cb.answer()
         return
     elif val == "house" or val == "land":
         # СКИП «новостройка/ЖК» для дома, идём сразу к расположению
@@ -432,27 +449,26 @@ async def handle_type(cb: CallbackQuery, state: FSMContext):
         await _edit_text_or_caption(cb.message, ASK_COMPLEX, kb_complex())
         await state.set_state(DescriptionStates.waiting_for_complex)
 
-    await cb.answer()
-
 async def handle_class(cb: CallbackQuery, state: FSMContext):
     """apt_class = econom / comfort / business / premium (только для квартир)."""
+    await _cb_ack(cb)
     val = cb.data.removeprefix("desc_class_")
     await state.update_data(apt_class=val)
     # после класса — вопрос про новостройку/ЖК
     await _edit_text_or_caption(cb.message, ASK_COMPLEX, kb_complex())
     await state.set_state(DescriptionStates.waiting_for_complex)
-    await cb.answer()
 
 async def handle_complex(cb: CallbackQuery, state: FSMContext):
     """in_complex = yes / no"""
+    await _cb_ack(cb)
     val = cb.data.removeprefix("desc_complex_")
     await state.update_data(in_complex=val)
     await _edit_text_or_caption(cb.message, ASK_AREA, kb_area())
     await state.set_state(DescriptionStates.waiting_for_area)
-    await cb.answer()
 
 async def handle_area(cb: CallbackQuery, state: FSMContext):
     """area = city / out → затем просим свободный комментарий (или «Пропустить»)."""
+    await _cb_ack(cb)
     val = cb.data.removeprefix("desc_area_")
     await state.update_data(area=val)
 
@@ -519,7 +535,6 @@ async def handle_area(cb: CallbackQuery, state: FSMContext):
     else:
         await _edit_text_or_caption(cb.message, _form_prompt_for_key(first_key))
     await state.set_state(DescriptionStates.waiting_for_comment)  # используем существующий стейт как «анкета»
-    await cb.answer()
 
 # ==========================
 # Квартира: шаги/подсказки
@@ -919,11 +934,12 @@ async def handle_comment_skip(cb: CallbackQuery, state: FSMContext, bot: Bot):
     data = await state.get_data()
     if not data.get("__awaiting_free_comment"):
         # Если нажали не вовремя — просто повторим вопрос
-        await cb.answer()
+        await _cb_ack(cb)
         return
+    # СНАЧАЛА ACK, затем длинная операция
+    await _cb_ack(cb)
     await _edit_text_or_caption(cb.message, "Комментарий пропущен. Начинаю генерацию…")
     await _generate_and_output(cb.message, state, bot, comment=None, reuse_anchor=True)
-    await cb.answer()
 
 # ==========================
 # Обработчики блока «Состояние квартиры» (кнопки)
@@ -939,13 +955,13 @@ async def handle_apt_condition_select(cb: CallbackQuery, state: FSMContext):
 
     # Защита: если текущий шаг не про apt_condition — игнорируем
     if step >= len(form_keys) or form_keys[step] != "apt_condition":
-        await cb.answer()
+        await _cb_ack(cb)
         return
 
     code = cb.data.removeprefix("desc_cond_")
     label = APT_COND_LABELS.get(code)
     if not label:
-        await cb.answer()
+        await _cb_ack(cb)
         return
 
     # Сохраняем «человеческое» значение
@@ -965,7 +981,7 @@ async def handle_apt_condition_select(cb: CallbackQuery, state: FSMContext):
         # анкета завершена — переходим к свободному комментарию
         await state.update_data(__awaiting_free_comment=True)
         await _edit_text_or_caption(cb.message, ASK_FREE_COMMENT, kb_skip_comment())
-    await cb.answer("Выбрано: " + label)
+    # ack/уведомление уже сделано ранее; повторный answer не нужен
 
 async def handle_apt_condition_back(cb: CallbackQuery, state: FSMContext):
     """
@@ -978,7 +994,7 @@ async def handle_apt_condition_back(cb: CallbackQuery, state: FSMContext):
 
     # Если мы не на apt_condition — игнор
     if step >= len(form_keys) or form_keys[step] != "apt_condition":
-        await cb.answer()
+        await _cb_ack(cb)
         return
 
     # Шаг назад
@@ -988,21 +1004,22 @@ async def handle_apt_condition_back(cb: CallbackQuery, state: FSMContext):
 
     # Показываем предыдущий вопрос (текстовый ввод)
     await _edit_text_or_caption(cb.message, _form_prompt_for_key(prev_key))
-    await cb.answer()
+    await _cb_ack(cb)
 
 # ==========================
 # Квартира: обработчики перечислений/пропусков
 # ==========================
 async def handle_enum_select(cb: CallbackQuery, state: FSMContext):
+    await _cb_ack(cb)
     data = await state.get_data()
     if not data.get("__flat_mode"):
-        await cb.answer(); return
+        return
 
     payload = cb.data.removeprefix("desc_enum_")  # key_code
     try:
         key, code = payload.split("_", 1)
     except ValueError:
-        await cb.answer(); return
+        return
 
     label = next((lbl for c, lbl in FLAT_ENUMS.get(key, []) if c == code), code)
     # поддержка «Пропустить» для опциональных полей
@@ -1023,27 +1040,26 @@ async def handle_enum_select(cb: CallbackQuery, state: FSMContext):
     step = int(data.get("__form_step") or 0) + 1
     await state.update_data(__form_step=step)
     await _ask_next_flat_step(cb.message, state)
-    await cb.answer("Выбрано: " + label)
 
 async def handle_enum_other(cb: CallbackQuery, state: FSMContext):
+    await _cb_ack(cb)
     data = await state.get_data()
     if not data.get("__flat_mode"):
-        await cb.answer(); return
+        return
     key = cb.data.removeprefix("desc_enum_other_")
     await state.update_data(__awaiting_other_key=key)
     await _edit_text_or_caption(cb.message, f"✍️ Напишите свой вариант для поля. Отправьте одним сообщением.")
-    await cb.answer()
 
 async def handle_flat_skip_field(cb: CallbackQuery, state: FSMContext):
+    await _cb_ack(cb)
     data = await state.get_data()
     if not data.get("__flat_mode"):
-        await cb.answer(); return
+        return
     key = cb.data.removeprefix("desc_flat_skip_")
     await state.update_data(**{key: None})
     step = int(data.get("__form_step") or 0) + 1
     await state.update_data(__form_step=step)
     await _ask_next_flat_step(cb.message, state)
-    await cb.answer("Пропущено")
 
 # ==========================
 # Router
