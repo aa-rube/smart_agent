@@ -154,7 +154,7 @@ FLAT_ENUMS: dict[str, list[tuple[str, str]]] = {
         ("2027Q3", "3 кв. 2027"), ("2027Q4", "4 кв. 2027"),
     ],
     "sale_method": [
-        ("dkp", "ДКП"), ("cession", "Переуступка"), ("fz214", "ФЗ-214"),
+        ("dkp", "ДКП"), ("cession", "Переуступка"), ("fz214", "ДДУ"),
     ],
     "rooms": [
         ("studio", "Студия"), ("1", "1"), ("2", "2"), ("3", "3"), ("4plus", "4+"),
@@ -420,7 +420,6 @@ def kb_type_merged() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Квартира",                  callback_data="desc_type_flat")],
         [InlineKeyboardButton(text="Загородная недвижимость",   callback_data="desc_type_country")],
         [InlineKeyboardButton(text="Коммерческая недвижимость", callback_data="desc_type_commercial")],
-        [InlineKeyboardButton(text="🗂 История запросов",        callback_data="desc_history")],
         [InlineKeyboardButton(text="⬅️ Назад",                  callback_data="nav.descr_home")],  # на первом экране «Назад» выводит из алгоритма
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -428,8 +427,12 @@ def kb_type_merged() -> InlineKeyboardMarkup:
 # --- НОВОЕ: первый шаг — тип сделки
 def kb_deal() -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="Продажа", callback_data="desc_deal_sale")],
-        [InlineKeyboardButton(text="Аренда",  callback_data="desc_deal_rent")],
+        [
+            InlineKeyboardButton(text="Продажа", callback_data="desc_deal_sale"),
+            InlineKeyboardButton(text="Аренда", callback_data="desc_deal_rent")
+         ],
+
+        [InlineKeyboardButton(text="🗂 История запросов", callback_data="desc_history")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -1180,7 +1183,7 @@ async def _generate_and_output(
         # --- для Квартиры (новая карта) ---
         "market":            data.get("market"),           # Новостройка / Вторичка
         "completion_term":   data.get("completion_term"),  # для новостройки
-        "sale_method":       data.get("sale_method"),      # ДКП / Переуступка / ФЗ-214
+        "sale_method":       data.get("sale_method"),      # ДКП / Переуступка / ФЗ-214/дду
         "mortgage_ok":       data.get("mortgage_ok"),      # Да / Нет
         "bathroom_type":     data.get("bathroom_type"),
         "windows":           data.get("windows"),
