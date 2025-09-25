@@ -379,40 +379,25 @@ def kb_commercial_entry() -> InlineKeyboardMarkup:
 # ==========================
 # Клавиатуры
 # ==========================
-def kb_type()    -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_TYPES,   "desc_type_",   1)
 
 # --- НОВОЕ: стартовая клавиатура с объединением «Дом» + «Земельный участок» в «Загородная недвижимость»
 def kb_type_merged() -> InlineKeyboardMarkup:
     """
-    Стартовый экран типов: объединяем две исходные кнопки (house, land) в одну «Загородная недвижимость».
-    Все остальные кнопки из ai_cfg.DESCRIPTION_TYPES сохраняются.
+    Фиксированный стартовый экран без зависимости от ai_cfg.DESCRIPTION_TYPES.
+    Только нужные три кнопки.
     """
-    rows: list[list[InlineKeyboardButton]] = []
-    # Сначала добавим Квартиру (если есть) и прочие типы, исключив house/land
-    for key, label in ai_cfg.DESCRIPTION_TYPES.items():
-        # скрываем «Дом», «Земельный участок» и «Офис» (будут агрегированы)
-        if key in {"house", "land", "office"}:
-            continue
-        # Переименовывать «country»/«zagorod» из конфига не нужно — мы сами добавим агрегирующую кнопку
-        if key in {"country", "zagorod"}:
-            # пропускаем, т.к. выводим свою агрегированную кнопку ниже
-            continue
-        # также пропускаем любые «commercial»-варианты из конфига, если присутствуют
-        if key in {"commercial", "commerce"}:
-            continue
-        btn = InlineKeyboardButton(text=label, callback_data=f"desc_type_{key}")
-        rows.append([btn])
-    # Добавляем объединённую кнопку
-    rows.append([InlineKeyboardButton(text="Загородная недвижимость", callback_data="desc_type_country")])
-    rows.append([InlineKeyboardButton(text="Коммерческая недвижимость", callback_data="desc_type_commercial")])
-    # «Назад»
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")])
+    rows = [
+        [InlineKeyboardButton(text="Квартира",                  callback_data="desc_type_flat")],
+        [InlineKeyboardButton(text="Загородная недвижимость",   callback_data="desc_type_country")],
+        [InlineKeyboardButton(text="Коммерческая недвижимость", callback_data="desc_type_commercial")],
+        [InlineKeyboardButton(text="⬅️ Назад",                  callback_data="nav.ai_tools")],
+    ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 # --- НОВОЕ: первый шаг внутри «Загородная» — только два варианта
 def kb_country_entry() -> InlineKeyboardMarkup:
     """
-    Два укороченных варианта для входа в загородные сценарии: Дом / Земельный участок.
+    Загородные сценарии: Дом / Земельный участок.
     Дальше используется существующая логика house/plot.
     """
     rows = [
@@ -1281,8 +1266,7 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
 
     # Если почему-то нет последовательности — заново попросим старт
     if not form_keys:
-        await message.answer("Давайте начнём сначала. " + ASK_TYPE,
-                             reply_markup=_kb_from_map(ai_cfg.DESCRIPTION_TYPES, "desc_type_", 1))
+        await message.answer("Давайте начнём сначала. " + ASK_TYPE, reply_markup=kb_type_merged())
         return
 
     current_key = form_keys[step]
