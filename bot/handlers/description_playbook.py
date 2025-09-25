@@ -74,6 +74,7 @@ DESC_INTRO  = """Заполните короткую анкету и получ�
 🧩 Давайте соберём базовые характеристики объекта. Отвечайте по шагам:
 """
 ASK_TYPE    = "1️⃣ Выберите тип недвижимости:"
+ASK_DEAL    = "0️⃣ Выберите тип сделки:"
 ASK_CLASS   = "2️⃣ Уточните класс квартиры:"
 ASK_COMPLEX = "3️⃣ Объект в новостройке / ЖК?"
 ASK_AREA    = "4️⃣ Где расположен объект?"
@@ -114,8 +115,8 @@ SUB_PAY = """
 """.strip()
 
 def text_descr_intro(user_id: int) -> str:
-    """Стартовый текст с информацией о доступе (как в plans)."""
-    return f"{DESC_INTRO}\n\n{_format_access_text(user_id)}\n\n{ASK_TYPE}"
+    """Стартовый текст с информацией о доступе (как в plans). Начинаем с типа сделки."""
+    return f"{DESC_INTRO}\n\n{_format_access_text(user_id)}\n\n{ASK_DEAL}"
 
 # ==========================
 # Квартира: новые тексты / опции
@@ -394,6 +395,15 @@ def kb_type_merged() -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+# --- НОВОЕ: первый шаг — тип сделки
+def kb_deal() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="Продажа", callback_data="desc_deal_sale")],
+        [InlineKeyboardButton(text="Аренда",  callback_data="desc_deal_rent")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
 # --- НОВОЕ: первый шаг внутри «Загородная» — только два варианта
 def kb_country_entry() -> InlineKeyboardMarkup:
     """
@@ -626,11 +636,24 @@ async def start_description_flow(cb: CallbackQuery, state: FSMContext, bot: Bot)
     img_path = get_file_path(DESCR_HOME_IMG_REL)
 
     if os.path.exists(img_path):
-        await _edit_or_replace_with_photo_file(bot, cb.message, img_path, caption, kb_type_merged())
+        await _edit_or_replace_with_photo_file(bot, cb.message, img_path, caption, kb_deal())
     else:
-        await _edit_text_or_caption(cb.message, caption, kb_type_merged())
+        await _edit_text_or_caption(cb.message, caption, kb_deal())
 
+    # Используем существующий стейт, но первым шагом ждём выбор сделки
     await state.set_state(DescriptionStates.waiting_for_type)
+    await state.update_data(deal_type=None)
+
+async def handle_deal(cb: CallbackQuery, state: FSMContext):
+    """Тип сделки = sale / rent → затем спрашиваем тип недвижимости."""
+    await _cb_ack(cb)
+    payload = cb.data.removeprefix("desc_deal_")
+    if payload not in {"sale", "rent"}:
+        return
+    await state.update_data(deal_type=payload)
+    # Переходим к выбору типа недвижимости
+    await _edit_text_or_caption(cb.message, ASK_TYPE, kb_type_merged())
+    # Стейт оставляем тем же (waiting_for_type), дальше сработает handle_type
 
 async def handle_type(cb: CallbackQuery, state: FSMContext):
     """
@@ -640,6 +663,11 @@ async def handle_type(cb: CallbackQuery, state: FSMContext):
     - иное → спрашиваем «новостройка/ЖК» (как раньше)
     """
     await _cb_ack(cb)
+    data = await state.get_data()
+    if not data.get("deal_type"):
+        # просим сперва указать тип сделки
+        await _edit_text_or_caption(cb.message, f"Сначала укажите тип сделки.\n\n{ASK_DEAL}", kb_deal())
+        return
     val = cb.data.removeprefix("desc_type_")
     await state.update_data(type=val)
 
@@ -1079,6 +1107,7 @@ async def _generate_and_output(
     data = await state.get_data()
 
     fields = {
+        "deal_type":  data.get("deal_type"),  # sale / rent
         "type":       data.get("type"),
         "apt_class":  (data.get("apt_class") if data.get("type") == "flat" else None),
         "in_complex": data.get("in_complex"),
@@ -1201,6 +1230,11 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
     """
     user_text = (message.text or "").strip()
     data = await state.get_data()
+
+    # Если не выбран тип сделки — вернём на первый шаг
+    if not data.get("deal_type"):
+        await message.answer(f"Сначала выберите тип сделки.\n\n{ASK_DEAL}", reply_markup=kb_deal())
+        return
 
     # «Свой вариант…» для перечислимых полей
     other_key = data.get("__awaiting_other_key")
@@ -1629,6 +1663,9 @@ def router(rt: Router):
     rt.message.register(start_description_flow, Command("descr_home"))
     rt.callback_query.register(start_description_flow, F.data == "nav.descr_home")
     rt.callback_query.register(start_description_flow, F.data == "desc_start")
+
+    # первый шаг — тип сделки
+    rt.callback_query.register(handle_deal, F.data.startswith("desc_deal_"))
 
     # пошаговые выборы
     rt.callback_query.register(handle_type,    F.data.startswith("desc_type_"))
