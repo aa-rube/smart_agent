@@ -1,8 +1,16 @@
-from __future__ import annotations
-from typing import Optional, List, Dict, Any
+# C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\description_playbook.py
+#Всегда пиши код без «поддержки старых версий». Если они есть в коде - удаляй.
+
+# Секрет офигенного бота: тебе не нужен якорь.
+# Пользуйся такой схемой:
+# -если callback -> обновляем сообщение, msg_id берем из update
+# -если обычный text_message, command -> отправляй новое сообщение.
+# Используй fallback если изменить не удалось.
+# Все, никаких anchors которые нужно настраивать, никаких залипаний, кучи сообщение и мисс-кликов.
+
+from typing import Optional, List, Dict
 import os
 import re
-import json
 
 import aiohttp
 from aiogram import Router, F, Bot
@@ -12,934 +20,1016 @@ from aiogram.types import (
 )
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.enums.chat_action import ChatAction
 
 from bot.config import EXECUTOR_BASE_URL, get_file_path
-import bot.utils.database as db
+from bot.states.states import DescriptionStates
 from bot.utils.chat_actions import run_long_operation_with_action
+import executor.ai_config as ai_cfg  # варианты кнопок из конфига
+
+# ====== Доступ / подписка (как в plans/design) ======
+import bot.utils.database as db
+from bot.utils.database import is_trial_active, trial_remaining_hours
+
+def _is_sub_active(user_id: int) -> bool:
+    raw = db.get_variable(user_id, "sub_until") or ""
+    if not raw:
+        return False
+    try:
+        from datetime import datetime
+        today = datetime.utcnow().date()
+        return today <= datetime.fromisoformat(raw).date()
+    except Exception:
+        return False
+
+def _format_access_text(user_id: int) -> str:
+    trial_hours = trial_remaining_hours(user_id)
+    if _is_sub_active(user_id):
+        sub_until = db.get_variable(user_id, "sub_until")
+        return f'✅ Подписка активна до *{sub_until}*'
+    if trial_hours > 0:
+        return f'🆓 Бесплатный доступ активен ещё *~{trial_hours} ч.*'
+    return '😢 Бесплатный период завершён. Оформи подписку, чтобы продолжить.'
+
+def _has_access(user_id: int) -> bool:
+    return is_trial_active(user_id) or _is_sub_active(user_id)
+
+# ==========================
+# Тексты
+# ==========================
+DESC_INTRO  = """Заполните короткую анкету и получите продающее описание вашего объекта для Авито, ЦИАН или ваших соцсетей.
+Наш алгоритм обучен на детятках тысяч самых конверсионных описаний.
+
+🧩 Давайте соберём базовые характеристики объекта. Отвечайте по шагам:
+"""
+ASK_TYPE    = "1️⃣ Выберите тип недвижимости:"
+ASK_CLASS   = "2️⃣ Уточните класс квартиры:"
+ASK_COMPLEX = "3️⃣ Объект в новостройке / ЖК?"
+ASK_AREA    = "4️⃣ Где расположен объект?"
+# Далее вместо свободного комментария идёт обязательная анкета (структурированные шаги)
+ASK_FORM_TOTAL_AREA      = "5️⃣ Введите общую площадь объекта (в м²). Пример: 56.4"
+ASK_FORM_FLOORS_TOTAL    = "6️⃣ Введите этажность здания (количество этажей в доме). Пример: 17"
+ASK_FORM_FLOOR           = "7️⃣ Введите этаж расположения объекта. Пример: 5"
+ASK_FORM_KITCHEN_AREA    = "8️⃣ Введите площадь кухни (в м²). Если не применимо — укажите 0. Пример: 10.5"
+ASK_FORM_ROOMS           = "9️⃣ Укажите количество комнат (для жилых объектов). Если не применимо — укажите 0. Пример: 2"
+ASK_FORM_YEAR_COND       = "🔟 Укажите год постройки ИЛИ состояние: «новостройка», «вторичка», «требуется ремонт». Примеры: 2012 / новостройка"
+ASK_FORM_UTILITIES       = "1️⃣1️⃣ Перечислите коммуникации через запятую: отопление, вода, газ, электричество, интернет. Пример: отопление, вода, электричество"
+ASK_FORM_APT_COND        = "🔟 Выберите состояние квартиры:"
+ASK_FORM_LOCATION        = "1️⃣2️⃣ Укажите локацию: район и ближайшее метро/транспорт. Пример: Пресненский, м. Улица 1905 года"
+ASK_FORM_FEATURES        = "1️⃣3️⃣ Укажите особенности/удобства через запятую (балкон, парковка, лифт, охрана и т.д.). Пример: балкон, лифт, консьерж"
+ASK_FREE_COMMENT         = "1️⃣4️⃣ При желании добавьте свободный комментарий про объект — детали планировки, состояние, окружение и т.п.\n\n✍️ Отправьте текст одним сообщением (минимум 50 символов).\nЕсли комментарий не нужен — нажмите «Пропустить»."
+
+GENERATING = "⏳ Генерирую описание… это займёт до минуты."
+ERROR_TEXT = "😔 Не получилось сгенерировать описание. Попробуйте ещё раз."
+
+SUB_FREE = """
+🎁 Бесплатный период завершён
+Пробный доступ на 72 часа истёк — дальше только по подписке.
+
+📦* Что даёт подписка:*
+ — Полный доступ ко всем инструментам
+ — Без ограничений по количеству запусков в период подписки*
+Стоимость пакета всего 2500 рублей!
+""".strip()
+
+SUB_PAY = """
+🪫 Подписка не активна
+Срок подписки истёк или не был оформлен.
+
+📦* Что даёт подписка:*
+ — Полный доступ ко всем инструментам
+ — Без ограничений по количеству запусков в период подписки*
+Стоимость пакета всего 2500 рублей!
+""".strip()
+
+def text_descr_intro(user_id: int) -> str:
+    """Стартовый текст с информацией о доступе (как в plans)."""
+    return f"{DESC_INTRO}\n\n{_format_access_text(user_id)}\n\n{ASK_TYPE}"
+
+# ==========================
+# Квартира: новые тексты / опции
+# ==========================
+FLAT_ASK_MARKET          = "1️⃣ Выберите рынок: новостройка или вторичка."
+FLAT_ASK_COMPLETION_TERM = "Укажите срок сдачи (квартал и год). Пример: 4 кв. 2026"
+FLAT_ASK_SALE_METHOD     = "Выберите способ продажи (для новостроек)."
+FLAT_ASK_ROOMS           = "Укажите количество комнат."
+FLAT_ASK_MORTGAGE        = "Подходит для ипотеки?"
+FLAT_ASK_BATHROOM        = "Санузел:"
+FLAT_ASK_WINDOWS         = "Окна:"
+FLAT_ASK_HOUSETYPE       = "Тип дома:"
+FLAT_ASK_LIFT            = "Лифт:"
+FLAT_ASK_PARKING         = "Парковка:"
+FLAT_ASK_RENOVATION      = "Ремонт:"
+FLAT_ASK_LAYOUT          = "Планировка комнат:"
+FLAT_ASK_BALCONY         = "Балкон/лоджия:"
+FLAT_ASK_CEILING         = "Высота потолков (м, опционально). Пример: 2.7"
+
+# Справочник опций для кнопок (код, метка)
+FLAT_ENUMS: dict[str, list[tuple[str, str]]] = {
+    "market": [
+        ("new", "Новостройка"), ("secondary", "Вторичка"),
+    ],
+    "sale_method": [
+        ("dkp", "ДКП"), ("cession", "Переуступка"), ("fz214", "ФЗ-214"),
+    ],
+    "rooms": [
+        ("studio", "Студия"), ("1", "1"), ("2", "2"), ("3", "3"), ("4plus", "4+"),
+    ],
+    "mortgage_ok": [
+        ("yes", "Да"), ("no", "Нет"),
+    ],
+    "bathroom_type": [
+        ("combined", "Совмещённый"), ("separate", "Раздельный"),
+    ],
+    "windows": [
+        ("yard", "Во двор"), ("street", "На улицу"),
+        ("sunny", "На солнечную сторону"), ("mixed", "Разное"),
+    ],
+    "house_type": [
+        ("brick", "Кирпичный"), ("panel", "Панельный"),
+        ("block", "Блочный"), ("monolith", "Монолитный"), ("mono_brick", "Монолит-кирпич"),
+    ],
+    "lift": [
+        ("none", "Нет"), ("passenger", "Пассажирский"),
+        ("cargo", "Грузовой"), ("both", "Оба"),
+    ],
+    "parking": [
+        ("underground", "Подземная"), ("ground", "Наземная"),
+        ("multilevel", "Многоуровневая"), ("yard_open", "Открытая во дворе"),
+        ("gated", "За шлагбаумом"),
+    ],
+    "renovation": [
+        ("need", "Требуется"), ("cosmetic", "Косметический"),
+        ("euro", "Евро"), ("designer", "Дизайнерский"),
+    ],
+    "layout": [
+        ("isolated", "Изолированные"), ("adjacent", "Смежные"),
+        ("mixed", "И то, и другое"),
+    ],
+    "balcony": [
+        ("none", "Нет"), ("balcony", "Балкон"),
+        ("loggia", "Лоджия"), ("several", "Несколько"),
+    ],
+}
 
 
 # ==========================
-# Состояния FSM
+# Клавиатуры
 # ==========================
-class DescriptionStates(StatesGroup):
-    waiting_for_property_type = State()
-    waiting_for_flat_market = State()
-    waiting_for_rooms = State()
-    waiting_for_mortgage = State()
-    waiting_for_total_area = State()
-    waiting_for_kitchen_area = State()
-    waiting_for_floor = State()
-    waiting_for_floors_total = State()
-    waiting_for_bathroom = State()
-    waiting_for_windows = State()
-    waiting_for_house_type = State()
-    waiting_for_elevator = State()
-    waiting_for_parking = State()
-    waiting_for_renovation = State()
-    waiting_for_layout = State()
-    waiting_for_balcony = State()
-    waiting_for_ceiling_height = State()
-    waiting_for_new_building_completion = State()
-    waiting_for_new_building_sale_type = State()
-
-    # Загородная недвижимость - Дом
-    waiting_for_country_house_type = State()
-    waiting_for_house_area = State()
-    waiting_for_land_area = State()
-    waiting_for_distance = State()
-    waiting_for_house_floors = State()
-    waiting_for_house_rooms = State()
-    waiting_for_land_category_house = State()
-    waiting_for_house_renovation = State()
-    waiting_for_house_bathroom = State()
-    waiting_for_house_utilities = State()
-    waiting_for_house_recreation = State()
-    waiting_for_house_wall_material = State()
-    waiting_for_house_parking = State()
-    waiting_for_house_transport = State()
-
-    # Загородная недвижимость - Участок
-    waiting_for_land_category = State()
-    waiting_for_land_area_simple = State()
-    waiting_for_land_distance = State()
-    waiting_for_land_utilities = State()
-
-    # Коммерческая недвижимость
-    waiting_for_commercial_type = State()
-    waiting_for_commercial_area = State()
-    waiting_for_commercial_land_area = State()
-    waiting_for_commercial_building_type = State()
-    waiting_for_commercial_whole_object = State()
-    waiting_for_commercial_condition = State()
-    waiting_for_commercial_entrance = State()
-    waiting_for_commercial_parking = State()
-    waiting_for_commercial_layout = State()
-
+def kb_type()    -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_TYPES,   "desc_type_",   1)
+def kb_class()   -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_CLASSES,"desc_class_",  1)
+def kb_complex() -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_COMPLEX,"desc_complex_",1)
+def kb_area()    -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_AREA,   "desc_area_",   1)
 
 # ==========================
-# Тексты вопросов
-# ==========================
-ASK_PROPERTY_TYPE = "🏠 *Выберите тип недвижимости:*"
-ASK_FLAT_MARKET = "🏢 *Рынок квартиры?*"
-ASK_ROOMS = "🚪 *Количество комнат?*"
-ASK_MORTGAGE = "🏦 *Подходит для ипотеки?*"
-ASK_TOTAL_AREA = "📐 *Укажите общую площадь (м²)*"
-ASK_KITCHEN_AREA = "👨‍🍳 *Площадь кухни (м²)*"
-ASK_FLOOR = "🏢 *Этаж квартиры?*"
-ASK_FLOORS_TOTAL = "🏗️ *Сколько этажей в доме?*"
-ASK_BATHROOM = "🚽 *Санузел?*"
-ASK_WINDOWS = "🪟 *Куда выходят окна?*"
-ASK_HOUSE_TYPE = "🏘️ *Тип дома?*"
-ASK_ELEVATOR = "🛗 *Лифт?*"
-ASK_PARKING = "🅿️ *Парковка?*"
-ASK_RENOVATION = "🔨 *Состояние ремонта?*"
-ASK_LAYOUT = "📐 *Планировка комнат?*"
-ASK_BALCONY = "🌿 *Балкон или лоджия?*"
-ASK_CEILING_HEIGHT = "📏 *Высота потолков (м)?*"
-ASK_NEW_BUILDING_COMPLETION = "📅 *Срок сдачи?*"
-ASK_NEW_BUILDING_SALE_TYPE = "📄 *Способ продажи?*"
-
-# Загородная недвижимость
-ASK_COUNTRY_HOUSE_TYPE = "🏡 *Тип объекта?*"
-ASK_HOUSE_AREA = "📐 *Площадь дома (м²)?*"
-ASK_LAND_AREA = "🌳 *Площадь участка (сот.)?*"
-ASK_DISTANCE = "📍 *Расстояние от города (км)?*"
-ASK_HOUSE_FLOORS = "🏠 *Этажей в доме?*"
-ASK_HOUSE_ROOMS = "🚪 *Комнат?*"
-ASK_LAND_CATEGORY_HOUSE = "🏞️ *Категория земель?*"
-ASK_HOUSE_RENOVATION = "🔨 *Состояние/ремонт?*"
-ASK_HOUSE_BATHROOM = "🚽 *Санузел?*"
-ASK_HOUSE_UTILITIES = "⚡ *Коммуникации?*"
-ASK_HOUSE_RECREATION = "🎯 *Для отдыха?*"
-ASK_HOUSE_WALL_MATERIAL = "🧱 *Материал стен?*"
-ASK_HOUSE_PARKING = "🅿️ *Парковка?*"
-ASK_HOUSE_TRANSPORT = "🚗 *Транспортная доступность?*"
-
-ASK_LAND_CATEGORY = "🏞️ *Категория земель?*"
-ASK_LAND_AREA_SIMPLE = "🌳 *Площадь участка (сот.)?*"
-ASK_LAND_DISTANCE = "📍 *Расстояние до города (км)?*"
-ASK_LAND_UTILITIES = "⚡ *Коммуникации?*"
-
-# Коммерческая недвижимость
-ASK_COMMERCIAL_TYPE = "🏢 *Вид объекта?*"
-ASK_COMMERCIAL_AREA = "📐 *Площадь помещения (м²)?*"
-ASK_COMMERCIAL_LAND_AREA = "🌳 *Площадь участка (если есть)?*"
-ASK_COMMERCIAL_BUILDING_TYPE = "🏛️ *Тип здания?*"
-ASK_COMMERCIAL_WHOLE_OBJECT = "🏢 *Объект целиком?*"
-ASK_COMMERCIAL_CONDITION = "🔨 *Отделка?*"
-ASK_COMMERCIAL_ENTRANCE = "🚪 *Вход?*"
-ASK_COMMERCIAL_PARKING = "🅿️ *Парковка?*"
-ASK_COMMERCIAL_LAYOUT = "📐 *Планировка?*"
-
-GENERATING = "⏳ *Генерирую описание… это займёт до минуты.*"
-ERROR_TEXT = "😔 *Не получилось сгенерировать описание. Попробуйте ещё раз.*"
-
-DESC_INTRO = """🏠 *Создание продающего описания*
-
-Заполните характеристики объекта для генерации профессионального описания.
-
-_Выберите тип недвижимости:_"""
-
-
-# ==========================
-# Утилиты
+# Утилиты редактирования
 # ==========================
 async def _edit_text_or_caption(msg: Message, text: str, kb: Optional[InlineKeyboardMarkup] = None) -> None:
-    """Обновить текст/подпись и клавиатуру текущего сообщения."""
+    """Обновить текст/подпись и клавиатуру текущего сообщения (без создания нового)."""
     try:
-        await msg.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-        return
+        await msg.edit_text(text, reply_markup=kb); return
     except TelegramBadRequest:
         pass
     try:
-        await msg.edit_caption(caption=text, reply_markup=kb, parse_mode="Markdown")
-        return
+        await msg.edit_caption(caption=text, reply_markup=kb); return
     except TelegramBadRequest:
         pass
-
+    try:
+        await msg.edit_reply_markup(reply_markup=kb)
+    except TelegramBadRequest:
+        pass
 
 async def _edit_or_replace_with_photo_file(
-        bot: Bot, msg: Message, file_path: str, caption: str, kb: Optional[InlineKeyboardMarkup] = None
+    bot: Bot, msg: Message, file_path: str, caption: str, kb: Optional[InlineKeyboardMarkup] = None
 ) -> None:
-    """Поменять текущее сообщение на фото с подписью."""
+    """
+    Поменять текущее сообщение на фото с подписью и клавиатурой.
+    Если редактирование невозможно (сообщение было текстовым и т.п.) — удаляем и шлём новое фото.
+    """
     try:
-        media = InputMediaPhoto(media=FSInputFile(file_path), caption=caption, parse_mode="Markdown")
+        media = InputMediaPhoto(media=FSInputFile(file_path), caption=caption)
         await msg.edit_media(media=media, reply_markup=kb)
         return
     except TelegramBadRequest:
+        # удаляем старое и отправляем новое фото (визуально как «апдейт» экрана)
         try:
             await msg.delete()
         except TelegramBadRequest:
             pass
-        await bot.send_photo(chat_id=msg.chat.id, photo=FSInputFile(file_path),
-                             caption=caption, reply_markup=kb, parse_mode="Markdown")
+        await bot.send_photo(chat_id=msg.chat.id, photo=FSInputFile(file_path), caption=caption, reply_markup=kb)
 
-
-def _create_navigation_buttons(back_state: Optional[str] = None) -> List[InlineKeyboardButton]:
-    """Создать кнопки навигации."""
-    buttons = []
-    if back_state:
-        buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"desc_back_{back_state}"))
-    buttons.append(InlineKeyboardButton(text="⏭️ Пропустить", callback_data="desc_skip"))
-    buttons.append(InlineKeyboardButton(text="🔄 Сброс", callback_data="desc_reset"))
-    return buttons
-
-
-def _create_number_keyboard(presets: List[str], step_name: str, back_state: str) -> InlineKeyboardMarkup:
-    """Создать клавиатуру для числового ввода с пресетами."""
-    buttons = []
-    row = []
-    for i, preset in enumerate(presets):
-        row.append(InlineKeyboardButton(text=preset, callback_data=f"desc_{step_name}_{preset}"))
-        if len(row) == 2 or i == len(presets) - 1:
-            buttons.append(row)
-            row = []
-
-    # Кнопка "Другое" для ручного ввода
-    buttons.append([InlineKeyboardButton(text="✏️ Другое…", callback_data=f"desc_{step_name}_other")])
-
-    # Кнопки навигации
-    buttons.append(_create_navigation_buttons(back_state))
-
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def _create_simple_keyboard(options: List[str], step_name: str, back_state: str,
-                            columns: int = 2) -> InlineKeyboardMarkup:
-    """Создать простую клавиатуру с вариантами ответов."""
-    buttons = []
-    row = []
-    for i, option in enumerate(options):
-        row.append(
-            InlineKeyboardButton(text=option, callback_data=f"desc_{step_name}_{option.lower().replace(' ', '_')}"))
-        if len(row) == columns or i == len(options) - 1:
-            buttons.append(row)
-            row = []
-
-    # Кнопки навигации
-    buttons.append(_create_navigation_buttons(back_state))
-
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def _create_multi_select_keyboard(options: List[str], step_name: str, back_state: str,
-                                  selected: List[str] = None) -> InlineKeyboardMarkup:
-    """Создать клавиатуру для множественного выбора."""
-    if selected is None:
-        selected = []
-
-    buttons = []
-    for option in options:
-        is_selected = option in selected
-        emoji = "✅ " if is_selected else "◻️ "
-        buttons.append([
-            InlineKeyboardButton(
-                text=f"{emoji}{option}",
-                callback_data=f"desc_{step_name}_toggle_{option.lower().replace(' ', '_')}"
-            )
-        ])
-
-    # Кнопка подтверждения
-    buttons.append([InlineKeyboardButton(text="✅ Готово", callback_data=f"desc_{step_name}_done")])
-
-    # Кнопки навигации
-    buttons.append(_create_navigation_buttons(back_state))
-
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
+def _split_for_telegram(text: str, limit: int = 4000) -> List[str]:
+    """Нарезает ответ на куски <= limit символов по строкам/абзацам."""
+    if len(text) <= limit:
+        return [text]
+    parts: List[str] = []
+    chunk: List[str] = []
+    length = 0
+    for line in text.splitlines(True):  # сохраняем \n
+        if length + len(line) > limit and chunk:
+            parts.append("".join(chunk)); chunk = [line]; length = len(line)
+        else:
+            chunk.append(line); length += len(line)
+    if chunk:
+        parts.append("".join(chunk))
+    return parts
 
 # ==========================
-# Клавиатуры для каждого шага
+# Клавиатуры из конфига
 # ==========================
-def kb_property_type() -> InlineKeyboardMarkup:
-    buttons = [
-        [InlineKeyboardButton(text="🏢 Квартира", callback_data="desc_property_type_flat")],
-        [InlineKeyboardButton(text="🏡 Загородная", callback_data="desc_property_type_country")],
-        [InlineKeyboardButton(text="🏢 Коммерческая", callback_data="desc_property_type_commercial")],
-        _create_navigation_buttons()
+def _kb_from_map(m: Dict[str, str], prefix: str, columns: int = 1) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for key, label in m.items():
+        btn = InlineKeyboardButton(text=label, callback_data=f"{prefix}{key}")
+        if columns <= 1:
+            rows.append([btn])
+        else:
+            row.append(btn)
+            if len(row) >= columns:
+                rows.append(row); row = []
+    if row:
+        rows.append(row)
+    # Кнопка «Назад» (если нужна единая навигация по боту)
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def _kb_enum(key: str) -> InlineKeyboardMarkup:
+    """Клавиатура для перечислимого поля + «Свой вариант…»."""
+    opts = FLAT_ENUMS.get(key, [])
+    rows: list[list[InlineKeyboardButton]] = []
+    for code, label in opts:
+        rows.append([InlineKeyboardButton(text=label, callback_data=f"desc_enum_{key}_{code}")])
+    rows.append([InlineKeyboardButton(text="✍️ Свой вариант…", callback_data=f"desc_enum_other_{key}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def _kb_skip_field(key: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏭ Пропустить", callback_data=f"desc_flat_skip_{key}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")]
+    ])
+
+
+
+def kb_retry() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔁 Ещё раз", callback_data="description")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")]
+    ])
+
+def kb_apt_condition() -> InlineKeyboardMarkup:
+    """
+    Блок выбора состояния квартиры (кнопки) + «Назад».
+    """
+    rows = [
+        [InlineKeyboardButton(text="1. Дизайнерский ремонт",      callback_data="desc_cond_designer")],
+        [InlineKeyboardButton(text="2. «Евро-ремонт»",            callback_data="desc_cond_euro")],
+        [InlineKeyboardButton(text="3. Косметический",            callback_data="desc_cond_cosmetic")],
+        [InlineKeyboardButton(text="4. Требует ремонта",          callback_data="desc_cond_need")],
+        [InlineKeyboardButton(text="⬅️ Назад",                    callback_data="desc_cond_back")],
     ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def kb_flat_market() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Новостройка", "Вторичка"], "flat_market", "property_type")
-
-
-def kb_rooms() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Студия", "1", "2", "3", "4+"], "rooms", "flat_market")
-
-
-def kb_mortgage() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Да", "Нет"], "mortgage", "rooms")
-
-
-def kb_total_area() -> InlineKeyboardMarkup:
-    return _create_number_keyboard(["30", "40", "50", "70", "100"], "total_area", "mortgage")
-
-
-def kb_kitchen_area() -> InlineKeyboardMarkup:
-    return _create_number_keyboard(["6", "9", "12", "15", "20"], "kitchen_area", "total_area")
-
-
-def kb_floor() -> InlineKeyboardMarkup:
-    return _create_number_keyboard(["1", "2", "3", "4", "5", "6+"], "floor", "kitchen_area")
-
-
-def kb_floors_total() -> InlineKeyboardMarkup:
-    return _create_number_keyboard(["5", "9", "12", "16", "25+"], "floors_total", "floor")
-
-
-def kb_bathroom() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Совмещённый", "Раздельный"], "bathroom", "floors_total")
-
-
-def kb_windows() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Во двор", "На улицу", "На солнечную", "Разное"], "windows", "bathroom")
-
-
-def kb_house_type() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Кирпич", "Панель", "Блочный", "Монолит", "Монолит-кирпич"], "house_type",
-                                   "windows")
-
-
-def kb_elevator() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Нет", "Пассажирский", "Грузовой", "Оба"], "elevator", "house_type")
-
-
-def kb_parking() -> InlineKeyboardMarkup:
-    options = ["Подземная", "Наземная", "Многоуровневая", "Двор", "Двор со шлагбаумом"]
-    return _create_multi_select_keyboard(options, "parking", "elevator")
-
-
-def kb_renovation() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Требуется", "Косметический", "Евро", "Дизайнерский"], "renovation", "parking")
-
-
-def kb_layout() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Изолированные", "Смежные", "Смешанные"], "layout", "renovation")
-
-
-def kb_balcony() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Нет", "Балкон", "Лоджия", "Несколько"], "balcony", "layout")
-
-
-def kb_ceiling_height() -> InlineKeyboardMarkup:
-    return _create_number_keyboard(["2.5", "2.7", "3.0", "3.5+"], "ceiling_height", "balcony")
-
-
-def kb_new_building_completion() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Q4-2025", "2026", "2027", "2028+"], "new_building_completion", "balcony")
-
-
-def kb_new_building_sale_type() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["ДКП", "Переуступка", "ФЗ-214"], "new_building_sale_type",
-                                   "new_building_completion")
-
-
-# Загородная недвижимость
-def kb_country_house_type() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Дом", "Дача", "Коттедж", "Таунхаус", "Участок"], "country_house_type",
-                                   "property_type")
-
-
-def kb_house_area() -> InlineKeyboardMarkup:
-    return _create_number_keyboard(["80", "120", "180", "250", "300+"], "house_area", "country_house_type")
-
-
-def kb_land_area() -> InlineKeyboardMarkup:
-    return _create_number_keyboard(["6", "10", "15", "20", "30+"], "land_area", "house_area")
-
-
-def kb_distance() -> InlineKeyboardMarkup:
-    return _create_number_keyboard(["5", "10", "20", "30", "50+"], "distance", "land_area")
-
-
-def kb_house_floors() -> InlineKeyboardMarkup:
-    return _create_number_keyboard(["1", "2", "3", "4+"], "house_floors", "distance")
-
-
-def kb_house_rooms() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["2", "3", "4", "5+"], "house_rooms", "house_floors")
-
-
-def kb_land_category_house() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["ИЖС", "Садоводство", "ЛПХ", "КФХ", "Иное"], "land_category_house", "house_rooms")
-
-
-def kb_house_renovation() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Требуется", "Косметический", "Евро", "Дизайнерский"], "house_renovation",
-                                   "land_category_house")
-
-
-def kb_house_bathroom() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["В доме", "На улице", "Оба"], "house_bathroom", "house_renovation")
-
-
-def kb_house_utilities() -> InlineKeyboardMarkup:
-    options = ["Электричество", "Газ", "Отопление", "Водоснабжение", "Канализация"]
-    return _create_multi_select_keyboard(options, "house_utilities", "house_bathroom")
-
-
-def kb_house_recreation() -> InlineKeyboardMarkup:
-    options = ["Баня", "Бассейн", "Сауна", "Другое"]
-    return _create_multi_select_keyboard(options, "house_recreation", "house_utilities")
-
-
-def kb_house_wall_material() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Кирпич", "Брус", "Бревно", "Газоблок", "Металл", "Иное"], "house_wall_material",
-                                   "house_recreation")
-
-
-def kb_house_parking() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Гараж", "Парковочное место", "Навес", "Нет"], "house_parking",
-                                   "house_wall_material")
-
-
-def kb_house_transport() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Асфальт", "Остановка ОТ", "ЖД станция", "Грунтовка"], "house_transport",
-                                   "house_parking")
-
-
-def kb_land_category() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["ИЖС", "СНТ", "ДНП", "ЛПХ", "Иное"], "land_category", "country_house_type")
-
-
-def kb_land_area_simple() -> InlineKeyboardMarkup:
-    return _create_number_keyboard(["6", "10", "15", "20", "30+"], "land_area_simple", "land_category")
-
-
-def kb_land_distance() -> InlineKeyboardMarkup:
-    return _create_number_keyboard(["5", "10", "20", "30", "50+"], "land_distance", "land_area_simple")
-
-
-def kb_land_utilities() -> InlineKeyboardMarkup:
-    options = ["Газ", "Вода", "Свет", "По границе", "Нет"]
-    return _create_multi_select_keyboard(options, "land_utilities", "land_distance")
-
-
-# Коммерческая недвижимость
-def kb_commercial_type() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Офис", "ПСН", "Торговая", "Склад", "Производство", "Общепит", "Гостиница"],
-                                   "commercial_type", "property_type")
-
-
-def kb_commercial_area() -> InlineKeyboardMarkup:
-    return _create_number_keyboard(["50", "100", "200", "500", "1000+"], "commercial_area", "commercial_type")
-
-
-def kb_commercial_land_area() -> InlineKeyboardMarkup:
-    return _create_number_keyboard(["2", "5", "10", "20", "50+"], "commercial_land_area", "commercial_area")
-
-
-def kb_commercial_building_type() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["БЦ", "ТЦ", "Админздание", "Жилой дом", "Другое"], "commercial_building_type",
-                                   "commercial_land_area")
-
-
-def kb_commercial_whole_object() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Да", "Нет"], "commercial_whole_object", "commercial_building_type")
-
-
-def kb_commercial_condition() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Без отделки", "Черновая", "Чистовая", "Офисная"], "commercial_condition",
-                                   "commercial_whole_object")
-
-
-def kb_commercial_entrance() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["С улицы", "Со двора", "Отдельный второй вход"], "commercial_entrance",
-                                   "commercial_condition")
-
-
-def kb_commercial_parking() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Нет", "Улица", "Крытая", "Подземная", "Гостевая"], "commercial_parking",
-                                   "commercial_entrance")
-
-
-def kb_commercial_layout() -> InlineKeyboardMarkup:
-    return _create_simple_keyboard(["Open space", "Кабинетная", "Смешанная"], "commercial_layout", "commercial_parking")
-
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+APT_COND_LABELS = {
+    "designer": "Дизайнерский ремонт",
+    "euro":     "Евро-ремонт",
+    "cosmetic": "Косметический",
+    "need":     "Требует ремонта",
+}
+
+def kb_skip_comment() -> InlineKeyboardMarkup:
+    """Кнопка «Пропустить» для необязательного финального шага."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏭ Пропустить", callback_data="desc_comment_skip")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")],
+    ])
+
+
+# Кнопка к офферу подписки
+SUBSCRIBE_KB = InlineKeyboardMarkup(
+    inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
+)
 
 # ==========================
-# Функции навигации
+# HTTP к контроллеру
 # ==========================
-async def _get_previous_state(current_state: str) -> Optional[str]:
-    """Получить предыдущее состояние на основе текущего."""
-    state_mapping = {
-        # Квартира
-        "waiting_for_flat_market": "waiting_for_property_type",
-        "waiting_for_rooms": "waiting_for_flat_market",
-        "waiting_for_mortgage": "waiting_for_rooms",
-        "waiting_for_total_area": "waiting_for_mortgage",
-        "waiting_for_kitchen_area": "waiting_for_total_area",
-        "waiting_for_floor": "waiting_for_kitchen_area",
-        "waiting_for_floors_total": "waiting_for_floor",
-        "waiting_for_bathroom": "waiting_for_floors_total",
-        "waiting_for_windows": "waiting_for_bathroom",
-        "waiting_for_house_type": "waiting_for_windows",
-        "waiting_for_elevator": "waiting_for_house_type",
-        "waiting_for_parking": "waiting_for_elevator",
-        "waiting_for_renovation": "waiting_for_parking",
-        "waiting_for_layout": "waiting_for_renovation",
-        "waiting_for_balcony": "waiting_for_layout",
-        "waiting_for_ceiling_height": "waiting_for_balcony",
-        "waiting_for_new_building_completion": "waiting_for_balcony",
-        "waiting_for_new_building_sale_type": "waiting_for_new_building_completion",
-
-        # Загородная - Дом
-        "waiting_for_country_house_type": "waiting_for_property_type",
-        "waiting_for_house_area": "waiting_for_country_house_type",
-        "waiting_for_land_area": "waiting_for_house_area",
-        "waiting_for_distance": "waiting_for_land_area",
-        "waiting_for_house_floors": "waiting_for_distance",
-        "waiting_for_house_rooms": "waiting_for_house_floors",
-        "waiting_for_land_category_house": "waiting_for_house_rooms",
-        "waiting_for_house_renovation": "waiting_for_land_category_house",
-        "waiting_for_house_bathroom": "waiting_for_house_renovation",
-        "waiting_for_house_utilities": "waiting_for_house_bathroom",
-        "waiting_for_house_recreation": "waiting_for_house_utilities",
-        "waiting_for_house_wall_material": "waiting_for_house_recreation",
-        "waiting_for_house_parking": "waiting_for_house_wall_material",
-        "waiting_for_house_transport": "waiting_for_house_parking",
-
-        # Загородная - Участок
-        "waiting_for_land_category": "waiting_for_country_house_type",
-        "waiting_for_land_area_simple": "waiting_for_land_category",
-        "waiting_for_land_distance": "waiting_for_land_area_simple",
-        "waiting_for_land_utilities": "waiting_for_land_distance",
-
-        # Коммерческая
-        "waiting_for_commercial_type": "waiting_for_property_type",
-        "waiting_for_commercial_area": "waiting_for_commercial_type",
-        "waiting_for_commercial_land_area": "waiting_for_commercial_area",
-        "waiting_for_commercial_building_type": "waiting_for_commercial_land_area",
-        "waiting_for_commercial_whole_object": "waiting_for_commercial_building_type",
-        "waiting_for_commercial_condition": "waiting_for_commercial_whole_object",
-        "waiting_for_commercial_entrance": "waiting_for_commercial_condition",
-        "waiting_for_commercial_parking": "waiting_for_commercial_entrance",
-        "waiting_for_commercial_layout": "waiting_for_commercial_parking",
-    }
-    return state_mapping.get(current_state)
-
-
-async def _go_to_previous_step(cb: CallbackQuery, state: FSMContext, bot: Bot):
-    """Вернуться на предыдущий шаг."""
-    current_state = await state.get_state()
-    previous_state = await _get_previous_state(current_state)
-
-    if previous_state:
-        await state.set_state(previous_state)
-        await _show_current_step(cb.message, state, bot)
-    else:
-        await cb.answer("Это первый шаг")
-
-
-async def _skip_current_step(cb: CallbackQuery, state: FSMContext, bot: Bot):
-    """Пропустить текущий шаг."""
-    current_state = await state.get_state()
-    data = await state.get_data()
-
-    # Сохраняем пропущенное значение
-    state_name = current_state.replace("waiting_for_", "")
-    data[state_name] = None
-    await state.update_data(**data)
-
-    # Переходим к следующему шагу
-    await _go_to_next_step(cb.message, state, bot)
-
-
-async def _reset_flow(cb: CallbackQuery, state: FSMContext, bot: Bot):
-    """Сбросить весь процесс."""
-    await state.clear()
-    await start_description_flow(cb, state, bot)
-
-
-async def _go_to_next_step(message: Message, state: FSMContext, bot: Bot):
-    """Перейти к следующему шагу на основе текущих данных."""
-    current_state = await state.get_state()
-    data = await state.get_data()
-
-    # Определяем следующий шаг на основе текущего состояния и данных
-    next_state = await _get_next_state(current_state, data)
-
-    if next_state:
-        await state.set_state(next_state)
-        await _show_current_step(message, state, bot)
-    else:
-        # Все шаги завершены - генерируем описание
-        await _generate_description(message, state, bot)
-
-
-async def _get_next_state(current_state: str, data: Dict[str, Any]) -> Optional[State]:
-    """Определить следующий шаг на основе текущего состояния и данных."""
-    state_flow = {
-        # Начало
-        "waiting_for_property_type": {
-            "flat": DescriptionStates.waiting_for_flat_market,
-            "country": DescriptionStates.waiting_for_country_house_type,
-            "commercial": DescriptionStates.waiting_for_commercial_type,
-        },
-
-        # Квартира
-        "waiting_for_flat_market": DescriptionStates.waiting_for_rooms,
-        "waiting_for_rooms": DescriptionStates.waiting_for_mortgage,
-        "waiting_for_mortgage": DescriptionStates.waiting_for_total_area,
-        "waiting_for_total_area": DescriptionStates.waiting_for_kitchen_area,
-        "waiting_for_kitchen_area": DescriptionStates.waiting_for_floor,
-        "waiting_for_floor": DescriptionStates.waiting_for_floors_total,
-        "waiting_for_floors_total": DescriptionStates.waiting_for_bathroom,
-        "waiting_for_bathroom": DescriptionStates.waiting_for_windows,
-        "waiting_for_windows": DescriptionStates.waiting_for_house_type,
-        "waiting_for_house_type": DescriptionStates.waiting_for_elevator,
-        "waiting_for_elevator": DescriptionStates.waiting_for_parking,
-        "waiting_for_parking": DescriptionStates.waiting_for_renovation,
-        "waiting_for_renovation": DescriptionStates.waiting_for_layout,
-        "waiting_for_layout": DescriptionStates.waiting_for_balcony,
-        "waiting_for_balcony": {
-            "новостройка": DescriptionStates.waiting_for_new_building_completion,
-            "default": DescriptionStates.waiting_for_ceiling_height,
-        },
-        "waiting_for_new_building_completion": DescriptionStates.waiting_for_new_building_sale_type,
-        "waiting_for_new_building_sale_type": DescriptionStates.waiting_for_ceiling_height,
-        "waiting_for_ceiling_height": None,  # Конец цепочки
-
-        # Загородная - Дом
-        "waiting_for_country_house_type": {
-            "участок": DescriptionStates.waiting_for_land_category,
-            "default": DescriptionStates.waiting_for_house_area,
-        },
-        "waiting_for_house_area": DescriptionStates.waiting_for_land_area,
-        "waiting_for_land_area": DescriptionStates.waiting_for_distance,
-        "waiting_for_distance": DescriptionStates.waiting_for_house_floors,
-        "waiting_for_house_floors": DescriptionStates.waiting_for_house_rooms,
-        "waiting_for_house_rooms": DescriptionStates.waiting_for_land_category_house,
-        "waiting_for_land_category_house": DescriptionStates.waiting_for_house_renovation,
-        "waiting_for_house_renovation": DescriptionStates.waiting_for_house_bathroom,
-        "waiting_for_house_bathroom": DescriptionStates.waiting_for_house_utilities,
-        "waiting_for_house_utilities": DescriptionStates.waiting_for_house_recreation,
-        "waiting_for_house_recreation": DescriptionStates.waiting_for_house_wall_material,
-        "waiting_for_house_wall_material": DescriptionStates.waiting_for_house_parking,
-        "waiting_for_house_parking": DescriptionStates.waiting_for_house_transport,
-        "waiting_for_house_transport": None,
-
-        # Загородная - Участок
-        "waiting_for_land_category": DescriptionStates.waiting_for_land_area_simple,
-        "waiting_for_land_area_simple": DescriptionStates.waiting_for_land_distance,
-        "waiting_for_land_distance": DescriptionStates.waiting_for_land_utilities,
-        "waiting_for_land_utilities": None,
-
-        # Коммерческая
-        "waiting_for_commercial_type": DescriptionStates.waiting_for_commercial_area,
-        "waiting_for_commercial_area": DescriptionStates.waiting_for_commercial_land_area,
-        "waiting_for_commercial_land_area": DescriptionStates.waiting_for_commercial_building_type,
-        "waiting_for_commercial_building_type": DescriptionStates.waiting_for_commercial_whole_object,
-        "waiting_for_commercial_whole_object": DescriptionStates.waiting_for_commercial_condition,
-        "waiting_for_commercial_condition": DescriptionStates.waiting_for_commercial_entrance,
-        "waiting_for_commercial_entrance": DescriptionStates.waiting_for_commercial_parking,
-        "waiting_for_commercial_parking": DescriptionStates.waiting_for_commercial_layout,
-        "waiting_for_commercial_layout": None,
-    }
-
-    next_step = state_flow.get(current_state)
-
-    if isinstance(next_step, dict):
-        # Есть ветвление на основе данных
-        key = data.get("flat_market", "").lower() if "flat_market" in data else data.get("country_house_type",
-                                                                                         "").lower()
-        return next_step.get(key, next_step.get("default"))
-
-    return next_step
-
-
-async def _show_current_step(message: Message, state: FSMContext, bot: Bot):
-    """Показать текущий шаг с соответствующим вопросом и клавиатурой."""
-    current_state = await state.get_state()
-
-    state_to_question = {
-        "waiting_for_property_type": (ASK_PROPERTY_TYPE, kb_property_type()),
-        "waiting_for_flat_market": (ASK_FLAT_MARKET, kb_flat_market()),
-        "waiting_for_rooms": (ASK_ROOMS, kb_rooms()),
-        "waiting_for_mortgage": (ASK_MORTGAGE, kb_mortgage()),
-        "waiting_for_total_area": (ASK_TOTAL_AREA, kb_total_area()),
-        "waiting_for_kitchen_area": (ASK_KITCHEN_AREA, kb_kitchen_area()),
-        "waiting_for_floor": (ASK_FLOOR, kb_floor()),
-        "waiting_for_floors_total": (ASK_FLOORS_TOTAL, kb_floors_total()),
-        "waiting_for_bathroom": (ASK_BATHROOM, kb_bathroom()),
-        "waiting_for_windows": (ASK_WINDOWS, kb_windows()),
-        "waiting_for_house_type": (ASK_HOUSE_TYPE, kb_house_type()),
-        "waiting_for_elevator": (ASK_ELEVATOR, kb_elevator()),
-        "waiting_for_parking": (ASK_PARKING, kb_parking()),
-        "waiting_for_renovation": (ASK_RENOVATION, kb_renovation()),
-        "waiting_for_layout": (ASK_LAYOUT, kb_layout()),
-        "waiting_for_balcony": (ASK_BALCONY, kb_balcony()),
-        "waiting_for_ceiling_height": (ASK_CEILING_HEIGHT, kb_ceiling_height()),
-        "waiting_for_new_building_completion": (ASK_NEW_BUILDING_COMPLETION, kb_new_building_completion()),
-        "waiting_for_new_building_sale_type": (ASK_NEW_BUILDING_SALE_TYPE, kb_new_building_sale_type()),
-
-        # Загородная
-        "waiting_for_country_house_type": (ASK_COUNTRY_HOUSE_TYPE, kb_country_house_type()),
-        "waiting_for_house_area": (ASK_HOUSE_AREA, kb_house_area()),
-        "waiting_for_land_area": (ASK_LAND_AREA, kb_land_area()),
-        "waiting_for_distance": (ASK_DISTANCE, kb_distance()),
-        "waiting_for_house_floors": (ASK_HOUSE_FLOORS, kb_house_floors()),
-        "waiting_for_house_rooms": (ASK_HOUSE_ROOMS, kb_house_rooms()),
-        "waiting_for_land_category_house": (ASK_LAND_CATEGORY_HOUSE, kb_land_category_house()),
-        "waiting_for_house_renovation": (ASK_HOUSE_RENOVATION, kb_house_renovation()),
-        "waiting_for_house_bathroom": (ASK_HOUSE_BATHROOM, kb_house_bathroom()),
-        "waiting_for_house_utilities": (ASK_HOUSE_UTILITIES, kb_house_utilities()),
-        "waiting_for_house_recreation": (ASK_HOUSE_RECREATION, kb_house_recreation()),
-        "waiting_for_house_wall_material": (ASK_HOUSE_WALL_MATERIAL, kb_house_wall_material()),
-        "waiting_for_house_parking": (ASK_HOUSE_PARKING, kb_house_parking()),
-        "waiting_for_house_transport": (ASK_HOUSE_TRANSPORT, kb_house_transport()),
-        "waiting_for_land_category": (ASK_LAND_CATEGORY, kb_land_category()),
-        "waiting_for_land_area_simple": (ASK_LAND_AREA_SIMPLE, kb_land_area_simple()),
-        "waiting_for_land_distance": (ASK_LAND_DISTANCE, kb_land_distance()),
-        "waiting_for_land_utilities": (ASK_LAND_UTILITIES, kb_land_utilities()),
-
-        # Коммерческая
-        "waiting_for_commercial_type": (ASK_COMMERCIAL_TYPE, kb_commercial_type()),
-        "waiting_for_commercial_area": (ASK_COMMERCIAL_AREA, kb_commercial_area()),
-        "waiting_for_commercial_land_area": (ASK_COMMERCIAL_LAND_AREA, kb_commercial_land_area()),
-        "waiting_for_commercial_building_type": (ASK_COMMERCIAL_BUILDING_TYPE, kb_commercial_building_type()),
-        "waiting_for_commercial_whole_object": (ASK_COMMERCIAL_WHOLE_OBJECT, kb_commercial_whole_object()),
-        "waiting_for_commercial_condition": (ASK_COMMERCIAL_CONDITION, kb_commercial_condition()),
-        "waiting_for_commercial_entrance": (ASK_COMMERCIAL_ENTRANCE, kb_commercial_entrance()),
-        "waiting_for_commercial_parking": (ASK_COMMERCIAL_PARKING, kb_commercial_parking()),
-        "waiting_for_commercial_layout": (ASK_COMMERCIAL_LAYOUT, kb_commercial_layout()),
-    }
-
-    question, keyboard = state_to_question.get(current_state, ("Шаг не найден", None))
-
-    if keyboard:
-        await _edit_text_or_caption(message, question, keyboard)
-
+async def _request_description_text(fields: dict, *, timeout_sec: int = 70) -> str:
+    """
+    Шлём СЫРЫЕ поля в executor (/api/v1/description/generate) и ждём чистый текст.
+    fields = {type, apt_class?, in_complex, area, comment}
+    """
+    url = f"{EXECUTOR_BASE_URL.rstrip('/')}/api/v1/description/generate"
+    t = aiohttp.ClientTimeout(total=timeout_sec)
+    async with aiohttp.ClientSession(timeout=t) as session:
+        async with session.post(url, json=fields) as resp:
+            if resp.status != 200:
+                try:
+                    data = await resp.json()
+                    detail = data.get("detail") or data.get("error") or str(data)
+                except Exception:
+                    detail = await resp.text()
+                raise RuntimeError(f"Executor HTTP {resp.status}: {detail}")
+            data = await resp.json()
+            txt = (data or {}).get("text", "").strip()
+            if not txt:
+                raise RuntimeError("Executor returned empty text")
+            return txt
 
 # ==========================
-# Обработчики
+# Шаги (callbacks)
 # ==========================
+DESCR_HOME_IMG_REL = "img/bot/descr_home.png"
+
 async def start_description_flow(cb: CallbackQuery, state: FSMContext, bot: Bot):
-    """Начать процесс описания."""
-    await state.clear()
-    await state.set_state(DescriptionStates.waiting_for_property_type)
-
-    # Показываем стартовый экран с фото
-    img_path = get_file_path("img/bot/descr_home.png")
-    if os.path.exists(img_path):
-        await _edit_or_replace_with_photo_file(bot, cb.message, img_path, DESC_INTRO, kb_property_type())
-    else:
-        await _edit_text_or_caption(cb.message, DESC_INTRO, kb_property_type())
-
-    await cb.answer()
-
-
-async def handle_property_type(cb: CallbackQuery, state: FSMContext, bot: Bot):
-    """Обработчик выбора типа недвижимости."""
-    property_type = cb.data.replace("desc_property_type_", "")
-    await state.update_data(property_type=property_type)
-    await _go_to_next_step(cb.message, state, bot)
-    await cb.answer()
-
-
-async def handle_simple_selection(cb: CallbackQuery, state: FSMContext, bot: Bot):
-    """Обработчик простого выбора (кнопки)."""
-    data_parts = cb.data.split("_")
-    step_name = data_parts[1]
-    value = "_".join(data_parts[2:])
-
-    # Преобразуем значение в читаемый формат
-    value_readable = value.replace("_", " ").title()
-
-    await state.update_data({step_name: value_readable})
-    await _go_to_next_step(cb.message, state, bot)
-    await cb.answer()
-
-
-async def handle_number_selection(cb: CallbackQuery, state: FSMContext, bot: Bot):
-    """Обработчик выбора числа."""
-    data_parts = cb.data.split("_")
-    step_name = data_parts[1]
-    value = data_parts[2]
-
-    if value == "other":
-        # Запрос ручного ввода
-        await cb.message.answer("✏️ Введите значение:")
-        # Здесь нужно перейти в состояние ожидания ручного ввода
-        # Для простоты пропускаем эту логику
+    """
+    Старт: пытаемся заменить текущее сообщение на картинку (главный экран раздела)
+    с подписью (DESC_INTRO + ASK_TYPE) и кнопками. Если файла нет — фолбэк на текст.
+    """
+    user_id = cb.message.chat.id
+    # Контроль доступа (как в plans/design)
+    if not _has_access(user_id):
+        # Сообщение об отсутствии доступа идентично подходу в plans.py
+        if not _is_sub_active(user_id):
+            await _edit_text_or_caption(cb.message, SUB_FREE, SUBSCRIBE_KB)
+        else:
+            await _edit_text_or_caption(cb.message, SUB_PAY, SUBSCRIBE_KB)
         await cb.answer()
         return
 
-    await state.update_data({step_name: value})
-    await _go_to_next_step(cb.message, state, bot)
-    await cb.answer()
+    await state.clear()
+    caption = text_descr_intro(user_id)
+    img_path = get_file_path(DESCR_HOME_IMG_REL)
 
-
-async def handle_multi_select_toggle(cb: CallbackQuery, state: FSMContext):
-    """Обработчик переключения множественного выбора."""
-    data_parts = cb.data.split("_")
-    step_name = data_parts[1]
-    value = "_".join(data_parts[3:])
-    value_readable = value.replace("_", " ").title()
-
-    data = await state.get_data()
-    current_values = data.get(step_name, [])
-
-    if value_readable in current_values:
-        current_values.remove(value_readable)
+    if os.path.exists(img_path):
+        await _edit_or_replace_with_photo_file(bot, cb.message, img_path, caption, kb_type())
     else:
-        current_values.append(value_readable)
+        await _edit_text_or_caption(cb.message, caption, kb_type())
 
-    await state.update_data({step_name: current_values})
+    await state.set_state(DescriptionStates.waiting_for_type)
+    await cb.answer()
 
-    # Обновляем клавиатуру с новым состоянием
-    current_state = await state.get_state()
-    state_name = current_state.replace("waiting_for_", "")
-    back_state = await _get_previous_state(current_state)
-    back_state_name = back_state.replace("waiting_for_", "") if back_state else None
+async def handle_type(cb: CallbackQuery, state: FSMContext):
+    """
+    type = flat / house / land ...
+    - flat  → НОВЫЙ сценарий «Квартира»: карта вопросов из ТЗ
+    - house → пропускаем «новостройка/ЖК», сразу спрашиваем расположение
+    - иное → спрашиваем «новостройка/ЖК» (как раньше)
+    """
+    val = cb.data.removeprefix("desc_type_")
+    await state.update_data(type=val)
 
-    # Создаем обновленную клавиатуру
-    keyboard = globals()[f"kb_{state_name}"]()
-    await _edit_text_or_caption(cb.message, globals()[f"ASK_{state_name.upper()}"], keyboard)
+    if val == "flat":
+        # Новый сценарий для квартиры: начинаем с рынка
+        await state.update_data(
+            __form_keys=["market"],
+            __form_step=0,
+            __flat_mode=True,
+            __awaiting_other_key=None,
+            __awaiting_free_comment=False
+        )
+        await _edit_text_or_caption(cb.message, FLAT_ASK_MARKET, _kb_enum("market"))
+        await state.set_state(DescriptionStates.waiting_for_comment)
+        await cb.answer()
+        return
+    elif val == "house" or val == "land":
+        # СКИП «новостройка/ЖК» для дома, идём сразу к расположению
+        await _edit_text_or_caption(cb.message, ASK_AREA, kb_area())
+        await state.set_state(DescriptionStates.waiting_for_area)
+    else:
+        await _edit_text_or_caption(cb.message, ASK_COMPLEX, kb_complex())
+        await state.set_state(DescriptionStates.waiting_for_complex)
 
     await cb.answer()
 
-
-async def handle_multi_select_done(cb: CallbackQuery, state: FSMContext, bot: Bot):
-    """Обработчик завершения множественного выбора."""
-    await _go_to_next_step(cb.message, state, bot)
+async def handle_class(cb: CallbackQuery, state: FSMContext):
+    """apt_class = econom / comfort / business / premium (только для квартир)."""
+    val = cb.data.removeprefix("desc_class_")
+    await state.update_data(apt_class=val)
+    # после класса — вопрос про новостройку/ЖК
+    await _edit_text_or_caption(cb.message, ASK_COMPLEX, kb_complex())
+    await state.set_state(DescriptionStates.waiting_for_complex)
     await cb.answer()
 
-
-async def handle_back(cb: CallbackQuery, state: FSMContext, bot: Bot):
-    """Обработчик кнопки Назад."""
-    await _go_to_previous_step(cb, state, bot)
+async def handle_complex(cb: CallbackQuery, state: FSMContext):
+    """in_complex = yes / no"""
+    val = cb.data.removeprefix("desc_complex_")
+    await state.update_data(in_complex=val)
+    await _edit_text_or_caption(cb.message, ASK_AREA, kb_area())
+    await state.set_state(DescriptionStates.waiting_for_area)
     await cb.answer()
 
+async def handle_area(cb: CallbackQuery, state: FSMContext):
+    """area = city / out → затем просим свободный комментарий (или «Пропустить»)."""
+    val = cb.data.removeprefix("desc_area_")
+    await state.update_data(area=val)
 
-async def handle_skip(cb: CallbackQuery, state: FSMContext, bot: Bot):
-    """Обработчик кнопки Пропустить."""
-    await _skip_current_step(cb, state, bot)
+    # Инициализируем последовательность обязательных шагов анкеты
+    data = await state.get_data()
+    obj_type = (data.get("type") or "").strip()  # flat/house/land/office/...
+
+    # Персонализированные наборы вопросов по типам:
+    # - flat (квартира): всё релевантно (включая этаж, кухня, комнаты, год/состояние)
+    # - house (дом): нет «этаж» (floor), есть этажность дома, комнаты, кухня, год/состояние
+    # - office (офис): этажность здания и этаж офиса, без «кухни» и «комнат»
+    # - land (земля/участок): только площадь, коммуникации, локация, особенности — НЕТ этажности/этажей/кухни/комнат/года
+    if obj_type == "flat":
+        form_keys: List[str] = [
+            "total_area",
+            "floors_total",
+            "floor",
+            "kitchen_area",
+            "rooms",
+            "apt_condition",   # <-- для квартиры состояние по кнопкам
+            "utilities",
+            "location",
+            "features",
+        ]
+    elif obj_type == "house":
+        form_keys = [
+            "total_area",
+            "floors_total",
+            "kitchen_area",
+            "rooms",
+            "year_or_condition",
+            "utilities",
+            "location",
+            "features",
+        ]
+    elif obj_type == "office":
+        form_keys = [
+            "total_area",
+            "floors_total",
+            "floor",
+            "year_or_condition",
+            "utilities",
+            "location",
+            "features",
+        ]
+    elif obj_type == "land":
+        form_keys = [
+            "total_area",
+            "utilities",
+            "location",
+            "features",
+        ]
+    else:
+        # безопасный дефолт — минимально общий набор
+        form_keys = ["total_area", "utilities", "location", "features"]
+
+    await state.update_data(__form_keys=form_keys, __form_step=0, __awaiting_free_comment=False)
+
+    # Попросим первый шаг
+    first_key = form_keys[0]
+    if first_key == "apt_condition":
+        # если по какой-то причине первым идёт состояние — показываем кнопки
+        await _edit_text_or_caption(cb.message, ASK_FORM_APT_COND, kb_apt_condition())
+    else:
+        await _edit_text_or_caption(cb.message, _form_prompt_for_key(first_key))
+    await state.set_state(DescriptionStates.waiting_for_comment)  # используем существующий стейт как «анкета»
     await cb.answer()
-
-
-async def handle_reset(cb: CallbackQuery, state: FSMContext, bot: Bot):
-    """Обработчик кнопки Сброс."""
-    await _reset_flow(cb, state, bot)
-    await cb.answer()
-
 
 # ==========================
-# Генерация описания
+# Квартира: шаги/подсказки
 # ==========================
-async def _generate_description(message: Message, state: FSMContext, bot: Bot):
-    """Сгенерировать описание на основе собранных данных."""
+def _flat_after_market_keys() -> list[str]:
+    """Поля, которые идут для обеих веток рынка."""
+    return [
+        "rooms", "mortgage_ok",
+        "total_area", "kitchen_area", "floor", "floors_total",
+        "bathroom_type", "windows", "house_type", "lift", "parking",
+        "renovation", "layout", "balcony", "ceiling_height_m",
+    ]
+
+def _flat_prompt_for_key(key: str) -> str:
+    return {
+        "market":            FLAT_ASK_MARKET,
+        "completion_term":   FLAT_ASK_COMPLETION_TERM,
+        "sale_method":       FLAT_ASK_SALE_METHOD,
+        "rooms":             FLAT_ASK_ROOMS,
+        "mortgage_ok":       FLAT_ASK_MORTGAGE,
+        "bathroom_type":     FLAT_ASK_BATHROOM,
+        "windows":           FLAT_ASK_WINDOWS,
+        "house_type":        FLAT_ASK_HOUSETYPE,
+        "lift":              FLAT_ASK_LIFT,
+        "parking":           FLAT_ASK_PARKING,
+        "renovation":        FLAT_ASK_RENOVATION,
+        "layout":            FLAT_ASK_LAYOUT,
+        "balcony":           FLAT_ASK_BALCONY,
+        "ceiling_height_m":  FLAT_ASK_CEILING,
+    }.get(key, "Введите значение:")
+
+async def _ask_next_flat_step(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    keys: list[str] = data.get("__form_keys") or []
+    step: int = int(data.get("__form_step") or 0)
+
+    if step >= len(keys):
+        # Все поля собраны → переходим к свободному комментарию
+        await state.update_data(__awaiting_free_comment=True)
+        await _edit_text_or_caption(msg, ASK_FREE_COMMENT, kb_skip_comment())
+        return
+
+    key = keys[step]
+
+    # Кнопочные поля
+    if key in {"market", "sale_method", "rooms", "mortgage_ok", "bathroom_type", "windows",
+               "house_type", "lift", "parking", "renovation", "layout", "balcony"}:
+        await _edit_text_or_caption(msg, _flat_prompt_for_key(key), _kb_enum(key))
+        return
+
+    # Текстовые (числа/строки)
+    if key == "completion_term":
+        await _edit_text_or_caption(msg, _flat_prompt_for_key(key))
+        return
+
+    if key == "ceiling_height_m":
+        await _edit_text_or_caption(msg, _flat_prompt_for_key(key), _kb_skip_field("ceiling_height_m"))
+        return
+
+    # total_area / kitchen_area / floor / floors_total
+    await _edit_text_or_caption(msg, _form_prompt_for_key(key))
+
+# ==========================
+# Анкета: валидация и переходы
+# ==========================
+def _parse_float(val: str) -> Optional[float]:
+    try:
+        x = float(val.replace(",", ".").strip())
+        return x if x >= 0 else None
+    except Exception:
+        return None
+
+def _parse_int(val: str) -> Optional[int]:
+    if not re.fullmatch(r"\d{1,4}", val.strip()):
+        return None
+    return int(val.strip())
+
+def _normalize_list(val: str) -> str:
+    items = [s.strip() for s in val.split(",") if s.strip()]
+    # удалим дубли, сохраняя порядок
+    seen = set(); out = []
+    for it in items:
+        key = it.lower()
+        if key not in seen:
+            seen.add(key); out.append(it)
+    return ", ".join(out)
+
+def _form_prompt_for_key(key: str) -> str:
+    return {
+        "total_area":       ASK_FORM_TOTAL_AREA,
+        "floors_total":     ASK_FORM_FLOORS_TOTAL,
+        "floor":            ASK_FORM_FLOOR,
+        "kitchen_area":     ASK_FORM_KITCHEN_AREA,
+        "rooms":            ASK_FORM_ROOMS,
+        "year_or_condition":ASK_FORM_YEAR_COND,
+        "apt_condition":    ASK_FORM_APT_COND,
+        "utilities":        ASK_FORM_UTILITIES,
+        "location":         ASK_FORM_LOCATION,
+        "features":         ASK_FORM_FEATURES,
+        "completion_term":  FLAT_ASK_COMPLETION_TERM,
+        "ceiling_height_m": FLAT_ASK_CEILING,
+    }.get(key, "Введите значение:")
+
+def _validate_and_store(key: str, text: str, data: Dict) -> Optional[str]:
+    """Возвращает None, если ок. Иначе — текст ошибки для пользователя."""
+    t = text.strip()
+    if key == "total_area":
+        v = _parse_float(t)
+        if v is None or v <= 0:
+            return "Введите положительное число в формате м². Пример: 56.4"
+        data["total_area"] = v
+        return None
+    if key == "floors_total":
+        v = _parse_int(t)
+        if v is None or v <= 0:
+            return "Введите целое число этажей. Пример: 17"
+        data["floors_total"] = v
+        return None
+    if key == "floor":
+        v = _parse_int(t)
+        if v is None or v <= 0:
+            return "Введите корректный номер этажа. Пример: 5"
+        floors_total = int(data.get("floors_total") or 0)
+        if floors_total and (v < 1 or v > floors_total):
+            return f"Этаж должен быть от 1 до {floors_total}."
+        data["floor"] = v
+        return None
+    if key == "kitchen_area":
+        v = _parse_float(t)
+        if v is None or v < 0:
+            return "Введите число (м²). Если не применимо — 0."
+        data["kitchen_area"] = v
+        return None
+    if key == "rooms":
+        v = _parse_int(t)
+        if v is None or v < 0:
+            return "Введите неотрицательное целое число комнат. Пример: 2"
+        data["rooms"] = v
+        return None
+    if key == "year_or_condition":
+        if re.fullmatch(r"\d{4}", t):
+            data["year_or_condition"] = t
+            return None
+        norm = t.lower()
+        if norm in {"новостройка", "вторичка", "требуется ремонт"}:
+            data["year_or_condition"] = norm
+            return None
+        return "Укажите год (например, 2012) или одно из: новостройка, вторичка, требуется ремонт."
+    if key == "utilities":
+        data["utilities"] = _normalize_list(t)
+        return None
+    if key == "location":
+        if len(t) < 3:
+            return "Опишите район и транспорт хотя бы несколькими словами."
+        data["location"] = t
+        return None
+    if key == "features":
+        data["features"] = _normalize_list(t)
+        return None
+    if key == "completion_term":
+        if len(t) < 4:
+            return "Укажите квартал и год. Пример: 4 кв. 2026"
+        data["completion_term"] = t
+        return None
+    if key == "ceiling_height_m":
+        # опциональное поле
+        if not t or t.lower().startswith("проп"):
+            data["ceiling_height_m"] = None
+            return None
+        v = _parse_float(t)
+        if v is None or v <= 0:
+            return "Введите число в метрах. Пример: 2.7 или нажмите «Пропустить»."
+        data["ceiling_height_m"] = v
+        return None
+    # по умолчанию — просто сохранить
+    data[key] = t
+    return None
+
+# ==========================
+# Финал (message/skip)
+# ==========================
+async def _generate_and_output(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    comment: Optional[str],
+    *,
+    reuse_anchor: bool = False,   # <-- если True, НЕ срываем якорь (используем текущее сообщение)
+) -> None:
+    """
+    Собираем сырые поля и шлём их в executor.
+    Если reuse_anchor=True — редактируем текущее сообщение (без создания нового).
+    """
+    # Повторный контроль доступа перед генерацией (на случай, если стейт «завис»)
+    user_id = message.chat.id
+    if not _has_access(user_id):
+        # Тексты как в plans.py
+        text = SUB_FREE if not _is_sub_active(user_id) else SUB_PAY
+        try:
+            await message.edit_text(text, reply_markup=SUBSCRIBE_KB)
+        except TelegramBadRequest:
+            try:
+                await message.edit_caption(caption=text, reply_markup=SUBSCRIBE_KB)
+            except TelegramBadRequest:
+                await message.answer(text, reply_markup=SUBSCRIBE_KB)
+        await state.clear()
+        return
+
     data = await state.get_data()
 
-    # Показываем сообщение о генерации
-    await _edit_text_or_caption(message, GENERATING)
+    fields = {
+        "type":       data.get("type"),
+        "apt_class":  (data.get("apt_class") if data.get("type") == "flat" else None),
+        "in_complex": data.get("in_complex"),
+        "area":       data.get("area"),
+        "comment":    (comment or "").strip(),
+        # Новые структурированные поля анкеты
+        "total_area":        data.get("total_area"),
+        "floors_total":      data.get("floors_total"),
+        "floor":             data.get("floor"),
+        "kitchen_area":      data.get("kitchen_area"),
+        "rooms":             data.get("rooms"),
+        "year_or_condition": data.get("year_or_condition"),
+        "utilities":         data.get("utilities"),
+        "location_exact":    data.get("location"),
+        "features":          data.get("features"),
+        # --- для Квартиры (новая карта) ---
+        "market":            data.get("market"),           # Новостройка / Вторичка
+        "completion_term":   data.get("completion_term"),  # для новостройки
+        "sale_method":       data.get("sale_method"),      # ДКП / Переуступка / ФЗ-214
+        "mortgage_ok":       data.get("mortgage_ok"),      # Да / Нет
+        "bathroom_type":     data.get("bathroom_type"),
+        "windows":           data.get("windows"),
+        "house_type":        data.get("house_type"),
+        "lift":              data.get("lift"),
+        "parking":           data.get("parking"),
+        "renovation":        data.get("renovation"),
+        "layout":            data.get("layout"),
+        "balcony":           data.get("balcony"),
+        "ceiling_height_m":  data.get("ceiling_height_m"),
+    }
+    # Для ДОМА — принудительно обнуляем in_complex (не применимо)
+    if data.get("type") == "house":
+        fields["in_complex"] = None
+
+    if reuse_anchor:
+        # НЕ срываем якорь: редактируем текущее сообщение
+        try:
+            await message.edit_text(GENERATING)
+        except TelegramBadRequest:
+            # если нельзя редактировать (например, это была подпись к фото) — попробуем подпись
+            try:
+                await message.edit_caption(caption=GENERATING)
+            except TelegramBadRequest:
+                pass
+        anchor_id = message.message_id
+    else:
+        # создаём НОВОЕ сообщение-экран
+        gen_msg = await message.answer(GENERATING)
+        anchor_id = gen_msg.message_id
+
+    async def _do_req():
+        return await _request_description_text(fields)
 
     try:
-        # Отправляем данные на сервер для генерации
-        description_text = await _send_generation_request(data)
+        text = await run_long_operation_with_action(
+            bot=bot, chat_id=message.chat.id, action=ChatAction.TYPING, coro=_do_req()
+        )
+        parts = _split_for_telegram(text)
 
-        # Показываем результат
-        result_text = f"🏠 *Ваше описание готово!*\n\n{description_text}"
+        # редактируем anchor результатом
+        try:
+            await bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=anchor_id,
+                text=parts[0],
+                reply_markup=kb_retry()
+            )
+        except TelegramBadRequest:
+            await message.answer(parts[0], reply_markup=kb_retry())
 
-        # Кнопка для повторной генерации
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Сгенерировать ещё", callback_data="desc_start")],
-            [InlineKeyboardButton(text="⬅️ На главную", callback_data="nav.main")]
-        ])
+        for p in parts[1:]:
+            await message.answer(p)
 
-        await _edit_text_or_caption(message, result_text, keyboard)
+    except Exception:
+        try:
+            await bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=anchor_id,
+                text=ERROR_TEXT,
+                reply_markup=kb_retry()
+            )
+        except TelegramBadRequest:
+            await message.answer(ERROR_TEXT, reply_markup=kb_retry())
 
-    except Exception as e:
-        error_text = f"{ERROR_TEXT}\n\nОшибка: {str(e)}"
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Попробовать снова", callback_data="desc_start")],
-            [InlineKeyboardButton(text="⬅️ На главную", callback_data="nav.main")]
-        ])
-        await _edit_text_or_caption(message, error_text, keyboard)
+    finally:
+        await state.clear()
 
+async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
+    """
+    waiting_for_comment работает в два этапа:
+    1) обязательная анкета (__form_keys);
+    2) необязательный свободный комментарий (можно «Пропустить»).
+    """
+    user_text = (message.text or "").strip()
+    data = await state.get_data()
 
-async def _send_generation_request(data: Dict[str, Any]) -> str:
-    """Отправить запрос на генерацию описания."""
-    url = f"{EXECUTOR_BASE_URL.rstrip('/')}/api/v1/description/generate"
+    # «Свой вариант…» для перечислимых полей
+    other_key = data.get("__awaiting_other_key")
+    if other_key:
+        if len(user_text) < 2:
+            await message.answer("Добавьте чуть подробнее, хотя бы пару символов.")
+            return
+        await state.update_data(**{other_key: user_text}, __awaiting_other_key=None)
+        step = int(data.get("__form_step") or 0) + 1
+        await state.update_data(__form_step=step)
+        await _ask_next_flat_step(message, state)
+        return
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=data) as response:
-            if response.status == 200:
-                result = await response.json()
-                return result.get("text", "Описание не было сгенерировано.")
-            else:
-                raise Exception(f"HTTP {response.status}: {await response.text()}")
+    # Этап 2: свободный комментарий?
+    if data.get("__awaiting_free_comment"):
+        # Минимальная длина свободного комментария — 50 символов (или пользователь нажимает «Пропустить»)
+        if len(user_text) < 50:
+            remain = 50 - len(user_text)
+            await message.answer(
+                "✍️ Свободный комментарий слишком короткий. "
+                f"Добавьте ещё хотя бы {remain} симв. или нажмите «Пропустить».",
+                reply_markup=kb_skip_comment()
+            )
+            return
+        # Пользователь прислал достаточный текст — генерируем с этим комментарием
+        await _generate_and_output(
+            message,
+            state,
+            bot,
+            comment=user_text,
+            reuse_anchor=False
+        )
+        return
 
+    # Этап 1: анкета
+    if data.get("__flat_mode"):
+        form_keys: List[str] = data.get("__form_keys") or []
+        step: int = int(data.get("__form_step") or 0)
+        if form_keys and step < len(form_keys):
+            current_key = form_keys[step]
+            if current_key in {"market", "sale_method", "rooms", "mortgage_ok", "bathroom_type", "windows",
+                               "house_type", "lift", "parking", "renovation", "layout", "balcony"}:
+                await message.answer("Пожалуйста, выберите вариант кнопкой ниже.", reply_markup=_kb_enum(current_key))
+                return
+
+    form_keys: List[str] = data.get("__form_keys") or []
+    step: int = int(data.get("__form_step") or 0)
+
+    # Если почему-то нет последовательности — заново попросим старт
+    if not form_keys:
+        await message.answer("Давайте начнём сначала. " + ASK_TYPE,
+                             reply_markup=_kb_from_map(ai_cfg.DESCRIPTION_TYPES, "desc_type_", 1))
+        return
+
+    current_key = form_keys[step]
+    # Валидация и сохранение
+    err = _validate_and_store(current_key, user_text, data)
+    if err:
+        await message.answer(f"⚠️ {err}\n\n{_form_prompt_for_key(current_key)}")
+        return
+
+    # Сохраняем изменения после валидации
+    await state.update_data(**{k: data.get(k) for k in [
+        "total_area","floors_total","floor","kitchen_area","rooms",
+        "year_or_condition","utilities","location","features"
+    ]})
+
+    # Следующий шаг или переход к свободному комментарию
+    step += 1
+    await state.update_data(__form_step=step)
+
+    if data.get("__flat_mode"):
+        await _ask_next_flat_step(message, state)
+        return
+
+    if step < len(form_keys):
+        next_key = form_keys[step]
+        if next_key == "apt_condition":
+            await message.answer(ASK_FORM_APT_COND, reply_markup=kb_apt_condition())
+            return
+        await message.answer(_form_prompt_for_key(next_key))
+        return
+
+    await state.update_data(__awaiting_free_comment=True)
+    await message.answer(ASK_FREE_COMMENT, reply_markup=kb_skip_comment())
+
+async def handle_comment_skip(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    """Пропуск свободного комментария (после анкеты)."""
+    data = await state.get_data()
+    if not data.get("__awaiting_free_comment"):
+        # Если нажали не вовремя — просто повторим вопрос
+        await cb.answer()
+        return
+    await _edit_text_or_caption(cb.message, "Комментарий пропущен. Начинаю генерацию…")
+    await _generate_and_output(cb.message, state, bot, comment=None, reuse_anchor=True)
+    await cb.answer()
 
 # ==========================
-# Роутер
+# Обработчики блока «Состояние квартиры» (кнопки)
 # ==========================
-def setup_description_router(router: Router):
-    """Настройка роутера для обработки описаний."""
+async def handle_apt_condition_select(cb: CallbackQuery, state: FSMContext):
+    """
+    Принимает выбор состояния квартиры (кнопки) в рамках анкеты.
+    Сохраняет значение и переводит на следующий шаг анкеты.
+    """
+    data = await state.get_data()
+    form_keys: List[str] = data.get("__form_keys") or []
+    step: int = int(data.get("__form_step") or 0)
 
-    # Старт
-    router.callback_query.register(start_description_flow, F.data == "nav.descr_home")
-    router.callback_query.register(start_description_flow, F.data == "desc_start")
+    # Защита: если текущий шаг не про apt_condition — игнорируем
+    if step >= len(form_keys) or form_keys[step] != "apt_condition":
+        await cb.answer()
+        return
 
-    # Основные обработчики выбора
-    router.callback_query.register(handle_property_type, F.data.startswith("desc_property_type_"))
+    code = cb.data.removeprefix("desc_cond_")
+    label = APT_COND_LABELS.get(code)
+    if not label:
+        await cb.answer()
+        return
 
-    # Простые выборы (кнопки)
-    simple_handlers = [
-        "flat_market", "rooms", "mortgage", "bathroom", "windows", "house_type",
-        "elevator", "renovation", "layout", "balcony", "new_building_completion",
-        "new_building_sale_type", "country_house_type", "house_rooms",
-        "land_category_house", "house_renovation", "house_bathroom",
-        "house_wall_material", "house_parking", "house_transport", "land_category",
-        "commercial_type", "commercial_building_type", "commercial_whole_object",
-        "commercial_condition", "commercial_entrance", "commercial_parking", "commercial_layout"
-    ]
+    # Сохраняем «человеческое» значение
+    await state.update_data(apt_condition=label)
 
-    for handler in simple_handlers:
-        router.callback_query.register(
-            handle_simple_selection,
-            F.data.startswith(f"desc_{handler}_")
-        )
+    # Переходим к следующему шагу
+    step += 1
+    await state.update_data(__form_step=step)
+    if step < len(form_keys):
+        next_key = form_keys[step]
+        # Если вдруг подряд снова apt_condition (не должно быть) — повторим клавиатуру
+        if next_key == "apt_condition":
+            await _edit_text_or_caption(cb.message, ASK_FORM_APT_COND, kb_apt_condition())
+        else:
+            await _edit_text_or_caption(cb.message, _form_prompt_for_key(next_key))
+    else:
+        # анкета завершена — переходим к свободному комментарию
+        await state.update_data(__awaiting_free_comment=True)
+        await _edit_text_or_caption(cb.message, ASK_FREE_COMMENT, kb_skip_comment())
+    await cb.answer("Выбрано: " + label)
 
-    # Числовые выборы
-    number_handlers = [
-        "total_area", "kitchen_area", "floor", "floors_total", "ceiling_height",
-        "house_area", "land_area", "distance", "house_floors",
-        "land_area_simple", "land_distance", "commercial_area", "commercial_land_area"
-    ]
+async def handle_apt_condition_back(cb: CallbackQuery, state: FSMContext):
+    """
+    Кнопка «Назад» внутри блока состояния:
+    Возвращаемся на предыдущий текстовый шаг анкеты.
+    """
+    data = await state.get_data()
+    form_keys: List[str] = data.get("__form_keys") or []
+    step: int = int(data.get("__form_step") or 0)
 
-    for handler in number_handlers:
-        router.callback_query.register(
-            handle_number_selection,
-            F.data.startswith(f"desc_{handler}_")
-        )
+    # Если мы не на apt_condition — игнор
+    if step >= len(form_keys) or form_keys[step] != "apt_condition":
+        await cb.answer()
+        return
 
-    # Множественный выбор
-    multi_select_handlers = ["parking", "house_utilities", "house_recreation", "land_utilities"]
+    # Шаг назад
+    prev_step = max(0, step - 1)
+    await state.update_data(__form_step=prev_step)
+    prev_key = form_keys[prev_step]
 
-    for handler in multi_select_handlers:
-        router.callback_query.register(
-            handle_multi_select_toggle,
-            F.data.startswith(f"desc_{handler}_toggle_")
-        )
-        router.callback_query.register(
-            handle_multi_select_done,
-            F.data == f"desc_{handler}_done"
-        )
+    # Показываем предыдущий вопрос (текстовый ввод)
+    await _edit_text_or_caption(cb.message, _form_prompt_for_key(prev_key))
+    await cb.answer()
 
-    # Навигация
-    router.callback_query.register(handle_back, F.data.startswith("desc_back_"))
-    router.callback_query.register(handle_skip, F.data == "desc_skip")
-    router.callback_query.register(handle_reset, F.data == "desc_reset")
+# ==========================
+# Квартира: обработчики перечислений/пропусков
+# ==========================
+async def handle_enum_select(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not data.get("__flat_mode"):
+        await cb.answer(); return
 
+    payload = cb.data.removeprefix("desc_enum_")  # key_code
+    try:
+        key, code = payload.split("_", 1)
+    except ValueError:
+        await cb.answer(); return
 
-# Экспорт роутера
-description_router = Router()
-setup_description_router(description_router)
+    label = next((lbl for c, lbl in FLAT_ENUMS.get(key, []) if c == code), code)
+    await state.update_data(**{key: label})
 
+    # Особая логика после выбора рынка
+    if key == "market" and data.get("__form_step") == 0:
+        after = _flat_after_market_keys()
+        if code == "new":
+            new_keys = ["market", "completion_term", "sale_method"] + after
+        else:
+            new_keys = ["market"] + after
+        await state.update_data(__form_keys=new_keys)
 
+    step = int(data.get("__form_step") or 0) + 1
+    await state.update_data(__form_step=step)
+    await _ask_next_flat_step(cb.message, state)
+    await cb.answer("Выбрано: " + label)
+
+async def handle_enum_other(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not data.get("__flat_mode"):
+        await cb.answer(); return
+    key = cb.data.removeprefix("desc_enum_other_")
+    await state.update_data(__awaiting_other_key=key)
+    await _edit_text_or_caption(cb.message, f"✍️ Напишите свой вариант для поля. Отправьте одним сообщением.")
+    await cb.answer()
+
+async def handle_flat_skip_field(cb: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    if not data.get("__flat_mode"):
+        await cb.answer(); return
+    key = cb.data.removeprefix("desc_flat_skip_")
+    await state.update_data(**{key: None})
+    step = int(data.get("__form_step") or 0) + 1
+    await state.update_data(__form_step=step)
+    await _ask_next_flat_step(cb.message, state)
+    await cb.answer("Пропущено")
+
+# ==========================
+# Router
+# ==========================
 def router(rt: Router):
-    rt.include_router(description_router)
+    # старт
+    rt.callback_query.register(start_description_flow, F.data == "nav.descr_home")
+    rt.callback_query.register(start_description_flow, F.data == "desc_start")
+
+    # пошаговые выборы
+    rt.callback_query.register(handle_type,    F.data.startswith("desc_type_"))
+    rt.callback_query.register(handle_class,   F.data.startswith("desc_class_"))
+    rt.callback_query.register(handle_complex, F.data.startswith("desc_complex_"))
+    rt.callback_query.register(handle_area,    F.data.startswith("desc_area_"))
+
+    # состояние квартиры (кнопки) — в рамках анкеты
+    rt.callback_query.register(handle_apt_condition_select, F.data.startswith("desc_cond_"), DescriptionStates.waiting_for_comment)
+    rt.callback_query.register(handle_apt_condition_back,   F.data == "desc_cond_back",      DescriptionStates.waiting_for_comment)
+
+    # Квартира: перечисления, свой вариант, пропуск опционального поля
+    rt.callback_query.register(handle_enum_other, F.data.startswith("desc_enum_other_"), DescriptionStates.waiting_for_comment)
+    rt.callback_query.register(handle_enum_select, F.data.startswith("desc_enum_"),       DescriptionStates.waiting_for_comment)
+    rt.callback_query.register(handle_flat_skip_field, F.data.startswith("desc_flat_skip_"), DescriptionStates.waiting_for_comment)
+
+    # анкета + свободный комментарий / пропуск
+    rt.message.register(handle_comment_message, DescriptionStates.waiting_for_comment, F.text)
+    rt.callback_query.register(handle_comment_skip, F.data == "desc_comment_skip", DescriptionStates.waiting_for_comment)
