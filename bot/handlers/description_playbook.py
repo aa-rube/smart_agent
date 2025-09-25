@@ -365,7 +365,7 @@ COMM_ENUMS: dict[str, list[tuple[str, str]]] = {
     "comm_building_type": [
         ("bc", "Бизнес-центр"),
         ("mall", "ТЦ"),
-        ("admin", "Админздание"),
+        ("admin", "админ. здание"),
         ("residential", "Жилой дом"),
         ("other", "Другое"),
     ],
@@ -470,8 +470,8 @@ async def _edit_text_or_caption(msg: Message, text: str, kb: Optional[InlineKeyb
 async def _send_step(msg: Message, text: str, kb: Optional[InlineKeyboardMarkup] = None, *, new: bool = False) -> None:
     """
     Унифицированный вывод шага:
-    - new=False  → редактируем текущее сообщение (для callback-сценариев).
-    - new=True   → отправляем НОВОЕ сообщение (для текстового ввода).
+    - new=False → редактируем текущее сообщение (для callback-сценариев).
+    - new=True → отправляем НОВОЕ сообщение (для текстового ввода).
     """
     if new:
         await msg.answer(text, reply_markup=kb)
@@ -570,7 +570,7 @@ def _kb_back_only() -> InlineKeyboardMarkup:
     """
     Инлайн-клавиатура с единственной кнопкой «Назад».
     Нужна для текстовых шагов без предустановленных вариантов.
-    Поведение как и в остальных клавиатурах — уходит на первый экран алгоритма.
+    Поведение, как и в остальных клавиатурах — уходит на первый экран алгоритма.
     """
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")]
@@ -1482,7 +1482,8 @@ async def handle_enum_select(cb: CallbackQuery, state: FSMContext):
 
     payload = cb.data.removeprefix("desc_enum_")  # key_code
     try:
-        key, code = payload.split("_", 1)
+        # ключи вроде country_object_type / comm_building_type и т.п.
+        key, code = payload.rsplit("_", 1)
     except ValueError:
         return
 
@@ -1663,7 +1664,9 @@ async def handle_country_multi_toggle(cb: CallbackQuery, state: FSMContext):
     if payload.startswith("done_"):
         return
     try:
-        key, code = payload.split("_", 1)
+        # важный фикс: ключи вида country_utilities содержат '_'
+        # поэтому режем с конца, а не с начала
+        key, code = payload.rsplit("_", 1)
     except ValueError:
         return
     if key not in COUNTRY_MULTI_ENUMS:
