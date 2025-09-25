@@ -69,6 +69,12 @@ class User(Base):
         cascade="all, delete-orphan",
         lazy="selectin",
     )
+    # история "Описание объекта" (большие тексты)
+    descriptions: Mapped[list["DescriptionHistory"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
 
 
 class Variable(Base):
@@ -146,6 +152,30 @@ class SummaryHistory(Base):
     result_json:  Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # результат анализа
 
     user: Mapped[User] = relationship(back_populates="summaries")
+
+
+class DescriptionHistory(Base):
+    """
+    История запросов/результатов по генерации «описания объекта».
+    Отдельная таблица под большие тексты.
+    """
+    __tablename__ = "description_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Входные поля (что отправляли в executor) — как JSON
+    fields_json: Mapped[str] = mapped_column(Text, nullable=False)
+    # Результат генерации — большой текст
+    result_text: Mapped[str] = mapped_column(Text, nullable=False)
+
+    user: Mapped[User] = relationship(back_populates="descriptions")
 
 
 class PaymentLog(Base):
@@ -579,6 +609,61 @@ class UserRepository:
                 "result": json.loads(rec.result_json or "null") if rec.result_json else None,
             }
 
+    # --- Description (описания объектов): CRUD ---
+    def description_add(self, user_id: int, *, fields: dict, result_text: str) -> int:
+        """
+        Добавляет запись истории «Описание объекта».
+        """
+        with self._session() as s, s.begin():
+            if s.get(User, user_id) is None:
+                s.add(User(user_id=user_id))
+            rec = DescriptionHistory(
+                user_id=user_id,
+                fields_json=json.dumps(fields or {}, ensure_ascii=False),
+                result_text=result_text or "",
+            )
+            s.add(rec)
+            s.flush()
+            return rec.id
+
+    def description_list(self, user_id: int, limit: int = 10) -> list[dict]:
+        with self._session() as s:
+            q = (
+                s.query(DescriptionHistory)
+                .filter(DescriptionHistory.user_id == user_id)
+                .order_by(DescriptionHistory.id.desc())
+                .limit(limit)
+            )
+            items: list[dict] = []
+            for rec in q:
+                items.append({
+                    "id": rec.id,
+                    "created_at": rec.created_at.isoformat(timespec="seconds"),
+                    # лёгкий превью по результату (первые 60 символов без переводов)
+                    "preview": (rec.result_text or "").replace("\n", " ")[:60],
+                })
+            return items
+
+    def description_get(self, user_id: int, entry_id: int) -> Optional[dict]:
+        with self._session() as s:
+            rec = s.get(DescriptionHistory, entry_id)
+            if rec is None or rec.user_id != user_id:
+                return None
+            return {
+                "id": rec.id,
+                "created_at": rec.created_at.isoformat(timespec="seconds"),
+                "fields": json.loads(rec.fields_json or "{}"),
+                "result_text": rec.result_text or "",
+            }
+
+    def description_delete(self, user_id: int, entry_id: int) -> bool:
+        with self._session() as s, s.begin():
+            rec = s.get(DescriptionHistory, entry_id)
+            if rec is None or rec.user_id != user_id:
+                return False
+            s.delete(rec)
+            return True
+
 
 # Глобальный «репозиторий» для обратной совместимости
 _repo = UserRepository(SessionLocal)
@@ -634,6 +719,19 @@ def summary_list_entries(user_id: int, limit: int = 10) -> list[dict]:
 
 def summary_get_entry(user_id: int, entry_id: int) -> Optional[dict]:
     return _repo.summary_get_entry(user_id, entry_id)
+
+# -------- Descriptions (история описаний) --------
+def description_add(*, user_id: int, fields: dict, result_text: str) -> int:
+    return _repo.description_add(user_id, fields=fields, result_text=result_text)
+
+def description_list(user_id: int, limit: int = 10) -> list[dict]:
+    return _repo.description_list(user_id, limit=limit)
+
+def description_get(user_id: int, entry_id: int) -> Optional[dict]:
+    return _repo.description_get(user_id, entry_id)
+
+def description_delete(user_id: int, entry_id: int) -> bool:
+    return _repo.description_delete(user_id, entry_id)
 
 # -------- Payments (лог/идемпотентность) --------
 def payment_log_upsert(*, payment_id: str, user_id: Optional[int], amount_value: Optional[str],

@@ -420,6 +420,7 @@ def kb_type_merged() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Квартира",                  callback_data="desc_type_flat")],
         [InlineKeyboardButton(text="Загородная недвижимость",   callback_data="desc_type_country")],
         [InlineKeyboardButton(text="Коммерческая недвижимость", callback_data="desc_type_commercial")],
+        [InlineKeyboardButton(text="🗂 История запросов",        callback_data="desc_history")],
         [InlineKeyboardButton(text="⬅️ Назад",                  callback_data="nav.descr_home")],  # на первом экране «Назад» выводит из алгоритма
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -576,11 +577,33 @@ def _kb_back_only() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")]
     ])
 
+def _kb_history_list(items: list[dict]) -> InlineKeyboardMarkup:
+    """
+    Список последних записей истории (кнопка на каждую запись).
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    if not items:
+        rows.append([InlineKeyboardButton(text="Записей пока нет", callback_data="noop")])
+    else:
+        for it in items:
+            title = f"#{it['id']} • {it['created_at']} • {it.get('preview','')}"
+            rows.append([InlineKeyboardButton(text=title[:64], callback_data=f"desc_hist_item_{it['id']}")])
+    rows.append([InlineKeyboardButton(text="⬅️ На главный экран", callback_data="desc_start")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 def kb_retry() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔁 Ещё раз", callback_data="description")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")]  # внутренняя «Назад»
+    ])
+
+def _kb_history_item(entry_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔁 Повторить запрос", callback_data=f"desc_hist_repeat_{entry_id}")],
+        [InlineKeyboardButton(text="🗑 Удалить",          callback_data=f"desc_hist_del_{entry_id}")],
+        [InlineKeyboardButton(text="⬅️ К списку",        callback_data="desc_history")],
+        [InlineKeyboardButton(text="🏠 На главный экран", callback_data="desc_start")],
     ])
 
 def kb_apt_condition() -> InlineKeyboardMarkup:
@@ -1225,6 +1248,13 @@ async def _generate_and_output(
         )
         parts = _split_for_telegram(text)
 
+        # --- Сохраняем в историю запросов пользователя ---
+        try:
+            db.description_add(user_id=user_id, fields=fields, result_text=text)
+        except Exception:
+            # не ломаем основной флоу на ошибках БД
+            pass
+
         # редактируем anchor результатом
         try:
             await bot.edit_message_text(
@@ -1694,6 +1724,63 @@ async def handle_country_multi_done(cb: CallbackQuery, state: FSMContext):
     await _ask_next_country_step(cb.message, state)
 
 # ==========================
+# История запросов: просмотр/удаление/повтор
+# ==========================
+async def handle_history_entry(cb: CallbackQuery, state: FSMContext):
+    await _cb_ack(cb)
+    user_id = cb.message.chat.id
+    items = db.description_list(user_id=user_id, limit=10)
+    await _edit_text_or_caption(cb.message, "🗂 История запросов (последние 10):", _kb_history_list(items))
+
+async def handle_history_item(cb: CallbackQuery, state: FSMContext):
+    await _cb_ack(cb)
+    user_id = cb.message.chat.id
+    try:
+        entry_id = int(cb.data.removeprefix("desc_hist_item_"))
+    except Exception:
+        return
+    entry = db.description_get(user_id=user_id, entry_id=entry_id)
+    if not entry:
+        await _edit_text_or_caption(cb.message, "Запись не найдена или удалена.", _kb_history_list(db.description_list(user_id, 10)))
+        return
+    # Покажем часть текста и дату
+    header = f"📝 Запись #{entry['id']} от {entry['created_at']}\n\n"
+    preview = entry["result_text"]
+    text = header + (preview if len(preview) <= 3500 else preview[:3500] + "…")
+    await _edit_text_or_caption(cb.message, text, _kb_history_item(entry_id))
+
+async def handle_history_delete(cb: CallbackQuery, state: FSMContext):
+    await _cb_ack(cb)
+    user_id = cb.message.chat.id
+    try:
+        entry_id = int(cb.data.removeprefix("desc_hist_del_"))
+    except Exception:
+        return
+    db.description_delete(user_id=user_id, entry_id=entry_id)
+    items = db.description_list(user_id=user_id, limit=10)
+    await _edit_text_or_caption(cb.message, "🗂 История запросов (обновлено):", _kb_history_list(items))
+
+async def handle_history_repeat(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    """
+    Повторить запрос == отправить текст результата на доработку как свободный комментарий.
+    """
+    await _cb_ack(cb)
+    user_id = cb.message.chat.id
+    try:
+        entry_id = int(cb.data.removeprefix("desc_hist_repeat_"))
+    except Exception:
+        return
+    entry = db.description_get(user_id=user_id, entry_id=entry_id)
+    if not entry:
+        await _edit_text_or_caption(cb.message, "Запись не найдена или удалена.", _kb_history_list(db.description_list(user_id, 10)))
+        return
+    # Отправляем «повторную генерацию» с комментарием = прежний результат (для доработки)
+    # Стейт очищаем, чтобы не мешали старые шаги
+    await state.clear()
+    await _edit_text_or_caption(cb.message, "🔁 Отправляю текст на доработку…")
+    await _generate_and_output(cb.message, state, bot, comment=entry["result_text"], reuse_anchor=True)
+
+# ==========================
 # Router
 # ==========================
 def router(rt: Router):
@@ -1732,3 +1819,9 @@ def router(rt: Router):
     # анкета + свободный комментарий / пропуск
     rt.message.register(handle_comment_message, DescriptionStates.waiting_for_comment, F.text)
     rt.callback_query.register(handle_comment_skip, F.data == "desc_comment_skip", DescriptionStates.waiting_for_comment)
+
+    # История: список / запись / удалить / повторить
+    rt.callback_query.register(handle_history_entry, F.data == "desc_history")
+    rt.callback_query.register(handle_history_item, F.data.startswith("desc_hist_item_"))
+    rt.callback_query.register(handle_history_delete, F.data.startswith("desc_hist_del_"))
+    rt.callback_query.register(handle_history_repeat, F.data.startswith("desc_hist_repeat_"))
