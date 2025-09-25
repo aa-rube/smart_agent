@@ -1898,11 +1898,16 @@ async def handle_history_item(cb: CallbackQuery, state: FSMContext):
     if not entry:
         await _edit_text_or_caption(cb.message, "Запись не найдена или удалена.", _kb_history_list(db.description_list(user_id, 10)))
         return
-    # Покажем часть текста и дату
-    header = f"📝 Запись #{entry['id']} от {entry['created_at']}\n\n"
-    preview = entry["result_text"]
-    text = header + (preview if len(preview) <= 3500 else preview[:3500] + "…")
-    await _edit_text_or_caption(cb.message, text, _kb_history_item(entry_id))
+    # Покажем меню (кнопки) в текущем сообщении и отправим ПОЛНЫЙ текст отдельным(и) сообщением(ями)
+    header = f"📝 Запись #{entry['id']} от {entry['created_at']}\n\nТекст записи отправлен ниже 👇"
+    await _edit_text_or_caption(cb.message, header, _kb_history_item(entry_id))
+
+    full_text = (entry.get("result_text") or "").strip()
+    if not full_text:
+        await cb.message.answer("Текст записи пуст.")
+        return
+    for part in _split_for_telegram(full_text):
+        await cb.message.answer(part)
 
 async def handle_history_delete(cb: CallbackQuery, state: FSMContext):
     await _cb_ack(cb)
