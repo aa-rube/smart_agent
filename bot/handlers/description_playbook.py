@@ -1,7 +1,6 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\description_playbook.py
 from typing import Optional, List, Dict, Set
 
-from aiogram.filters import Command
 from aiogram.types import CallbackQuery as _CbType  # type hint clarity
 import os
 import re
@@ -19,21 +18,18 @@ from aiogram.enums.chat_action import ChatAction
 from bot.config import EXECUTOR_BASE_URL, get_file_path
 from bot.states.states import DescriptionStates
 from bot.utils.chat_actions import run_long_operation_with_action
-import executor.ai_config as ai_cfg  # варианты кнопок из конфига
+import executor.ai_config as ai_cfg
 
 # ==========================
 # Навигация (Назад/Выход) и резюме
 # ==========================
 def _compose_summary(d: Dict) -> str:
     """
-    Собирает краткое резюме выбора: Аренда, квартира, Новостройка, ...
-    Отображаем только уже известные пункты.
+    Полное резюме из уже заполненных пользователем полей (любой тип объекта).
+    Короткое и компактное: ключевые «шапочные» пункты + параметры по мере наличия.
     """
-    parts: list[str] = []
-    if (dt := d.get("deal_type")):
-        parts.append("Аренда" if dt == "rent" else "Продажа")
-    if (t := d.get("type")):
-        label = {
+    def _tlabel(raw: str | None) -> str:
+        return {
             "flat": "квартира",
             "house": "дом",
             "land": "участок",
@@ -41,15 +37,128 @@ def _compose_summary(d: Dict) -> str:
             "zagorod": "загородная",
             "commercial": "коммерческая",
             "commerce": "коммерческая",
-        }.get(t, t)
-        parts.append(label)
+        }.get((raw or "").strip(), (raw or "").strip())
+
+    def _add(parts: list[str], title: str, value) -> None:
+        if value is None or value == "" or value == []:
+            return
+        if isinstance(value, (list, set, tuple)):
+            v = ", ".join([str(x) for x in value if str(x).strip()])
+        else:
+            v = str(value)
+        v = v.strip()
+        if not v:
+            return
+        parts.append(f"{title}: {v}")
+
+    # Шапка (сделка, тип, ветка)
+    head: list[str] = []
+    if (dt := d.get("deal_type")):
+        head.append("Аренда" if dt == "rent" else "Продажа")
+    if (tp := d.get("type")):
+        head.append(_tlabel(tp))
     if d.get("__flat_mode") and d.get("market"):
-        parts.append(str(d.get("market")))
+        head.append(str(d.get("market")))  # Новостройка/Вторичка
     if d.get("__country_mode") and d.get("country_object_type"):
-        parts.append(str(d.get("country_object_type")))
+        head.append(str(d.get("country_object_type")))  # Дом/Участок/...
     if d.get("__commercial_mode") and d.get("comm_object_type"):
-        parts.append(str(d.get("comm_object_type")))
-    return ", ".join([p for p in parts if p])
+        head.append(str(d.get("comm_object_type")))  # Офис/ПСН/...
+
+    # Тело (параметры)
+    body: list[str] = []
+
+    # Этаж / этажность (красиво слепляем 5/17)
+    floor = d.get("floor")
+    floors_total = d.get("floors_total")
+    if floor and floors_total:
+        body.append(f"Этаж: {floor}/{floors_total}")
+    elif floor:
+        body.append(f"Этаж: {floor}")
+    elif floors_total:
+        body.append(f"Этажность: {floors_total}")
+
+    # Площадь/комнаты/кухня (числа -> с единицами; диапазоны оставляем как есть)
+    ta = d.get("total_area")
+    ka = d.get("kitchen_area")
+    rooms = d.get("rooms")
+    _add(body, "Площадь", f"{ta} м²" if isinstance(ta, (int, float)) else ta)
+    if rooms is not None:
+        _add(body, "Комнаты", rooms)
+    if ka is not None:
+        _add(body, "Кухня", f"{ka} м²" if isinstance(ka, (int, float)) else ka)
+
+    # Квартира — доп. атрибуты
+    if d.get("__flat_mode"):
+        _add(body, "Срок сдачи", d.get("completion_term"))
+        _add(body, "Способ продажи", d.get("sale_method"))
+        _add(body, "Ипотека", d.get("mortgage_ok"))
+        _add(body, "Санузел", d.get("bathroom_type"))
+        _add(body, "Окна", d.get("windows"))
+        _add(body, "Тип дома", d.get("house_type"))
+        _add(body, "Лифт", d.get("lift"))
+        _add(body, "Парковка", d.get("parking"))
+        _add(body, "Ремонт", d.get("renovation") or d.get("apt_condition"))
+        _add(body, "Планировка", d.get("layout"))
+        _add(body, "Балкон", d.get("balcony"))
+        ch = d.get("ceiling_height_m")
+        if ch:
+            _add(body, "Потолки", f"{ch} м")
+
+    # Загородная — дом/участок и мультивыборы
+    if d.get("__country_mode"):
+        _add(body, "Площадь дома", d.get("country_house_area_m2"))
+        _add(body, "Участок", d.get("country_plot_area_sotki"))
+        _add(body, "Дистанция", d.get("country_distance_km"))
+        _add(body, "Этажей", d.get("country_floors"))
+        _add(body, "Комнаты", d.get("country_rooms"))
+        if d.get("country_object_type") and "участ" not in str(d.get("country_object_type")).lower():
+            _add(body, "Категория земель", d.get("country_land_category_house"))
+        else:
+            _add(body, "Категория земель", d.get("country_land_category_plot"))
+        _add(body, "Состояние", d.get("country_renovation"))
+        _add(body, "Санузел", d.get("country_toilet"))
+        _add(body, "Материал стен", d.get("country_wall_material"))
+        _add(body, "Парковка", d.get("country_parking"))
+        _add(body, "Доступность", d.get("country_transport"))
+
+        # Мультивыборы: коды -> метки
+        def _labels_from_codes(key: str, codes: list[str] | set[str] | None) -> str | None:
+            if not codes:
+                return None
+            cmap = {c: l for c, l in COUNTRY_MULTI_ENUMS.get(key, [])}
+            items = []
+            for c in _normalize_multi_selected(key, codes):
+                items.append(cmap.get(c, c))
+            return ", ".join(items) if items else None
+
+        _add(body, "Коммуникации", _labels_from_codes("country_utilities", d.get("country_utilities")))
+        _add(body, "Для отдыха", _labels_from_codes("country_leisure", d.get("country_leisure")))
+        _add(body, "Коммуникации (участок)", _labels_from_codes("country_communications_plot", d.get("country_communications_plot")))
+
+    # Коммерческая
+    if d.get("__commercial_mode"):
+        _add(body, "Площадь помещения", d.get("total_area"))
+        la = d.get("land_area")
+        _add(body, "Площадь участка", f"{la}" if la is not None else None)
+        _add(body, "Тип здания", d.get("comm_building_type"))
+        _add(body, "Объект целиком", d.get("comm_whole_object"))
+        _add(body, "Отделка", d.get("comm_finish"))
+        _add(body, "Вход", d.get("comm_entrance"))
+        _add(body, "Парковка", d.get("comm_parking"))
+        _add(body, "Планировка", d.get("comm_layout"))
+
+    # Общие поля (если были пройдены в анкете для любого типа)
+    _add(body, "Год/состояние", d.get("year_or_condition"))
+    _add(body, "Коммуникации (текст)", d.get("utilities"))
+    _add(body, "Локация", d.get("location"))
+    _add(body, "Особенности", d.get("features"))
+
+    # Формирование строки: шапка через запятую, параметры — через точку с запятой
+    head_str = ", ".join([h for h in head if h])
+    body_str = "; ".join(body)
+    if head_str and body_str:
+        return f"{head_str}; {body_str}"
+    return head_str or body_str or ""
 
 async def _with_summary(state: FSMContext, text: str) -> str:
     d = await state.get_data()
