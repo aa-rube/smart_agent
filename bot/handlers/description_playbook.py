@@ -21,6 +21,52 @@ from bot.states.states import DescriptionStates
 from bot.utils.chat_actions import run_long_operation_with_action
 import executor.ai_config as ai_cfg  # варианты кнопок из конфига
 
+# ==========================
+# Навигация (Назад/Выход) и резюме
+# ==========================
+def _compose_summary(d: Dict) -> str:
+    """
+    Собирает краткое резюме выбора: Аренда, квартира, Новостройка, ...
+    Отображаем только уже известные пункты.
+    """
+    parts: list[str] = []
+    if (dt := d.get("deal_type")):
+        parts.append("Аренда" if dt == "rent" else "Продажа")
+    if (t := d.get("type")):
+        label = {
+            "flat": "квартира",
+            "house": "дом",
+            "land": "участок",
+            "country": "загородная",
+            "zagorod": "загородная",
+            "commercial": "коммерческая",
+            "commerce": "коммерческая",
+        }.get(t, t)
+        parts.append(label)
+    if d.get("__flat_mode") and d.get("market"):
+        parts.append(str(d.get("market")))
+    if d.get("__country_mode") and d.get("country_object_type"):
+        parts.append(str(d.get("country_object_type")))
+    if d.get("__commercial_mode") and d.get("comm_object_type"):
+        parts.append(str(d.get("comm_object_type")))
+    return ", ".join([p for p in parts if p])
+
+async def _with_summary(state: FSMContext, text: str) -> str:
+    d = await state.get_data()
+    summary = _compose_summary(d)
+    return (f"• {summary}\n\n{text}") if summary else text
+
+def _kb_add_back_exit(rows: list[list[InlineKeyboardButton]]) -> list[list[InlineKeyboardButton]]:
+    """
+    Унифицированный нижний ряд для всех экранов: Назад/Выход.
+    'Назад' -> desc_back; 'Выход' -> nav.ai_tools (глобальный выход).
+    """
+    rows.append([
+        InlineKeyboardButton(text="⬅️ Назад", callback_data="desc_back"),
+        InlineKeyboardButton(text="🚪 Выход", callback_data="nav.ai_tools"),
+    ])
+    return rows
+
 # ====== Доступ / подписка (как в plans/design) ======
 import bot.utils.database as db
 from bot.utils.database import is_trial_active, trial_remaining_hours
@@ -402,7 +448,7 @@ def kb_commercial_entry() -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for code, label in COMM_ENUMS["comm_object_type"]:
         rows.append([InlineKeyboardButton(text=label, callback_data=f"desc_comm_entry_{code}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")])  # внутренняя «Назад» → на первый экран алгоритма
+    _kb_add_back_exit(rows)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -416,25 +462,24 @@ def kb_type_merged() -> InlineKeyboardMarkup:
     Фиксированный стартовый экран без зависимости от ai_cfg.DESCRIPTION_TYPES.
     Только нужные три кнопки.
     """
-    rows = [
+    rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text="Квартира",                  callback_data="desc_type_flat")],
         [InlineKeyboardButton(text="Загородная недвижимость",   callback_data="desc_type_country")],
         [InlineKeyboardButton(text="Коммерческая недвижимость", callback_data="desc_type_commercial")],
-        [InlineKeyboardButton(text="⬅️ Назад",                  callback_data="nav.descr_home")],  # на первом экране «Назад» выводит из алгоритма
     ]
+    _kb_add_back_exit(rows)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 # --- НОВОЕ: первый шаг — тип сделки
 def kb_deal() -> InlineKeyboardMarkup:
-    rows = [
+    rows: list[list[InlineKeyboardButton]] = [
         [
             InlineKeyboardButton(text="Продажа", callback_data="desc_deal_sale"),
             InlineKeyboardButton(text="Аренда", callback_data="desc_deal_rent")
          ],
-
         [InlineKeyboardButton(text="🗂 История запросов", callback_data="desc_history")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")],
     ]
+    _kb_add_back_exit(rows)  # 'Выход' уводит в nav.ai_tools
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 # --- НОВОЕ: первый шаг внутри «Загородная» — только два варианта
@@ -443,11 +488,11 @@ def kb_country_entry() -> InlineKeyboardMarkup:
     Загородные сценарии: Дом / Земельный участок.
     Дальше используется существующая логика house/plot.
     """
-    rows = [
+    rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text="Дом",               callback_data="desc_country_entry_house")],
         [InlineKeyboardButton(text="Земельный участок", callback_data="desc_country_entry_plot")],
-        [InlineKeyboardButton(text="⬅️ Назад",          callback_data="nav.descr_home")],  # внутренняя «Назад» → на первый экран алгоритма
     ]
+    _kb_add_back_exit(rows)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 def kb_class()   -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_CLASSES,"desc_class_",  1)
 def kb_complex() -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_COMPLEX,"desc_complex_",1)
@@ -533,8 +578,7 @@ def _kb_from_map(m: Dict[str, str], prefix: str, columns: int = 1) -> InlineKeyb
                 rows.append(row); row = []
     if row:
         rows.append(row)
-    # Внутренняя «Назад» — всегда на первый экран алгоритма
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")])
+    _kb_add_back_exit(rows)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def _kb_enum(key: str) -> InlineKeyboardMarkup:
@@ -545,14 +589,13 @@ def _kb_enum(key: str) -> InlineKeyboardMarkup:
     for code, label in opts:
         rows.append([InlineKeyboardButton(text=label, callback_data=f"desc_enum_{key}_{code}")])
     rows.append([InlineKeyboardButton(text="✍️ Свой вариант…", callback_data=f"desc_enum_other_{key}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")])  # внутренняя «Назад»
+    _kb_add_back_exit(rows)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def _kb_skip_field(key: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⏭ Пропустить", callback_data=f"desc_flat_skip_{key}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")]  # внутренняя «Назад»
-    ])
+    rows = [[InlineKeyboardButton(text="⏭ Пропустить", callback_data=f"desc_flat_skip_{key}")]]
+    _kb_add_back_exit(rows)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def _kb_multi_enum(key: str, selected: Optional[Set[str]] = None) -> InlineKeyboardMarkup:
     """
@@ -567,7 +610,7 @@ def _kb_multi_enum(key: str, selected: Optional[Set[str]] = None) -> InlineKeybo
         text = f"✅ {label}" if code in sel else label
         rows.append([InlineKeyboardButton(text=text, callback_data=f"desc_multi_{key}_{code}")])
     rows.append([InlineKeyboardButton(text="Готово ➡️", callback_data=f"desc_multi_done_{key}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")])  # внутренняя «Назад»
+    _kb_add_back_exit(rows)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def _kb_back_only() -> InlineKeyboardMarkup:
@@ -576,9 +619,9 @@ def _kb_back_only() -> InlineKeyboardMarkup:
     Нужна для текстовых шагов без предустановленных вариантов.
     Поведение, как и в остальных клавиатурах — уходит на первый экран алгоритма.
     """
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")]
-    ])
+    rows: list[list[InlineKeyboardButton]] = []
+    _kb_add_back_exit(rows)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def _kb_history_list(items: list[dict]) -> InlineKeyboardMarkup:
     """
@@ -591,7 +634,8 @@ def _kb_history_list(items: list[dict]) -> InlineKeyboardMarkup:
         for it in items:
             title = f"#{it['id']} • {it['created_at']} • {it.get('preview','')}"
             rows.append([InlineKeyboardButton(text=title[:64], callback_data=f"desc_hist_item_{it['id']}")])
-    rows.append([InlineKeyboardButton(text="⬅️ На главный экран", callback_data="desc_start")])
+    rows.append([InlineKeyboardButton(text="🏠 На главный экран", callback_data="desc_start")])
+    _kb_add_back_exit(rows)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -602,24 +646,26 @@ def kb_retry() -> InlineKeyboardMarkup:
     ])
 
 def _kb_history_item(entry_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+    rows = [
         [InlineKeyboardButton(text="🔁 Повторить запрос", callback_data=f"desc_hist_repeat_{entry_id}")],
         [InlineKeyboardButton(text="🗑 Удалить",          callback_data=f"desc_hist_del_{entry_id}")],
         [InlineKeyboardButton(text="⬅️ К списку",        callback_data="desc_history")],
         [InlineKeyboardButton(text="🏠 На главный экран", callback_data="desc_start")],
-    ])
+    ]
+    _kb_add_back_exit(rows)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def kb_apt_condition() -> InlineKeyboardMarkup:
     """
     Блок выбора состояния квартиры (кнопки) + «Назад».
     """
-    rows = [
+    rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text="1. Дизайнерский ремонт",      callback_data="desc_cond_designer")],
         [InlineKeyboardButton(text="2. «Евро-ремонт»",            callback_data="desc_cond_euro")],
         [InlineKeyboardButton(text="3. Косметический",            callback_data="desc_cond_cosmetic")],
         [InlineKeyboardButton(text="4. Требует ремонта",          callback_data="desc_cond_need")],
-        [InlineKeyboardButton(text="⬅️ Назад",                    callback_data="nav.descr_home")],  # внутренняя «Назад»
     ]
+    _kb_add_back_exit(rows)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 APT_COND_LABELS = {
@@ -631,10 +677,9 @@ APT_COND_LABELS = {
 
 def kb_skip_comment() -> InlineKeyboardMarkup:
     """Кнопка «Пропустить» для необязательного финального шага."""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⏭ Пропустить", callback_data="desc_comment_skip")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")],  # внутренняя «Назад»
-    ])
+    rows = [[InlineKeyboardButton(text="⏭ Пропустить", callback_data="desc_comment_skip")]]
+    _kb_add_back_exit(rows)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # Кнопка к офферу подписки
@@ -737,7 +782,7 @@ async def handle_type(cb: CallbackQuery, state: FSMContext):
             __awaiting_other_key=None,
             __awaiting_free_comment=False
         )
-        await _edit_text_or_caption(cb.message, FLAT_ASK_MARKET, _kb_enum("market"))
+        await _edit_text_or_caption(cb.message, await _with_summary(state, FLAT_ASK_MARKET), _kb_enum("market"))
         await state.set_state(DescriptionStates.waiting_for_comment)
         return
     elif val in {"country", "zagorod"}:
@@ -750,7 +795,7 @@ async def handle_type(cb: CallbackQuery, state: FSMContext):
             __awaiting_other_key=None,
             __awaiting_free_comment=False
         )
-        await _edit_text_or_caption(cb.message, COUNTRY_GROUP_ASK, kb_country_entry())
+        await _edit_text_or_caption(cb.message, await _with_summary(state, COUNTRY_GROUP_ASK), kb_country_entry())
         await state.set_state(DescriptionStates.waiting_for_comment)
         return
     elif val == "house" or val == "land":
@@ -768,7 +813,7 @@ async def handle_type(cb: CallbackQuery, state: FSMContext):
             __awaiting_other_key=None,
             __awaiting_free_comment=False,
         )
-        await _edit_text_or_caption(cb.message, COMM_ASK_GROUP, kb_commercial_entry())
+        await _edit_text_or_caption(cb.message, await _with_summary(state, COMM_ASK_GROUP), kb_commercial_entry())
         await state.set_state(DescriptionStates.waiting_for_comment)
         return
     else:
@@ -789,7 +834,7 @@ async def handle_complex(cb: CallbackQuery, state: FSMContext):
     await _cb_ack(cb)
     val = cb.data.removeprefix("desc_complex_")
     await state.update_data(in_complex=val)
-    await _edit_text_or_caption(cb.message, ASK_AREA, kb_area())
+    await _edit_text_or_caption(cb.message, await _with_summary(state, ASK_AREA), kb_area())
     await state.set_state(DescriptionStates.waiting_for_area)
 
 async def handle_area(cb: CallbackQuery, state: FSMContext):
@@ -857,10 +902,10 @@ async def handle_area(cb: CallbackQuery, state: FSMContext):
     first_key = form_keys[0]
     if first_key == "apt_condition":
         # если по какой-то причине первым идёт состояние — показываем кнопки
-        await _edit_text_or_caption(cb.message, ASK_FORM_APT_COND, kb_apt_condition())
+        await _edit_text_or_caption(cb.message, await _with_summary(state, ASK_FORM_APT_COND), kb_apt_condition())
     else:
         # текстовый шаг: добавить кнопку «Назад»
-        await _edit_text_or_caption(cb.message, _form_prompt_for_key(first_key), _kb_back_only())
+        await _edit_text_or_caption(cb.message, await _with_summary(state, _form_prompt_for_key(first_key)), _kb_back_only())
     await state.set_state(DescriptionStates.waiting_for_comment)  # используем существующий стейт как «анкета»
 
 # ==========================
@@ -905,7 +950,7 @@ async def _ask_next_flat_step(msg: Message, state: FSMContext, *, new: bool = Fa
     if step >= len(keys):
         # Все поля собраны → переходим к свободному комментарию
         await state.update_data(__awaiting_free_comment=True)
-        await _send_step(msg, ASK_FREE_COMMENT, kb_skip_comment(), new=new)
+        await _send_step(msg, await _with_summary(state, ASK_FREE_COMMENT), kb_skip_comment(), new=new)
         return
 
     key = keys[step]
@@ -917,10 +962,10 @@ async def _ask_next_flat_step(msg: Message, state: FSMContext, *, new: bool = Fa
         "bathroom_type", "windows", "house_type", "lift", "parking",
         "renovation", "layout", "balcony", "ceiling_height_m"
     }:
-        await _send_step(msg, _flat_prompt_for_key(key), _kb_enum(key), new=new)
+        await _send_step(msg, await _with_summary(state, _flat_prompt_for_key(key)), _kb_enum(key), new=new)
         return
     # На всякий случай (если вдруг шаг без предустановленных вариантов)
-    await _send_step(msg, _form_prompt_for_key(key), _kb_back_only(), new=new)
+    await _send_step(msg, await _with_summary(state, _form_prompt_for_key(key)), _kb_back_only(), new=new)
 
 # ==========================
 # Коммерческая: шаги/подсказки
@@ -945,7 +990,7 @@ async def _ask_next_commercial_step(msg: Message, state: FSMContext, *, new: boo
 
     if step >= len(keys):
         await state.update_data(__awaiting_free_comment=True)
-        await _send_step(msg, ASK_FREE_COMMENT, kb_skip_comment(), new=new)
+        await _send_step(msg, await _with_summary(state, ASK_FREE_COMMENT), kb_skip_comment(), new=new)
         return
 
     key = keys[step]
@@ -954,10 +999,10 @@ async def _ask_next_commercial_step(msg: Message, state: FSMContext, *, new: boo
         "comm_object_type", "comm_building_type", "comm_whole_object",
         "comm_finish", "comm_entrance", "comm_parking", "comm_layout"
     }:
-        await _send_step(msg, _commercial_prompt_for_key(key), _kb_enum(key), new=new)
+        await _send_step(msg, await _with_summary(state, _commercial_prompt_for_key(key)), _kb_enum(key), new=new)
         return
     # числовые/текстовые поля — показываем подсказку + кнопку «Назад»
-    await _send_step(msg, _commercial_prompt_for_key(key), _kb_back_only(), new=new)
+    await _send_step(msg, await _with_summary(state, _commercial_prompt_for_key(key)), _kb_back_only(), new=new)
 
 def _country_prompt_for_key(key: str) -> str:
     return {
@@ -989,17 +1034,17 @@ async def _ask_next_country_step(msg: Message, state: FSMContext, *, new: bool =
 
     if step >= len(keys):
         await state.update_data(__awaiting_free_comment=True)
-        await _send_step(msg, ASK_FREE_COMMENT, kb_skip_comment(), new=new)
+        await _send_step(msg, await _with_summary(state, ASK_FREE_COMMENT), kb_skip_comment(), new=new)
         return
 
     key = keys[step]
     # мультивыбор
     if key in COUNTRY_MULTI_KEYS:
         selected = _normalize_multi_selected(key, data.get(key) or [])
-        await _send_step(msg, _country_prompt_for_key(key), _kb_multi_enum(key, selected), new=new)
+        await _send_step(msg, await _with_summary(state, _country_prompt_for_key(key)), _kb_multi_enum(key, selected), new=new)
         return
     # обычные перечисления
-    await _send_step(msg, _country_prompt_for_key(key), _kb_enum(key), new=new)
+    await _send_step(msg, await _with_summary(state, _country_prompt_for_key(key)), _kb_enum(key), new=new)
 
 # ==========================
 # Анкета: валидация и переходы
@@ -1392,7 +1437,7 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
     # Валидация и сохранение
     err = _validate_and_store(current_key, user_text, data)
     if err:
-        await message.answer(f"⚠️ {err}\n\n{_form_prompt_for_key(current_key)}")
+        await message.answer(f"⚠️ {err}\n\n{_form_prompt_for_key(current_key)}", reply_markup=_kb_back_only())
         return
 
     # Сохраняем изменения после валидации
@@ -1418,14 +1463,14 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
     if step < len(form_keys):
         next_key = form_keys[step]
         if next_key == "apt_condition":
-            await message.answer(ASK_FORM_APT_COND, reply_markup=kb_apt_condition())
+            await message.answer(await _with_summary(state, ASK_FORM_APT_COND), reply_markup=kb_apt_condition())
             return
         # текстовый шаг из message-контекста — показать «Назад»
-        await message.answer(_form_prompt_for_key(next_key), reply_markup=_kb_back_only())
+        await message.answer(await _with_summary(state, _form_prompt_for_key(next_key)), reply_markup=_kb_back_only())
         return
 
     await state.update_data(__awaiting_free_comment=True)
-    await message.answer(ASK_FREE_COMMENT, reply_markup=kb_skip_comment())
+    await message.answer(await _with_summary(state, ASK_FREE_COMMENT), reply_markup=kb_skip_comment())
 
 async def handle_comment_skip(cb: CallbackQuery, state: FSMContext, bot: Bot):
     """Пропуск свободного комментария (после анкеты)."""
@@ -1784,6 +1829,93 @@ async def handle_history_repeat(cb: CallbackQuery, state: FSMContext, bot: Bot):
     await _generate_and_output(cb.message, state, bot, comment=entry["result_text"], reuse_anchor=True)
 
 # ==========================
+# Назад/Выход
+# ==========================
+async def handle_back(cb: CallbackQuery, state: FSMContext, bot: Bot):
+    """
+    Универсальный «Назад».
+    - В анкете: step-- и показать предыдущий вопрос.
+    - Из свободного комментария: вернуться на последний шаг анкеты.
+    - Из 'свой вариант…': вернуться к клавиатуре соответствующего перечисления.
+    - На ранних экранах: type -> deal; country/commercial entry -> type; area -> complex/type.
+    """
+    await _cb_ack(cb)
+    data = await state.get_data()
+    # 1) Если ждём «свой вариант»
+    other = data.get("__awaiting_other_key")
+    if other:
+        await state.update_data(__awaiting_other_key=None)
+        await _edit_text_or_caption(cb.message, await _with_summary(state, "Выберите вариант или укажите свой."), _kb_enum(other))
+        return
+
+    # 2) Если свободный комментарий
+    if data.get("__awaiting_free_comment"):
+        await state.update_data(__awaiting_free_comment=False)
+        keys: list[str] = data.get("__form_keys") or []
+        step = max(0, (len(keys) - 1))
+        await state.update_data(__form_step=step)
+        # отрисуем соответствующий шаг для режима
+        if data.get("__flat_mode"):
+            await _ask_next_flat_step(cb.message, state)
+        elif data.get("__country_mode"):
+            await _ask_next_country_step(cb.message, state)
+        elif data.get("__commercial_mode"):
+            await _ask_next_commercial_step(cb.message, state)
+        return
+
+    # 3) Если в анкете
+    if data.get("__flat_mode") or data.get("__country_mode") or data.get("__commercial_mode"):
+        keys: list[str] = data.get("__form_keys") or []
+        step: int = int(data.get("__form_step") or 0)
+        prev = step - 1
+        # первый шаг в режимах -> вернуться на «экраны входа»
+        if data.get("__flat_mode") and step <= 0:
+            await _edit_text_or_caption(cb.message, await _with_summary(state, ASK_TYPE), kb_type_merged())
+            await state.update_data(__flat_mode=False, __form_keys=[], __form_step=0)
+            await state.set_state(DescriptionStates.waiting_for_type)
+            return
+        if data.get("__country_mode") and step <= 1:
+            await _edit_text_or_caption(cb.message, await _with_summary(state, COUNTRY_GROUP_ASK), kb_country_entry())
+            await state.update_data(__form_step=0)
+            return
+        if data.get("__commercial_mode") and step <= 1:
+            await _edit_text_or_caption(cb.message, await _with_summary(state, COMM_ASK_GROUP), kb_commercial_entry())
+            await state.update_data(__form_step=0)
+            return
+        # обычный шаг анкеты --
+        prev = max(0, prev)
+        await state.update_data(__form_step=prev)
+        if data.get("__flat_mode"):
+            await _ask_next_flat_step(cb.message, state)
+        elif data.get("__country_mode"):
+            await _ask_next_country_step(cb.message, state)
+        else:
+            await _ask_next_commercial_step(cb.message, state)
+        return
+
+    # 4) Ранние экраны: type -> deal, area->complex/type
+    current = await state.get_state()
+    if current == DescriptionStates.waiting_for_type:
+        await _edit_text_or_caption(cb.message, await _with_summary(state, ASK_DEAL), kb_deal())
+        return
+    if current == DescriptionStates.waiting_for_area:
+        # если был complex — вернём на complex, иначе — к типу
+        if data.get("in_complex") is not None:
+            await _edit_text_or_caption(cb.message, await _with_summary(state, ASK_COMPLEX), kb_complex())
+            await state.set_state(DescriptionStates.waiting_for_complex)
+        else:
+            await _edit_text_or_caption(cb.message, await _with_summary(state, ASK_TYPE), kb_type_merged())
+            await state.set_state(DescriptionStates.waiting_for_type)
+        return
+    if current == DescriptionStates.waiting_for_complex:
+        await _edit_text_or_caption(cb.message, await _with_summary(state, ASK_CLASS), kb_class())
+        await state.set_state(DescriptionStates.waiting_for_complex)  # остаёмся в разделе
+        return
+
+    # Фолбэк: показать выбор сделки
+    await _edit_text_or_caption(cb.message, await _with_summary(state, ASK_DEAL), kb_deal())
+
+# ==========================
 # Router
 # ==========================
 def router(rt: Router):
@@ -1828,3 +1960,6 @@ def router(rt: Router):
     rt.callback_query.register(handle_history_item, F.data.startswith("desc_hist_item_"))
     rt.callback_query.register(handle_history_delete, F.data.startswith("desc_hist_del_"))
     rt.callback_query.register(handle_history_repeat, F.data.startswith("desc_hist_repeat_"))
+
+    # Назад
+    rt.callback_query.register(handle_back, F.data == "desc_back")
