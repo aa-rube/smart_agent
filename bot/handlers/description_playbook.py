@@ -428,6 +428,17 @@ async def _edit_text_or_caption(msg: Message, text: str, kb: Optional[InlineKeyb
     except TelegramBadRequest:
         pass
 
+async def _send_step(msg: Message, text: str, kb: Optional[InlineKeyboardMarkup] = None, *, new: bool = False) -> None:
+    """
+    Унифицированный вывод шага:
+    - new=False  → редактируем текущее сообщение (для callback-сценариев).
+    - new=True   → отправляем НОВОЕ сообщение (для текстового ввода).
+    """
+    if new:
+        await msg.answer(text, reply_markup=kb)
+    else:
+        await _edit_text_or_caption(msg, text, kb)
+
 async def _edit_or_replace_with_photo_file(
     bot: Bot, msg: Message, file_path: str, caption: str, kb: Optional[InlineKeyboardMarkup] = None
 ) -> None:
@@ -791,7 +802,7 @@ def _flat_prompt_for_key(key: str) -> str:
         "ceiling_height_m":  FLAT_ASK_CEILING,
     }.get(key, "Введите значение:")
 
-async def _ask_next_flat_step(msg: Message, state: FSMContext):
+async def _ask_next_flat_step(msg: Message, state: FSMContext, *, new: bool = False):
     data = await state.get_data()
     keys: list[str] = data.get("__form_keys") or []
     step: int = int(data.get("__form_step") or 0)
@@ -799,7 +810,7 @@ async def _ask_next_flat_step(msg: Message, state: FSMContext):
     if step >= len(keys):
         # Все поля собраны → переходим к свободному комментарию
         await state.update_data(__awaiting_free_comment=True)
-        await _edit_text_or_caption(msg, ASK_FREE_COMMENT, kb_skip_comment())
+        await _send_step(msg, ASK_FREE_COMMENT, kb_skip_comment(), new=new)
         return
 
     key = keys[step]
@@ -811,10 +822,10 @@ async def _ask_next_flat_step(msg: Message, state: FSMContext):
         "bathroom_type", "windows", "house_type", "lift", "parking",
         "renovation", "layout", "balcony", "ceiling_height_m"
     }:
-        await _edit_text_or_caption(msg, _flat_prompt_for_key(key), _kb_enum(key))
+        await _send_step(msg, _flat_prompt_for_key(key), _kb_enum(key), new=new)
         return
     # На всякий случай (не должно сработать в квартирном сценарии)
-    await _edit_text_or_caption(msg, _form_prompt_for_key(key))
+    await _send_step(msg, _form_prompt_for_key(key), None, new=new)
 
 # ==========================
 # Коммерческая: шаги/подсказки
@@ -832,14 +843,14 @@ def _commercial_prompt_for_key(key: str) -> str:
         "comm_layout":        COMM_ASK_LAYOUT,
     }.get(key, "Выберите вариант:")
 
-async def _ask_next_commercial_step(msg: Message, state: FSMContext):
+async def _ask_next_commercial_step(msg: Message, state: FSMContext, *, new: bool = False):
     data = await state.get_data()
     keys: list[str] = data.get("__form_keys") or []
     step: int = int(data.get("__form_step") or 0)
 
     if step >= len(keys):
         await state.update_data(__awaiting_free_comment=True)
-        await _edit_text_or_caption(msg, ASK_FREE_COMMENT, kb_skip_comment())
+        await _send_step(msg, ASK_FREE_COMMENT, kb_skip_comment(), new=new)
         return
 
     key = keys[step]
@@ -848,10 +859,10 @@ async def _ask_next_commercial_step(msg: Message, state: FSMContext):
         "comm_object_type", "comm_building_type", "comm_whole_object",
         "comm_finish", "comm_entrance", "comm_parking", "comm_layout"
     }:
-        await _edit_text_or_caption(msg, _commercial_prompt_for_key(key), _kb_enum(key))
+        await _send_step(msg, _commercial_prompt_for_key(key), _kb_enum(key), new=new)
         return
     # числовые поля — текстовый ввод
-    await _edit_text_or_caption(msg, _commercial_prompt_for_key(key))
+    await _send_step(msg, _commercial_prompt_for_key(key), None, new=new)
 
 def _country_prompt_for_key(key: str) -> str:
     return {
@@ -876,24 +887,24 @@ def _country_prompt_for_key(key: str) -> str:
 
 COUNTRY_MULTI_KEYS = {"country_utilities", "country_leisure", "country_communications_plot"}
 
-async def _ask_next_country_step(msg: Message, state: FSMContext):
+async def _ask_next_country_step(msg: Message, state: FSMContext, *, new: bool = False):
     data = await state.get_data()
     keys: list[str] = data.get("__form_keys") or []
     step: int = int(data.get("__form_step") or 0)
 
     if step >= len(keys):
         await state.update_data(__awaiting_free_comment=True)
-        await _edit_text_or_caption(msg, ASK_FREE_COMMENT, kb_skip_comment())
+        await _send_step(msg, ASK_FREE_COMMENT, kb_skip_comment(), new=new)
         return
 
     key = keys[step]
     # мультивыбор
     if key in COUNTRY_MULTI_KEYS:
         selected = set(data.get(key) or [])
-        await _edit_text_or_caption(msg, _country_prompt_for_key(key), _kb_multi_enum(key, selected))
+        await _send_step(msg, _country_prompt_for_key(key), _kb_multi_enum(key, selected), new=new)
         return
     # обычные перечисления
-    await _edit_text_or_caption(msg, _country_prompt_for_key(key), _kb_enum(key))
+    await _send_step(msg, _country_prompt_for_key(key), _kb_enum(key), new=new)
 
 # ==========================
 # Анкета: валидация и переходы
@@ -1193,9 +1204,9 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
         step = int(data.get("__form_step") or 0) + 1
         await state.update_data(__form_step=step)
         if data.get("__country_mode"):
-            await _ask_next_country_step(message, state)
+            await _ask_next_country_step(message, state, new=True)
         else:
-            await _ask_next_flat_step(message, state)
+            await _ask_next_flat_step(message, state, new=True)
         return
 
     # Этап 2: свободный комментарий?
@@ -1287,13 +1298,13 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
     await state.update_data(__form_step=step)
 
     if data.get("__flat_mode"):
-        await _ask_next_flat_step(message, state)
+        await _ask_next_flat_step(message, state, new=True)
         return
     if data.get("__country_mode"):
-        await _ask_next_country_step(message, state)
+        await _ask_next_country_step(message, state, new=True)
         return
     if data.get("__commercial_mode"):
-        await _ask_next_commercial_step(message, state)
+        await _ask_next_commercial_step(message, state, new=True)
         return
 
     if step < len(form_keys):
@@ -1452,7 +1463,7 @@ async def handle_enum_select(cb: CallbackQuery, state: FSMContext):
     step = int(data.get("__form_step") or 0) + 1
     await state.update_data(__form_step=step)
     if data.get("__flat_mode"):
-        await _ask_next_flat_step(cb.message, state)
+        await _ask_next_flat_step(cb.message, state)  # callback → редактируем
     elif data.get("__country_mode"):
         await _ask_next_country_step(cb.message, state)
     elif data.get("__commercial_mode"):
