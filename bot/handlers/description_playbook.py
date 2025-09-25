@@ -1627,7 +1627,10 @@ async def handle_country_multi_toggle(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     if not data.get("__country_mode"):
         return
-    payload = cb.data.removeprefix("desc_multi_")  # key_code
+    payload = cb.data.removeprefix("desc_multi_")  # key_code ИЛИ префикс "done_..."
+    # Защита от случая, когда маршрутизация поменялась и сюда попало "done_*"
+    if payload.startswith("done_"):
+        return
     try:
         key, code = payload.split("_", 1)
     except ValueError:
@@ -1682,8 +1685,9 @@ def router(rt: Router):
     rt.callback_query.register(handle_enum_select, F.data.startswith("desc_enum_"),       DescriptionStates.waiting_for_comment)
     rt.callback_query.register(handle_flat_skip_field, F.data.startswith("desc_flat_skip_"), DescriptionStates.waiting_for_comment)
     # Загородная: мультивыбор
-    rt.callback_query.register(handle_country_multi_toggle, F.data.startswith("desc_multi_"), DescriptionStates.waiting_for_comment)
+    # ВАЖНО: регистрируем "Готово" ПЕРЕД общим тогглом, иначе done уедет в toggle-хэндлер.
     rt.callback_query.register(handle_country_multi_done,   F.data.startswith("desc_multi_done_"), DescriptionStates.waiting_for_comment)
+    rt.callback_query.register(handle_country_multi_toggle, F.data.startswith("desc_multi_"),      DescriptionStates.waiting_for_comment)
 
     # Загородная: первый упрощённый шаг (Дом/Земельный участок)
     rt.callback_query.register(handle_country_entry, F.data.in_(["desc_country_entry_house", "desc_country_entry_plot"]), DescriptionStates.waiting_for_comment)
