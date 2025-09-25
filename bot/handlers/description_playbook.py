@@ -478,8 +478,8 @@ def kb_deal() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="Аренда", callback_data="desc_deal_rent")
          ],
         [InlineKeyboardButton(text="🗂 История запросов", callback_data="desc_history")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")]
     ]
-    _kb_add_back_exit(rows)  # 'Выход' уводит в nav.ai_tools
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 # --- НОВОЕ: первый шаг внутри «Загородная» — только два варианта
