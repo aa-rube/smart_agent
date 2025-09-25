@@ -1301,7 +1301,7 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
     other_key = data.get("__awaiting_other_key")
     if other_key:
         if len(user_text) < 2:
-            await message.answer("Добавьте чуть подробнее, хотя бы пару символов.")
+            await message.answer("Опишите чуть подробнее, хотя бы пару символов.")
             return
         # для country и flat — сохраняем и двигаемся дальше
         # для country и flat — сохраняем и двигаемся дальше
