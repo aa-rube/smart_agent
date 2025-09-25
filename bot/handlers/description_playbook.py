@@ -372,7 +372,7 @@ def kb_commercial_entry() -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for code, label in COMM_ENUMS["comm_object_type"]:
         rows.append([InlineKeyboardButton(text=label, callback_data=f"desc_comm_entry_{code}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")])  # внутренняя «Назад» → на первый экран алгоритма
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -390,7 +390,7 @@ def kb_type_merged() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Квартира",                  callback_data="desc_type_flat")],
         [InlineKeyboardButton(text="Загородная недвижимость",   callback_data="desc_type_country")],
         [InlineKeyboardButton(text="Коммерческая недвижимость", callback_data="desc_type_commercial")],
-        [InlineKeyboardButton(text="⬅️ Назад",                  callback_data="nav.ai_tools")],
+        [InlineKeyboardButton(text="⬅️ Назад",                  callback_data="nav.ai_tools")],  # на первом экране «Назад» выводит из алгоритма
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -403,7 +403,7 @@ def kb_country_entry() -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="Дом",               callback_data="desc_country_entry_house")],
         [InlineKeyboardButton(text="Земельный участок", callback_data="desc_country_entry_plot")],
-        [InlineKeyboardButton(text="⬅️ Назад",          callback_data="nav.descr_home")],
+        [InlineKeyboardButton(text="⬅️ Назад",          callback_data="nav.descr_home")],  # внутренняя «Назад» → на первый экран алгоритма
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 def kb_class()   -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_CLASSES,"desc_class_",  1)
@@ -479,8 +479,8 @@ def _kb_from_map(m: Dict[str, str], prefix: str, columns: int = 1) -> InlineKeyb
                 rows.append(row); row = []
     if row:
         rows.append(row)
-    # Кнопка «Назад» (если нужна единая навигация по боту)
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")])
+    # Внутренняя «Назад» — всегда на первый экран алгоритма
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def _kb_enum(key: str) -> InlineKeyboardMarkup:
@@ -491,13 +491,13 @@ def _kb_enum(key: str) -> InlineKeyboardMarkup:
     for code, label in opts:
         rows.append([InlineKeyboardButton(text=label, callback_data=f"desc_enum_{key}_{code}")])
     rows.append([InlineKeyboardButton(text="✍️ Свой вариант…", callback_data=f"desc_enum_other_{key}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")])  # внутренняя «Назад»
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def _kb_skip_field(key: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏭ Пропустить", callback_data=f"desc_flat_skip_{key}")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")]
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")]  # внутренняя «Назад»
     ])
 
 def _kb_multi_enum(key: str, selected: Optional[Set[str]] = None) -> InlineKeyboardMarkup:
@@ -511,7 +511,7 @@ def _kb_multi_enum(key: str, selected: Optional[Set[str]] = None) -> InlineKeybo
         mark = "✅ " if code in sel else ""
         rows.append([InlineKeyboardButton(text=f"{mark}{label}", callback_data=f"desc_multi_{key}_{code}")])
     rows.append([InlineKeyboardButton(text="✅ Готово", callback_data=f"desc_multi_done_{key}")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")])  # внутренняя «Назад»
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -519,7 +519,7 @@ def _kb_multi_enum(key: str, selected: Optional[Set[str]] = None) -> InlineKeybo
 def kb_retry() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔁 Ещё раз", callback_data="description")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")]
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")]  # внутренняя «Назад»
     ])
 
 def kb_apt_condition() -> InlineKeyboardMarkup:
@@ -531,7 +531,7 @@ def kb_apt_condition() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="2. «Евро-ремонт»",            callback_data="desc_cond_euro")],
         [InlineKeyboardButton(text="3. Косметический",            callback_data="desc_cond_cosmetic")],
         [InlineKeyboardButton(text="4. Требует ремонта",          callback_data="desc_cond_need")],
-        [InlineKeyboardButton(text="⬅️ Назад",                    callback_data="desc_cond_back")],
+        [InlineKeyboardButton(text="⬅️ Назад",                    callback_data="nav.descr_home")],  # внутренняя «Назад»
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -546,7 +546,7 @@ def kb_skip_comment() -> InlineKeyboardMarkup:
     """Кнопка «Пропустить» для необязательного финального шага."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⏭ Пропустить", callback_data="desc_comment_skip")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")],  # внутренняя «Назад»
     ])
 
 
