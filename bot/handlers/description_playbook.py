@@ -758,8 +758,7 @@ def _kb_history_item(entry_id: int) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text="🔁 Повторить запрос", callback_data=f"desc_hist_repeat_{entry_id}")],
         [InlineKeyboardButton(text="🗑 Удалить",          callback_data=f"desc_hist_del_{entry_id}")],
-        [InlineKeyboardButton(text="⬅️ К списку",        callback_data="desc_history")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="desc_back")]
+        [InlineKeyboardButton(text="⬅️ К списку",        callback_data="desc_history")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
