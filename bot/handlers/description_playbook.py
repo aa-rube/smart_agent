@@ -310,6 +310,35 @@ COUNTRY_MULTI_ENUMS: dict[str, list[tuple[str, str]]] = {
 }
 
 # ==========================
+# (НОВОЕ) Утилиты мультивыбора
+# ==========================
+def _multi_opts_map(key: str) -> Dict[str, str]:
+    """
+    Возвращает мапу код->метка для мультивыбора.
+    """
+    return {code: label for code, label in COUNTRY_MULTI_ENUMS.get(key, [])}
+
+def _normalize_multi_selected(key: str, selected_raw: Optional[List[str] | Set[str]]) -> Set[str]:
+    """
+    Превращает произвольный список выбранных значений (коды или метки)
+    в корректный набор КОДОВ. Нужен на случай, если в стейте оказались метки.
+    """
+    if not selected_raw:
+        return set()
+    opts = COUNTRY_MULTI_ENUMS.get(key, [])
+    code_by_label = {label: code for code, label in opts}
+    codes = set()
+    for v in selected_raw:
+        if v in code_by_label.values():  # уже код
+            codes.add(v)
+        else:
+            # возможно это метка
+            code = code_by_label.get(v)
+            if code:
+                codes.add(code)
+    return codes
+
+# ==========================
 # Коммерческая: тексты / опции
 # ==========================
 COMM_ASK_GROUP                = "1️⃣ Выберите вид объекта коммерческой недвижимости:"
@@ -525,12 +554,14 @@ def _kb_multi_enum(key: str, selected: Optional[Set[str]] = None) -> InlineKeybo
     """
     Мультивыбор с чекбоксами + кнопка «Готово».
     """
-    sel = selected or set()
+    # Используем только коды (на случай, если передали метки)
+    sel = _normalize_multi_selected(key, selected or set())
     opts = COUNTRY_MULTI_ENUMS.get(key, [])
     rows: list[list[InlineKeyboardButton]] = []
     for code, label in opts:
-        mark = "✅ " if code in sel else ""
-        rows.append([InlineKeyboardButton(text=f"{mark}{label}", callback_data=f"desc_multi_{key}_{code}")])
+        # Требование: смайлик только у выбранных, у остальных — «чистая» метка
+        text = f"✅ {label}" if code in sel else label
+        rows.append([InlineKeyboardButton(text=text, callback_data=f"desc_multi_{key}_{code}")])
     rows.append([InlineKeyboardButton(text="✅ Готово", callback_data=f"desc_multi_done_{key}")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")])  # внутренняя «Назад»
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -938,7 +969,7 @@ async def _ask_next_country_step(msg: Message, state: FSMContext, *, new: bool =
     key = keys[step]
     # мультивыбор
     if key in COUNTRY_MULTI_KEYS:
-        selected = set(data.get(key) or [])
+        selected = _normalize_multi_selected(key, data.get(key) or [])
         await _send_step(msg, _country_prompt_for_key(key), _kb_multi_enum(key, selected), new=new)
         return
     # обычные перечисления
@@ -1637,7 +1668,8 @@ async def handle_country_multi_toggle(cb: CallbackQuery, state: FSMContext):
         return
     if key not in COUNTRY_MULTI_ENUMS:
         return
-    current: List[str] = list(data.get(key) or [])
+    # Берём текущее состояние как КОДЫ (если вдруг были сохранены метки)
+    current: List[str] = list(_normalize_multi_selected(key, data.get(key) or []))
     if code in current:
         current = [c for c in current if c != code]
     else:
