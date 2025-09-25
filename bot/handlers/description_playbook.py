@@ -1325,7 +1325,7 @@ async def handle_country_multi_done(cb: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     if not data.get("__country_mode"):
         return
-    key = cb.data.removeprefix("desc_multi_done_")
+    # key = cb.data.removeprefix("desc_multi_done_")
     # просто идём дальше по шагам
     step = int(data.get("__form_step") or 0) + 1
     await state.update_data(__form_step=step)
