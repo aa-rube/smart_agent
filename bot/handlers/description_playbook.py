@@ -123,11 +123,23 @@ FLAT_ASK_RENOVATION      = "Ремонт:"
 FLAT_ASK_LAYOUT          = "Планировка комнат:"
 FLAT_ASK_BALCONY         = "Балкон/лоджия:"
 FLAT_ASK_CEILING         = "Высота потолков (м, опционально). Пример: 2.7"
+FLAT_ASK_TOTAL_AREA      = "Общая площадь (м²): выберите диапазон"
+FLAT_ASK_KITCHEN_AREA    = "Площадь кухни (м²): выберите диапазон"
+FLAT_ASK_FLOOR           = "Этаж квартиры: выберите вариант"
+FLAT_ASK_FLOORS_TOTAL    = "Этажность дома: выберите вариант"
 
 # Справочник опций для кнопок (код, метка)
 FLAT_ENUMS: dict[str, list[tuple[str, str]]] = {
     "market": [
         ("new", "Новостройка"), ("secondary", "Вторичка"),
+    ],
+    "completion_term": [
+        ("ready",  "Сдан"),
+        ("2025Q4", "4 кв. 2025"),
+        ("2026Q1", "1 кв. 2026"), ("2026Q2", "2 кв. 2026"),
+        ("2026Q3", "3 кв. 2026"), ("2026Q4", "4 кв. 2026"),
+        ("2027Q1", "1 кв. 2027"), ("2027Q2", "2 кв. 2027"),
+        ("2027Q3", "3 кв. 2027"), ("2027Q4", "4 кв. 2027"),
     ],
     "sale_method": [
         ("dkp", "ДКП"), ("cession", "Переуступка"), ("fz214", "ФЗ-214"),
@@ -137,6 +149,21 @@ FLAT_ENUMS: dict[str, list[tuple[str, str]]] = {
     ],
     "mortgage_ok": [
         ("yes", "Да"), ("no", "Нет"),
+    ],
+    "total_area": [
+        ("lt30",  "До 30"), ("30-40", "30–40"), ("40-50", "40–50"),
+        ("50-60", "50–60"), ("60-80", "60–80"), ("80-100", "80–100"), ("100+", "100+"),
+    ],
+    "kitchen_area": [
+        ("0-5",  "0–5"), ("6-9", "6–9"), ("10-12", "10–12"),
+        ("13-15","13–15"), ("16+", "16+"),
+    ],
+    "floor": [
+        ("1", "1"), ("2", "2"), ("3", "3"), ("4", "4"), ("5", "5"),
+        ("6-9", "6–9"), ("10-14", "10–14"), ("15-19", "15–19"), ("20+", "20+"),
+    ],
+    "floors_total": [
+        ("1-5", "1–5"), ("6-9", "6–9"), ("10-14", "10–14"), ("15-19", "15–19"), ("20+", "20+"),
     ],
     "bathroom_type": [
         ("combined", "Совмещённый"), ("separate", "Раздельный"),
@@ -169,6 +196,11 @@ FLAT_ENUMS: dict[str, list[tuple[str, str]]] = {
     "balcony": [
         ("none", "Нет"), ("balcony", "Балкон"),
         ("loggia", "Лоджия"), ("several", "Несколько"),
+    ],
+    "ceiling_height_m": [
+        ("skip", "Пропустить"),
+        ("<=2.5", "≤ 2.5"), ("2.6-2.8", "2.6–2.8"),
+        ("2.9-3.1", "2.9–3.1"), (">=3.2", "3.2+"),
     ],
 }
 
@@ -508,6 +540,10 @@ def _flat_prompt_for_key(key: str) -> str:
         "sale_method":       FLAT_ASK_SALE_METHOD,
         "rooms":             FLAT_ASK_ROOMS,
         "mortgage_ok":       FLAT_ASK_MORTGAGE,
+        "total_area":        FLAT_ASK_TOTAL_AREA,
+        "kitchen_area":      FLAT_ASK_KITCHEN_AREA,
+        "floor":             FLAT_ASK_FLOOR,
+        "floors_total":      FLAT_ASK_FLOORS_TOTAL,
         "bathroom_type":     FLAT_ASK_BATHROOM,
         "windows":           FLAT_ASK_WINDOWS,
         "house_type":        FLAT_ASK_HOUSETYPE,
@@ -532,22 +568,16 @@ async def _ask_next_flat_step(msg: Message, state: FSMContext):
 
     key = keys[step]
 
-    # Кнопочные поля
-    if key in {"market", "sale_method", "rooms", "mortgage_ok", "bathroom_type", "windows",
-               "house_type", "lift", "parking", "renovation", "layout", "balcony"}:
+    # Все поля для квартиры задаются кнопками (опционально — «Свой вариант…»)
+    if key in {
+        "market", "completion_term", "sale_method", "rooms", "mortgage_ok",
+        "total_area", "kitchen_area", "floor", "floors_total",
+        "bathroom_type", "windows", "house_type", "lift", "parking",
+        "renovation", "layout", "balcony", "ceiling_height_m"
+    }:
         await _edit_text_or_caption(msg, _flat_prompt_for_key(key), _kb_enum(key))
         return
-
-    # Текстовые (числа/строки)
-    if key == "completion_term":
-        await _edit_text_or_caption(msg, _flat_prompt_for_key(key))
-        return
-
-    if key == "ceiling_height_m":
-        await _edit_text_or_caption(msg, _flat_prompt_for_key(key), _kb_skip_field("ceiling_height_m"))
-        return
-
-    # total_area / kitchen_area / floor / floors_total
+    # На всякий случай (не должно сработать в квартирном сценарии)
     await _edit_text_or_caption(msg, _form_prompt_for_key(key))
 
 # ==========================
@@ -834,8 +864,12 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
         step: int = int(data.get("__form_step") or 0)
         if form_keys and step < len(form_keys):
             current_key = form_keys[step]
-            if current_key in {"market", "sale_method", "rooms", "mortgage_ok", "bathroom_type", "windows",
-                               "house_type", "lift", "parking", "renovation", "layout", "balcony"}:
+            if current_key in {
+                "market", "completion_term", "sale_method", "rooms", "mortgage_ok",
+                "total_area", "kitchen_area", "floor", "floors_total",
+                "bathroom_type", "windows", "house_type", "lift", "parking",
+                "renovation", "layout", "balcony", "ceiling_height_m"
+            }:
                 await message.answer("Пожалуйста, выберите вариант кнопкой ниже.", reply_markup=_kb_enum(current_key))
                 return
 
@@ -971,7 +1005,11 @@ async def handle_enum_select(cb: CallbackQuery, state: FSMContext):
         await cb.answer(); return
 
     label = next((lbl for c, lbl in FLAT_ENUMS.get(key, []) if c == code), code)
-    await state.update_data(**{key: label})
+    # поддержка «Пропустить» для опциональных полей
+    if key == "ceiling_height_m" and code == "skip":
+        await state.update_data(**{key: None})
+    else:
+        await state.update_data(**{key: label})
 
     # Особая логика после выбора рынка
     if key == "market" and data.get("__form_step") == 0:
