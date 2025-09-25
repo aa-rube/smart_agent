@@ -8,7 +8,7 @@
 # Используй fallback если изменить не удалось.
 # Все, никаких anchors которые нужно настраивать, никаких залипаний, кучи сообщение и мисс-кликов.
 
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Set
 from aiogram.types import CallbackQuery as _CbType  # type hint clarity
 import os
 import re
@@ -222,6 +222,98 @@ FLAT_ENUMS: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
+# ==========================
+# Загородная: тексты / опции
+# ==========================
+COUNTRY_ASK_OBJECT_TYPE      = "1️⃣ Выберите тип загородного объекта:"
+COUNTRY_ASK_HOUSE_AREA       = "Площадь дома (м²): выберите диапазон"
+COUNTRY_ASK_PLOT_AREA        = "Площадь участка (сотки): выберите диапазон"
+COUNTRY_ASK_DISTANCE         = "Расстояние от города (км): выберите диапазон"
+COUNTRY_ASK_FLOORS           = "Этажей в доме:"
+COUNTRY_ASK_ROOMS            = "Количество комнат:"
+COUNTRY_ASK_LAND_CATEGORY_H  = "Категория земель:"
+COUNTRY_ASK_RENOVATION       = "Состояние/ремонт:"
+COUNTRY_ASK_TOILET           = "Санузел:"
+COUNTRY_ASK_UTILITIES        = "Коммуникации (множественный выбор):"
+COUNTRY_ASK_LEISURE          = "Для отдыха (множественный выбор):"
+COUNTRY_ASK_WALL_MATERIAL    = "Материал стен:"
+COUNTRY_ASK_PARKING          = "Парковка:"
+COUNTRY_ASK_TRANSPORT        = "Транспортная доступность:"
+
+COUNTRY_ASK_LAND_CATEGORY_P  = "Категория земель:"
+COUNTRY_ASK_PLOT_COMM        = "Коммуникации (множественный выбор):"
+
+# одиночные перечисления
+COUNTRY_ENUMS: dict[str, list[tuple[str, str]]] = {
+    # Ветка выбора типа внутри «Загородная»
+    "country_object_type": [
+        ("house",     "Дом"),
+        ("dacha",     "Дача"),
+        ("cottage",   "Коттедж"),
+        ("townhouse", "Таунхаус"),
+        ("plot",      "Земельный участок"),
+    ],
+    # Дом/Дача/Коттедж/Таунхаус
+    "country_house_area_m2": [
+        ("lt50", "до 50"), ("50-100", "50–100"), ("100-150", "100–150"),
+        ("150-200", "150–200"), ("200-300", "200–300"), ("300+", "300+"),
+    ],
+    "country_plot_area_sotki": [
+        ("lt4", "до 4"), ("5-6","5–6"), ("7-10","7–10"),
+        ("11-15","11–15"), ("16-20","16–20"), ("20+","20+"),
+    ],
+    "country_distance_km": [
+        ("lt5","до 5"), ("6-10","6–10"), ("11-20","11–20"),
+        ("21-30","21–30"), ("31-50","31–50"), ("50+","50+"),
+    ],
+    "country_floors": [
+        ("1","1"), ("2","2"), ("3","3"), ("4+","4+"),
+    ],
+    "country_rooms": [
+        ("1","1"), ("2","2"), ("3","3"), ("4","4"), ("5+","5+"),
+    ],
+    "country_land_category_house": [
+        ("izhs","ИЖС"), ("sad","садоводство"), ("lph","ЛПХ"), ("kfh","КФХ"), ("other","Иное"),
+    ],
+    "country_renovation": [
+        ("need", "Требуется"), ("cosmetic","Косметический"),
+        ("euro","Евро"), ("designer","Дизайнерский"),
+    ],
+    "country_toilet": [
+        ("indoor","В доме"), ("outdoor","На улице"), ("both","Оба"),
+    ],
+    "country_wall_material": [
+        ("brick","Кирпич"), ("timber","Брус"), ("log","Бревно"),
+        ("aerated","Газоблок"), ("metal","Металл"), ("other","Иное"),
+    ],
+    "country_parking": [
+        ("garage","Гараж"), ("place","Парковочное место"),
+        ("carport","Навес"), ("none","Нет"),
+    ],
+    "country_transport": [
+        ("asphalt","Асфальт"), ("bus","Остановка ОТ"), ("rail","ЖД станция"), ("dirt","Грунтовка"),
+    ],
+    # Земельный участок
+    "country_land_category_plot": [
+        ("izhs","ИЖС"), ("snt","СНТ"), ("dnp","ДНП"), ("fh","ФХ"), ("lph","ЛПХ"),
+    ],
+}
+
+# многократный выбор (ключ -> список код/метка)
+COUNTRY_MULTI_ENUMS: dict[str, list[tuple[str, str]]] = {
+    "country_utilities": [
+        ("electricity","Электричество"), ("gas","Газ"), ("heating","Отопление"),
+        ("water","Водоснабжение"), ("sewage","Канализация"),
+    ],
+    "country_leisure": [
+        ("banya","Баня"), ("pool","Бассейн"), ("sauna","Сауна"), ("other","Другое"),
+    ],
+    "country_communications_plot": [
+        ("gas","Газ"), ("water","Вода"), ("electricity","Свет"),
+        ("border","По границе"), ("none","Нет"),
+    ],
+}
+
 
 # ==========================
 # Клавиатуры
@@ -306,7 +398,8 @@ def _kb_from_map(m: Dict[str, str], prefix: str, columns: int = 1) -> InlineKeyb
 
 def _kb_enum(key: str) -> InlineKeyboardMarkup:
     """Клавиатура для перечислимого поля + «Свой вариант…»."""
-    opts = FLAT_ENUMS.get(key, [])
+    # поддержка и FLAT, и COUNTRY
+    opts = FLAT_ENUMS.get(key, []) or COUNTRY_ENUMS.get(key, [])
     rows: list[list[InlineKeyboardButton]] = []
     for code, label in opts:
         rows.append([InlineKeyboardButton(text=label, callback_data=f"desc_enum_{key}_{code}")])
@@ -319,6 +412,20 @@ def _kb_skip_field(key: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⏭ Пропустить", callback_data=f"desc_flat_skip_{key}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")]
     ])
+
+def _kb_multi_enum(key: str, selected: Optional[Set[str]] = None) -> InlineKeyboardMarkup:
+    """
+    Мультивыбор с чекбоксами + кнопка «Готово».
+    """
+    sel = selected or set()
+    opts = COUNTRY_MULTI_ENUMS.get(key, [])
+    rows: list[list[InlineKeyboardButton]] = []
+    for code, label in opts:
+        mark = "✅ " if code in sel else ""
+        rows.append([InlineKeyboardButton(text=f"{mark}{label}", callback_data=f"desc_multi_{key}_{code}")])
+    rows.append([InlineKeyboardButton(text="✅ Готово", callback_data=f"desc_multi_done_{key}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 
@@ -439,6 +546,19 @@ async def handle_type(cb: CallbackQuery, state: FSMContext):
             __awaiting_free_comment=False
         )
         await _edit_text_or_caption(cb.message, FLAT_ASK_MARKET, _kb_enum("market"))
+        await state.set_state(DescriptionStates.waiting_for_comment)
+        return
+    elif val in {"country", "zagorod"}:
+        # Новый сценарий «Загородная»
+        await state.update_data(
+            __country_mode=True,
+            __flat_mode=False,
+            __form_keys=["country_object_type"],
+            __form_step=0,
+            __awaiting_other_key=None,
+            __awaiting_free_comment=False
+        )
+        await _edit_text_or_caption(cb.message, COUNTRY_ASK_OBJECT_TYPE, _kb_enum("country_object_type"))
         await state.set_state(DescriptionStates.waiting_for_comment)
         return
     elif val == "house" or val == "land":
@@ -594,6 +714,48 @@ async def _ask_next_flat_step(msg: Message, state: FSMContext):
         return
     # На всякий случай (не должно сработать в квартирном сценарии)
     await _edit_text_or_caption(msg, _form_prompt_for_key(key))
+
+def _country_prompt_for_key(key: str) -> str:
+    return {
+        "country_object_type":        COUNTRY_ASK_OBJECT_TYPE,
+        "country_house_area_m2":      COUNTRY_ASK_HOUSE_AREA,
+        "country_plot_area_sotki":    COUNTRY_ASK_PLOT_AREA,
+        "country_distance_km":        COUNTRY_ASK_DISTANCE,
+        "country_floors":             COUNTRY_ASK_FLOORS,
+        "country_rooms":              COUNTRY_ASK_ROOMS,
+        "country_land_category_house":COUNTRY_ASK_LAND_CATEGORY_H,
+        "country_renovation":         COUNTRY_ASK_RENOVATION,
+        "country_toilet":             COUNTRY_ASK_TOILET,
+        "country_utilities":          COUNTRY_ASK_UTILITIES,
+        "country_leisure":            COUNTRY_ASK_LEISURE,
+        "country_wall_material":      COUNTRY_ASK_WALL_MATERIAL,
+        "country_parking":            COUNTRY_ASK_PARKING,
+        "country_transport":          COUNTRY_ASK_TRANSPORT,
+        # plot-ветка
+        "country_land_category_plot": COUNTRY_ASK_LAND_CATEGORY_P,
+        "country_communications_plot":COUNTRY_ASK_PLOT_COMM,
+    }.get(key, "Выберите вариант:")
+
+COUNTRY_MULTI_KEYS = {"country_utilities", "country_leisure", "country_communications_plot"}
+
+async def _ask_next_country_step(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    keys: list[str] = data.get("__form_keys") or []
+    step: int = int(data.get("__form_step") or 0)
+
+    if step >= len(keys):
+        await state.update_data(__awaiting_free_comment=True)
+        await _edit_text_or_caption(msg, ASK_FREE_COMMENT, kb_skip_comment())
+        return
+
+    key = keys[step]
+    # мультивыбор
+    if key in COUNTRY_MULTI_KEYS:
+        selected = set(data.get(key) or [])
+        await _edit_text_or_caption(msg, _country_prompt_for_key(key), _kb_multi_enum(key, selected))
+        return
+    # обычные перечисления
+    await _edit_text_or_caption(msg, _country_prompt_for_key(key), _kb_enum(key))
 
 # ==========================
 # Анкета: валидация и переходы
@@ -773,6 +935,24 @@ async def _generate_and_output(
         "layout":            data.get("layout"),
         "balcony":           data.get("balcony"),
         "ceiling_height_m":  data.get("ceiling_height_m"),
+        # --- для Загородной (новая карта) ---
+        "country_object_type":        data.get("country_object_type"),
+        "country_house_area_m2":      data.get("country_house_area_m2"),
+        "country_plot_area_sotki":    data.get("country_plot_area_sotki"),
+        "country_distance_km":        data.get("country_distance_km"),
+        "country_floors":             data.get("country_floors"),
+        "country_rooms":              data.get("country_rooms"),
+        "country_land_category_house":data.get("country_land_category_house"),
+        "country_renovation":         data.get("country_renovation"),
+        "country_toilet":             data.get("country_toilet"),
+        "country_utilities":          data.get("country_utilities"),
+        "country_leisure":            data.get("country_leisure"),
+        "country_wall_material":      data.get("country_wall_material"),
+        "country_parking":            data.get("country_parking"),
+        "country_transport":          data.get("country_transport"),
+        # plot-ветка
+        "country_land_category_plot": data.get("country_land_category_plot"),
+        "country_communications_plot":data.get("country_communications_plot"),
     }
     # Для ДОМА — принудительно обнуляем in_complex (не применимо)
     if data.get("type") == "house":
@@ -846,10 +1026,15 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
         if len(user_text) < 2:
             await message.answer("Добавьте чуть подробнее, хотя бы пару символов.")
             return
+        # для country и flat — сохраняем и двигаемся дальше
+        # для country и flat — сохраняем и двигаемся дальше
         await state.update_data(**{other_key: user_text}, __awaiting_other_key=None)
         step = int(data.get("__form_step") or 0) + 1
         await state.update_data(__form_step=step)
-        await _ask_next_flat_step(message, state)
+        if data.get("__country_mode"):
+            await _ask_next_country_step(message, state)
+        else:
+            await _ask_next_flat_step(message, state)
         return
 
     # Этап 2: свободный комментарий?
@@ -888,6 +1073,19 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
                 await message.answer("Пожалуйста, выберите вариант кнопкой ниже.", reply_markup=_kb_enum(current_key))
                 return
 
+    # Блокируем произвольный ввод для country: только кнопки
+    if data.get("__country_mode"):
+        form_keys: List[str] = data.get("__form_keys") or []
+        step: int = int(data.get("__form_step") or 0)
+        if form_keys and step < len(form_keys):
+            current_key = form_keys[step]
+            if current_key in COUNTRY_MULTI_KEYS:
+                await message.answer("Это поле — множественный выбор. Пожалуйста, используйте кнопки ниже.", reply_markup=_kb_multi_enum(current_key, set(data.get(current_key) or [])))
+                return
+            else:
+                await message.answer("Пожалуйста, выберите вариант кнопкой ниже.", reply_markup=_kb_enum(current_key))
+                return
+
     form_keys: List[str] = data.get("__form_keys") or []
     step: int = int(data.get("__form_step") or 0)
 
@@ -916,6 +1114,9 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
 
     if data.get("__flat_mode"):
         await _ask_next_flat_step(message, state)
+        return
+    if data.get("__country_mode"):
+        await _ask_next_country_step(message, state)
         return
 
     if step < len(form_keys):
@@ -1012,7 +1213,7 @@ async def handle_apt_condition_back(cb: CallbackQuery, state: FSMContext):
 async def handle_enum_select(cb: CallbackQuery, state: FSMContext):
     await _cb_ack(cb)
     data = await state.get_data()
-    if not data.get("__flat_mode"):
+    if not (data.get("__flat_mode") or data.get("__country_mode")):
         return
 
     payload = cb.data.removeprefix("desc_enum_")  # key_code
@@ -1021,14 +1222,17 @@ async def handle_enum_select(cb: CallbackQuery, state: FSMContext):
     except ValueError:
         return
 
-    label = next((lbl for c, lbl in FLAT_ENUMS.get(key, []) if c == code), code)
+    # ищем опцию и в FLAT, и в COUNTRY
+    label = next((lbl for c, lbl in (FLAT_ENUMS.get(key, []) or [] ) if c == code), None)
+    if label is None:
+        label = next((lbl for c, lbl in (COUNTRY_ENUMS.get(key, []) or [] ) if c == code), code)
     # поддержка «Пропустить» для опциональных полей
     if key == "ceiling_height_m" and code == "skip":
         await state.update_data(**{key: None})
     else:
         await state.update_data(**{key: label})
 
-    # Особая логика после выбора рынка
+    # Особая логика после выбора рынка (квартира)
     if key == "market" and data.get("__form_step") == 0:
         after = _flat_after_market_keys()
         if code == "new":
@@ -1037,14 +1241,46 @@ async def handle_enum_select(cb: CallbackQuery, state: FSMContext):
             new_keys = ["market"] + after
         await state.update_data(__form_keys=new_keys)
 
+    # Ветка «Загородная»: ветвление после выбора типа объекта
+    if data.get("__country_mode") and key == "country_object_type" and data.get("__form_step") == 0:
+        if code == "plot":
+            new_keys = [
+                "country_object_type",
+                "country_land_category_plot",
+                "country_plot_area_sotki",
+                "country_distance_km",
+                "country_communications_plot",
+            ]
+        else:
+            new_keys = [
+                "country_object_type",
+                "country_house_area_m2",
+                "country_plot_area_sotki",
+                "country_distance_km",
+                "country_floors",
+                "country_rooms",
+                "country_land_category_house",
+                "country_renovation",
+                "country_toilet",
+                "country_utilities",
+                "country_leisure",
+                "country_wall_material",
+                "country_parking",
+                "country_transport",
+            ]
+        await state.update_data(__form_keys=new_keys)
+
     step = int(data.get("__form_step") or 0) + 1
     await state.update_data(__form_step=step)
-    await _ask_next_flat_step(cb.message, state)
+    if data.get("__flat_mode"):
+        await _ask_next_flat_step(cb.message, state)
+    elif data.get("__country_mode"):
+        await _ask_next_country_step(cb.message, state)
 
 async def handle_enum_other(cb: CallbackQuery, state: FSMContext):
     await _cb_ack(cb)
     data = await state.get_data()
-    if not data.get("__flat_mode"):
+    if not (data.get("__flat_mode") or data.get("__country_mode")):
         return
     key = cb.data.removeprefix("desc_enum_other_")
     await state.update_data(__awaiting_other_key=key)
@@ -1060,6 +1296,40 @@ async def handle_flat_skip_field(cb: CallbackQuery, state: FSMContext):
     step = int(data.get("__form_step") or 0) + 1
     await state.update_data(__form_step=step)
     await _ask_next_flat_step(cb.message, state)
+
+async def handle_country_multi_toggle(cb: CallbackQuery, state: FSMContext):
+    """Тоггл для мультивыбора в «Загородная»."""
+    await _cb_ack(cb)
+    data = await state.get_data()
+    if not data.get("__country_mode"):
+        return
+    payload = cb.data.removeprefix("desc_multi_")  # key_code
+    try:
+        key, code = payload.split("_", 1)
+    except ValueError:
+        return
+    if key not in COUNTRY_MULTI_ENUMS:
+        return
+    current: List[str] = list(data.get(key) or [])
+    if code in current:
+        current = [c for c in current if c != code]
+    else:
+        current.append(code)
+    await state.update_data(**{key: current})
+    # перерисовываем ту же клавиатуру
+    await _edit_text_or_caption(cb.message, _country_prompt_for_key(key), _kb_multi_enum(key, set(current)))
+
+async def handle_country_multi_done(cb: CallbackQuery, state: FSMContext):
+    """Подтверждение мультивыбора и переход к следующему шагу."""
+    await _cb_ack(cb)
+    data = await state.get_data()
+    if not data.get("__country_mode"):
+        return
+    key = cb.data.removeprefix("desc_multi_done_")
+    # просто идём дальше по шагам
+    step = int(data.get("__form_step") or 0) + 1
+    await state.update_data(__form_step=step)
+    await _ask_next_country_step(cb.message, state)
 
 # ==========================
 # Router
@@ -1083,6 +1353,9 @@ def router(rt: Router):
     rt.callback_query.register(handle_enum_other, F.data.startswith("desc_enum_other_"), DescriptionStates.waiting_for_comment)
     rt.callback_query.register(handle_enum_select, F.data.startswith("desc_enum_"),       DescriptionStates.waiting_for_comment)
     rt.callback_query.register(handle_flat_skip_field, F.data.startswith("desc_flat_skip_"), DescriptionStates.waiting_for_comment)
+    # Загородная: мультивыбор
+    rt.callback_query.register(handle_country_multi_toggle, F.data.startswith("desc_multi_"), DescriptionStates.waiting_for_comment)
+    rt.callback_query.register(handle_country_multi_done,   F.data.startswith("desc_multi_done_"), DescriptionStates.waiting_for_comment)
 
     # анкета + свободный комментарий / пропуск
     rt.message.register(handle_comment_message, DescriptionStates.waiting_for_comment, F.text)
