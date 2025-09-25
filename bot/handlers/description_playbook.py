@@ -759,9 +759,8 @@ def _kb_history_item(entry_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🔁 Повторить запрос", callback_data=f"desc_hist_repeat_{entry_id}")],
         [InlineKeyboardButton(text="🗑 Удалить",          callback_data=f"desc_hist_del_{entry_id}")],
         [InlineKeyboardButton(text="⬅️ К списку",        callback_data="desc_history")],
-        [InlineKeyboardButton(text="🏠 На главный экран", callback_data="desc_start")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="desc_back")]
     ]
-    _kb_add_back_exit(rows)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def kb_apt_condition() -> InlineKeyboardMarkup:
