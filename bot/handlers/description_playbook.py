@@ -743,8 +743,8 @@ def _kb_history_list(items: list[dict]) -> InlineKeyboardMarkup:
         for it in items:
             title = f"#{it['id']} • {it['created_at']} • {it.get('preview','')}"
             rows.append([InlineKeyboardButton(text=title[:64], callback_data=f"desc_hist_item_{it['id']}")])
-    rows.append([InlineKeyboardButton(text="🏠 На главный экран", callback_data="desc_start")])
-    _kb_add_back_exit(rows)
+
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="desc_back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
