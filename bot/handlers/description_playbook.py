@@ -1,14 +1,7 @@
-# C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\description_playbook.py
-#Всегда пиши код без «поддержки старых версий». Если они есть в коде - удаляй.
-
-# Секрет офигенного бота: тебе не нужен якорь.
-# Пользуйся такой схемой:
-# -если callback -> обновляем сообщение, msg_id берем из update
-# -если обычный text_message, command -> отправляй новое сообщение.
-# Используй fallback если изменить не удалось.
-# Все, никаких anchors которые нужно настраивать, никаких залипаний, кучи сообщение и мисс-кликов.
-
+#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\description_playbook.py
 from typing import Optional, List, Dict, Set
+
+from aiogram.filters import Command
 from aiogram.types import CallbackQuery as _CbType  # type hint clarity
 import os
 import re
@@ -528,7 +521,7 @@ async def start_description_flow(cb: CallbackQuery, state: FSMContext, bot: Bot)
 async def handle_type(cb: CallbackQuery, state: FSMContext):
     """
     type = flat / house / land ...
-    - flat  → НОВЫЙ сценарий «Квартира»: карта вопросов из ТЗ
+    - flat → НОВЫЙ сценарий «Квартира»: карта вопросов из ТЗ
     - house → пропускаем «новостройка/ЖК», сразу спрашиваем расположение
     - иное → спрашиваем «новостройка/ЖК» (как раньше)
     """
@@ -1336,6 +1329,7 @@ async def handle_country_multi_done(cb: CallbackQuery, state: FSMContext):
 # ==========================
 def router(rt: Router):
     # старт
+    rt.message.register(start_description_flow, Command("descr_home"))
     rt.callback_query.register(start_description_flow, F.data == "nav.descr_home")
     rt.callback_query.register(start_description_flow, F.data == "desc_start")
 
