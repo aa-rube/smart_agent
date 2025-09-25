@@ -63,7 +63,7 @@ def _kb_add_back_exit(rows: list[list[InlineKeyboardButton]]) -> list[list[Inlin
     """
     rows.append([
         InlineKeyboardButton(text="⬅️ Назад", callback_data="desc_back"),
-        InlineKeyboardButton(text="🚪 Выход", callback_data="nav.ai_tools"),
+        InlineKeyboardButton(text="🚪 Выход", callback_data="desc_start"),
     ])
     return rows
 
@@ -1920,7 +1920,6 @@ async def handle_back(cb: CallbackQuery, state: FSMContext, bot: Bot):
 # ==========================
 def router(rt: Router):
     # старт
-    rt.message.register(start_description_flow, Command("descr_home"))
     rt.callback_query.register(start_description_flow, F.data == "nav.descr_home")
     rt.callback_query.register(start_description_flow, F.data == "desc_start")
 
