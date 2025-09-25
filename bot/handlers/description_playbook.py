@@ -391,7 +391,7 @@ def kb_type_merged() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Квартира",                  callback_data="desc_type_flat")],
         [InlineKeyboardButton(text="Загородная недвижимость",   callback_data="desc_type_country")],
         [InlineKeyboardButton(text="Коммерческая недвижимость", callback_data="desc_type_commercial")],
-        [InlineKeyboardButton(text="⬅️ Назад",                  callback_data="nav.ai_tools")],  # на первом экране «Назад» выводит из алгоритма
+        [InlineKeyboardButton(text="⬅️ Назад",                  callback_data="nav.descr_home")],  # на первом экране «Назад» выводит из алгоритма
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
