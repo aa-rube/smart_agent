@@ -525,6 +525,15 @@ def _kb_multi_enum(key: str, selected: Optional[Set[str]] = None) -> InlineKeybo
     rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")])  # внутренняя «Назад»
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+def _kb_back_only() -> InlineKeyboardMarkup:
+    """
+    Инлайн-клавиатура с единственной кнопкой «Назад».
+    Нужна для текстовых шагов без предустановленных вариантов.
+    Поведение как и в остальных клавиатурах — уходит на первый экран алгоритма.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")]
+    ])
 
 
 def kb_retry() -> InlineKeyboardMarkup:
@@ -765,7 +774,8 @@ async def handle_area(cb: CallbackQuery, state: FSMContext):
         # если по какой-то причине первым идёт состояние — показываем кнопки
         await _edit_text_or_caption(cb.message, ASK_FORM_APT_COND, kb_apt_condition())
     else:
-        await _edit_text_or_caption(cb.message, _form_prompt_for_key(first_key))
+        # текстовый шаг: добавить кнопку «Назад»
+        await _edit_text_or_caption(cb.message, _form_prompt_for_key(first_key), _kb_back_only())
     await state.set_state(DescriptionStates.waiting_for_comment)  # используем существующий стейт как «анкета»
 
 # ==========================
@@ -824,8 +834,8 @@ async def _ask_next_flat_step(msg: Message, state: FSMContext, *, new: bool = Fa
     }:
         await _send_step(msg, _flat_prompt_for_key(key), _kb_enum(key), new=new)
         return
-    # На всякий случай (не должно сработать в квартирном сценарии)
-    await _send_step(msg, _form_prompt_for_key(key), None, new=new)
+    # На всякий случай (если вдруг шаг без предустановленных вариантов)
+    await _send_step(msg, _form_prompt_for_key(key), _kb_back_only(), new=new)
 
 # ==========================
 # Коммерческая: шаги/подсказки
@@ -861,8 +871,8 @@ async def _ask_next_commercial_step(msg: Message, state: FSMContext, *, new: boo
     }:
         await _send_step(msg, _commercial_prompt_for_key(key), _kb_enum(key), new=new)
         return
-    # числовые поля — текстовый ввод
-    await _send_step(msg, _commercial_prompt_for_key(key), None, new=new)
+    # числовые/текстовые поля — показываем подсказку + кнопку «Назад»
+    await _send_step(msg, _commercial_prompt_for_key(key), _kb_back_only(), new=new)
 
 def _country_prompt_for_key(key: str) -> str:
     return {
@@ -1312,7 +1322,8 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
         if next_key == "apt_condition":
             await message.answer(ASK_FORM_APT_COND, reply_markup=kb_apt_condition())
             return
-        await message.answer(_form_prompt_for_key(next_key))
+        # текстовый шаг из message-контекста — показать «Назад»
+        await message.answer(_form_prompt_for_key(next_key), reply_markup=_kb_back_only())
         return
 
     await state.update_data(__awaiting_free_comment=True)
@@ -1391,8 +1402,8 @@ async def handle_apt_condition_back(cb: CallbackQuery, state: FSMContext):
     await state.update_data(__form_step=prev_step)
     prev_key = form_keys[prev_step]
 
-    # Показываем предыдущий вопрос (текстовый ввод)
-    await _edit_text_or_caption(cb.message, _form_prompt_for_key(prev_key))
+    # Показываем предыдущий вопрос (текстовый ввод) + «Назад»
+    await _edit_text_or_caption(cb.message, _form_prompt_for_key(prev_key), _kb_back_only())
     await _cb_ack(cb)
 
 # ==========================
