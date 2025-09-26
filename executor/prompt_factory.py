@@ -97,23 +97,6 @@ def build_objection_request(
     }
 
 
-# --- было: build_description_request(question) — оставляем для бэкапа
-def build_description_request(*, question: str, model: Optional[str] = None,
-                              temperature: float = 0.7, max_tokens: int = 1200) -> Dict[str, Any]:
-    system_prompt = DESCRIPTION_PROMPT_DEFAULT_RU
-    use_model = model or DESCRIPTION_MODEL
-    return {
-        "model": use_model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": question},
-        ],
-    }
-
-# --------- НОВОЕ: сборка текста из сырых полей ----------
-def _label(m: Dict[str, str], key: Optional[str], default: str = "—") -> str:
-    return m.get(key, default) if key else default
-
 def _safe(val: Any) -> str:
     """
     Робастный safe-cast в строку для любых типов:
@@ -138,67 +121,6 @@ def _safe(val: Any) -> str:
         return ", ".join(parts) if parts else "—"
     s = str(val).strip()
     return s or "—"
-
-def compose_description_user_message(fields: Dict[str, Optional[str]]) -> str:
-    """
-    Сборка пользовательского сообщения из сырых полей НОВОЙ анкеты.
-    Все строки/числа приводятся к безопасному виду; человекочитаемые лейблы
-    берутся из ai_config (DESCRIPTION_*).
-    """
-    t_key = fields.get("type")
-    c_key = fields.get("apt_class") if t_key == "flat" else None
-    x_key = fields.get("in_complex")
-    a_key = fields.get("area")
-
-    # Человекочитаемые подписи (для select'ов)
-    type_label       = _label(DESCRIPTION_TYPES,   t_key)
-    apt_class_label  = _label(DESCRIPTION_CLASSES, c_key) if c_key else "—"
-    in_complex_label = _label(DESCRIPTION_COMPLEX, x_key)
-    area_label       = _label(DESCRIPTION_AREA,    a_key)
-
-    # Новые поля анкеты (как есть, но с безопасными значениями)
-    payload = {
-        "type_label":       type_label,
-        "apt_class_label":  apt_class_label,
-        "in_complex_label": in_complex_label,
-        "area_label":       area_label,
-        "location":         _safe(fields.get("location")),
-        "total_area":       _safe(fields.get("total_area")),
-        "kitchen_area":     _safe(fields.get("kitchen_area")),
-        "floor_number":     _safe(fields.get("floor_number")),
-        "building_floors":  _safe(fields.get("building_floors")),
-        "rooms":            _safe(fields.get("rooms")),
-        "year_state":       _safe(fields.get("year_state")),
-        "utilities":        _safe(fields.get("utilities")),   # CSV/список/свободный текст
-        "amenities":        _safe(fields.get("amenities")),   # CSV/список/свободный текст
-        "comment":          _safe(fields.get("comment")),
-    }
-
-    # Единый шаблон в ai_config — все плейсхолдеры централизованы там
-    return DESCRIPTION_USER_TEMPLATE_RU.format(**payload)
-
-def build_description_request_from_fields(
-    *,
-    fields: Dict[str, Optional[str]],
-    model: Optional[str] = None,
-    temperature: float = 0.7,
-    max_tokens: int = 1200,
-) -> Dict[str, Any]:
-    """
-    ЕДИНОЕ место сборки payload из сырых полей (новая анкета).
-    Контроллер остаётся тонким.
-    """
-    user_message = compose_description_user_message(fields)
-    system_prompt = DESCRIPTION_PROMPT_DEFAULT_RU
-    use_model = model or DESCRIPTION_MODEL
-    return {
-        "model": use_model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ],
-    }
-
 
 # ===================== FEEDBACK / REVIEW =====================
 _DEAL_TITLES = {
