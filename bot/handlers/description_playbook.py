@@ -87,7 +87,7 @@ def _compose_summary(d: Dict) -> str:
     if ka is not None:
         _add(body, "Кухня", f"{ka} м²" if isinstance(ka, (int, float)) else ka)
 
-    # Квартира — доп. атрибуты
+    # Квартира — доп. Атрибуты
     if d.get("__flat_mode"):
         _add(body, "Срок сдачи", d.get("completion_term"))
         _add(body, "Способ продажи", d.get("sale_method"))
@@ -1881,13 +1881,13 @@ async def handle_country_multi_done(cb: CallbackQuery, state: FSMContext):
 # ==========================
 # История запросов: просмотр/удаление/повтор
 # ==========================
-async def handle_history_entry(cb: CallbackQuery, state: FSMContext):
+async def handle_history_entry(cb: CallbackQuery):
     await _cb_ack(cb)
     user_id = cb.message.chat.id
     items = db.description_list(user_id=user_id, limit=10)
     await _edit_text_or_caption(cb.message, "🗂 История запросов (последние 10):", _kb_history_list(items))
 
-async def handle_history_item(cb: CallbackQuery, state: FSMContext):
+async def handle_history_item(cb: CallbackQuery):
     await _cb_ack(cb)
     user_id = cb.message.chat.id
     try:
@@ -1915,7 +1915,7 @@ async def handle_history_item(cb: CallbackQuery, state: FSMContext):
         else:
             await cb.message.answer(part)
 
-async def handle_history_delete(cb: CallbackQuery, state: FSMContext):
+async def handle_history_delete(cb: CallbackQuery):
     await _cb_ack(cb)
     user_id = cb.message.chat.id
     try:
@@ -1949,7 +1949,7 @@ async def handle_history_repeat(cb: CallbackQuery, state: FSMContext, bot: Bot):
 # ==========================
 # Назад/Выход
 # ==========================
-async def handle_back(cb: CallbackQuery, state: FSMContext, bot: Bot):
+async def handle_back(cb: CallbackQuery, state: FSMContext):
     """
     Универсальный «Назад».
     - В анкете: step-- и показать предыдущий вопрос.
@@ -1983,7 +1983,6 @@ async def handle_back(cb: CallbackQuery, state: FSMContext, bot: Bot):
 
     # 3) Если в анкете
     if data.get("__flat_mode") or data.get("__country_mode") or data.get("__commercial_mode"):
-        keys: list[str] = data.get("__form_keys") or []
         step: int = int(data.get("__form_step") or 0)
         prev = step - 1
         # первый шаг в режимах -> вернуться на «экраны входа»
