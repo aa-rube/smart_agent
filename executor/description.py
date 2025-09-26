@@ -29,8 +29,8 @@ def _log_request(payload: Dict[str, Any]) -> None:
         LOG.info(
             "OpenAI request: model=%s temp=%s max_tokens=%s messages=%d",
             payload.get("model"),
-            payload.get("temperature"),
-            payload.get("max_tokens"),
+            # payload.get("temperature"),
+            # payload.get("any+", "max_tokens"),
             len(payload.get("messages") or []),
         )
 
@@ -408,9 +408,7 @@ def build_description_request_from_fields(*, fields: Dict[str, Any], model: Opti
         "messages": [
             {"role": "system", "content": DESCRIPTION_PROMPT_DEFAULT_RU},
             {"role": "user", "content": user_message},
-        ],
-        "temperature": 0.6,
-        "max_tokens": 1200,
+        ]
     }
     return payload
 
