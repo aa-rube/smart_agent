@@ -9,6 +9,7 @@ from executor.config import OPENAI_API_KEY
 import threading
 import requests
 import json
+import re
 from urllib.parse import urlparse
 
 try:
@@ -238,6 +239,14 @@ DESCRIPTION_USER_TEMPLATE_RU = """
 # =====================================================================================
 # ВСПОМОГАТЕЛЬНЫЕ УТИЛИТЫ
 # =====================================================================================
+def _strip_format_specifiers(s: str) -> str:
+    """
+    Удаляет формат-спецификаторы внутри плейсхолдеров str.format.
+    Пример: '{apt_class:+, класс —}' -> '{apt_class}'
+    Работает только для имён вида [a-zA-Z_][a-zA-Z0-9_]*.
+    """
+    return re.sub(r'{([a-zA-Z_]\w*):[^}]*}', r'{\1}', s)
+
 def _default_api_key() -> str:
     """
     Ключ по умолчанию берём из config (приоритет) либо из окружения как бэкап.
@@ -465,7 +474,19 @@ def compose_description_user_message(fields: Dict[str, Any]) -> str:
     msg = "Сгенерируй продающее описание по анкете. Соблюдай «Х-П-В», без воды, с явным CTA.\n\n"
     msg += f"— Сделка: {user_payload['deal_label']}\n"
     msg += DESCRIPTION_USER_TEMPLATE_RU
-    return msg.format(**user_payload)
+    # В шаблоне могли оказаться двоеточия после имени плейсхолдера,
+    # что воспринимается как формат-спецификатор → чистим их.
+    tmpl = _strip_format_specifiers(msg)
+    try:
+        return tmpl.format(**user_payload)
+    except Exception as e:
+        # Логируем и делаем максимально безопасную замену без format(),
+        # чтобы не ронять обработчик из-за шаблона.
+        logging.exception("compose_description_user_message: format failed, fallback is used: %s", e)
+        out = tmpl
+        for k, v in user_payload.items():
+            out = out.replace("{" + k + "}", "" if v is None else str(v))
+        return out
 
 
 def send_description_generate_request_from_fields(
