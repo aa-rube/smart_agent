@@ -1,7 +1,7 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\description_playbook.py
 from typing import Optional, List, Dict, Set
 
-from aiogram.types import CallbackQuery as _CbType  # type hint clarity
+from aiogram.types import CallbackQuery as _CbType
 import os
 import re
 
@@ -18,7 +18,6 @@ from aiogram.enums.chat_action import ChatAction
 from bot.config import EXECUTOR_BASE_URL, get_file_path
 from bot.states.states import DescriptionStates
 from bot.utils.chat_actions import run_long_operation_with_action
-import executor.ai_config as ai_cfg
 
 # ==========================
 # Навигация (Назад/Выход) и резюме
@@ -34,9 +33,7 @@ def _compose_summary(d: Dict) -> str:
             "house": "дом",
             "land": "участок",
             "country": "загородная",
-            "zagorod": "загородная",
             "commercial": "коммерческая",
-            "commerce": "коммерческая",
         }.get((raw or "").strip(), (raw or "").strip())
 
     def _add(parts: list[str], title: str, value) -> None:
@@ -298,6 +295,23 @@ FLAT_ASK_FLOOR           = "Этаж квартиры: выберите вари
 FLAT_ASK_FLOORS_TOTAL    = "Этажность дома: выберите вариант"
 
 # Справочник опций для кнопок (код, метка)
+DESCRIPTION_CLASSES = {
+    "econom": "Эконом",
+    "comfort": "Комфорт",
+    "business": "Бизнес",
+    "premium": "Премиум",
+}
+
+DESCRIPTION_COMPLEX = {
+    "yes": "Да (новостройка/ЖК)",
+    "no": "Нет",
+}
+
+DESCRIPTION_AREA = {
+    "city": "В черте города",
+    "out": "За городом",
+}
+
 FLAT_ENUMS: dict[str, list[tuple[str, str]]] = {
     "market": [
         ("new", "Новостройка"), ("secondary", "Вторичка"),
@@ -467,7 +481,7 @@ COUNTRY_MULTI_ENUMS: dict[str, list[tuple[str, str]]] = {
 }
 
 # ==========================
-# (НОВОЕ) Утилиты мультивыбора
+# Утилиты мультивыбора
 # ==========================
 def _multi_opts_map(key: str) -> Dict[str, str]:
     """
@@ -554,6 +568,8 @@ COMM_ENUMS: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
+
+
 # Клавиатура выбора вида в «Коммерческой»
 def kb_commercial_entry() -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
@@ -605,9 +621,9 @@ def kb_country_entry() -> InlineKeyboardMarkup:
     ]
     _kb_add_back_exit(rows)
     return InlineKeyboardMarkup(inline_keyboard=rows)
-def kb_class()   -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_CLASSES,"desc_class_",  1)
-def kb_complex() -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_COMPLEX,"desc_complex_",1)
-def kb_area()    -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_AREA,   "desc_area_",   1)
+def kb_class()   -> InlineKeyboardMarkup: return _kb_from_map(DESCRIPTION_CLASSES,"desc_class_",  1)
+def kb_complex() -> InlineKeyboardMarkup: return _kb_from_map(DESCRIPTION_COMPLEX,"desc_complex_",1)
+def kb_area()    -> InlineKeyboardMarkup: return _kb_from_map(DESCRIPTION_AREA,   "desc_area_",   1)
 
 # --- НОВОЕ: кнопки расположения для «Загородной недвижимости»
 def kb_country_area() -> InlineKeyboardMarkup:
@@ -908,8 +924,7 @@ async def handle_type(cb: CallbackQuery, state: FSMContext):
         await _edit_text_or_caption(cb.message, await _with_summary(state, FLAT_ASK_MARKET), _kb_enum("market"))
         await state.set_state(DescriptionStates.waiting_for_comment)
         return
-    elif val in {"country", "zagorod"}:
-        # Объединённая точка входа в «Загородную»: предлагаем только Дом / Земельный участок
+    elif val in {"country"}:
         await state.update_data(
             __country_mode=True,
             __flat_mode=False,
@@ -925,7 +940,7 @@ async def handle_type(cb: CallbackQuery, state: FSMContext):
         # СКИП «новостройка/ЖК» для дома, идём сразу к расположению
         await _edit_text_or_caption(cb.message, ASK_AREA, kb_area())
         await state.set_state(DescriptionStates.waiting_for_area)
-    elif val in {"commercial", "commerce"}:
+    elif val in {"commercial"}:
         # Вход в коммерческую недвижимость: сначала вид объекта
         await state.update_data(
             __commercial_mode=True,
