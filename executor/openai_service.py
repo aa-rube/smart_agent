@@ -5,7 +5,7 @@ import os, logging
 from openai import OpenAI
 
 from executor.config import OPENAI_API_KEY
-from executor.ai_config import OBJECTION_MODEL, DESCRIPTION_MODEL, FEEDBACK_MODEL, SUMMARY_MODEL, WHISPER_MODEL
+from executor.ai_config import OBJECTION_MODEL, FEEDBACK_MODEL, SUMMARY_MODEL, WHISPER_MODEL
 from executor.prompt_factory import (
     build_objection_request,
     build_description_request_from_fields,

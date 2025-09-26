@@ -8,6 +8,8 @@ from executor.helpers import *
 from executor.openai_service import *
 from executor import replicate_service as svc
 
+import executor.description as description_module
+
 api = Blueprint("api", __name__, url_prefix="/api/v1")
 
 _config_issues = validate_config()
@@ -173,56 +175,7 @@ def objection_generate():
 
 @api.post("/description/generate")
 def description_generate():
-    """
-    ТОНКИЙ контроллер: принимает сырые поля анкеты (JSON или form),
-    передаёт в сервис, возвращает готовый текст.
-    Вся сборка промпта/валидация формата перенесена в фабрику/сервис.
-    """
-    if _config_issues:
-        return jsonify({"error": "config", "detail": "; ".join(_config_issues)}), 500
-
-    # Принимаем JSON в приоритете, фолбэк на form-data
-    data = request.get_json(silent=True) or {}
-    form = request.form
-    debug_flag = request.args.get("debug") == "1"
-
-    # Единый набор поддерживаемых полей (новая анкета + старые поля для back-compat)
-    fields = {
-        # базовые
-        "type":        data.get("type")        or form.get("type"),
-        "apt_class":   data.get("apt_class")   or form.get("apt_class"),
-        "in_complex":  data.get("in_complex")  or form.get("in_complex"),
-        "area":        data.get("area")        or form.get("area"),
-        "comment":     data.get("comment")     or form.get("comment"),
-        # новая анкета (обязательные на стороне бота)
-        "total_area":      data.get("total_area")      or form.get("total_area"),
-        "building_floors": data.get("building_floors") or form.get("building_floors"),
-        "floor_number":    data.get("floor_number")    or form.get("floor_number"),
-        "kitchen_area":    data.get("kitchen_area")    or form.get("kitchen_area"),
-        "rooms":           data.get("rooms")           or form.get("rooms"),
-        "year_state":      data.get("year_state")      or form.get("year_state"),
-        "utilities":       data.get("utilities")       or form.get("utilities"),
-        "location":        data.get("location")        or form.get("location"),
-        "amenities":       data.get("amenities")       or form.get("amenities"),
-    }
-
-    # Минимальная проверка наличия типа (вся остальная логика — в фабрике/боте)
-    if not (fields.get("type") or "").strip():
-        return jsonify({"error": "bad_request", "detail": "field 'type' is required"}), 400
-
-    try:
-        text, used_model = send_description_generate_request_from_fields(fields, allow_fallback=True)
-        body = {"text": text}
-        if debug_flag:
-            body["debug"] = {"model_used": used_model}
-        return jsonify(body), 200
-    except Exception as e:
-        LOG.exception("OpenAI error (description)")
-        body = {"error": "openai_error", "detail": str(e)}
-        if debug_flag:
-            body["debug"] = {"model": DESCRIPTION_MODEL}
-        return jsonify(body), 502
-
+    return description_module.description_generate(request)
 
 # ==============================
 #   NEW: FEEDBACK / REVIEW API
