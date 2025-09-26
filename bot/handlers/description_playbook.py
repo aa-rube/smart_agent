@@ -16,7 +16,7 @@ from yarl import URL
 import os
 
 from bot.config import EXECUTOR_BASE_URL, get_file_path
-from bot.config import EXECUTOR_CALLBACK_TOKEN
+from bot.config import EXECUTOR_CALLBACK_TOKEN, BOT_PUBLIC_BASE_URL
 from bot.states.states import DescriptionStates
 
 
@@ -815,16 +815,9 @@ def kb_apt_condition() -> InlineKeyboardMarkup:
 # ==========================
 async def _cb_description_result(request: web.Request):
     """
-    Приём результата генерации описания от executor'а.
-    Тело запроса (JSON):
-      {
-        "chat_id": <int>,
-        "msg_id":  <int>,     # якорь, который показывал "⏳ Генерирую..."
-        "text":    <str>,     # готовое описание (или "")
-        "error":   <str>,     # текст ошибки (или "")
-        "token":   <str>,     # простой HMAC/токен защиты (опционально)
-        "fields":  <dict>     # исходные поля анкеты — для истории в БД
-      }
+    Приём результата генерации от executor'а.
+    Если якорь — медиа (фото/видео), редактируем caption вместо текста,
+    чтобы не создавать новое сообщение.
     """
     try:
         data = await request.json()
@@ -842,34 +835,34 @@ async def _cb_description_result(request: web.Request):
 
     bot: Bot = request.app["bot"]
 
-    # Ошибка от executor'а — покажем стандартный текст и кнопку «Ещё раз»
+    # --- Ошибка от executor'а: заменить якорь на ERROR_TEXT (text -> caption -> новое) ---
     if error and not text:
         try:
-            await bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=msg_id,
-                text=ERROR_TEXT,
-                reply_markup=kb_retry()
-            )
+            await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=ERROR_TEXT, reply_markup=kb_retry())
         except TelegramBadRequest:
-            await bot.send_message(chat_id, ERROR_TEXT, reply_markup=kb_retry())
+            try:
+                await bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=ERROR_TEXT, reply_markup=kb_retry())
+            except TelegramBadRequest:
+                await bot.send_message(chat_id, ERROR_TEXT, reply_markup=kb_retry())
         return web.json_response({"ok": True})
 
-    # Есть текст — заменяем якорь и досылаем хвосты, если они есть
+    # --- Успешный текст: первый чанк заменяет якорь (text -> caption -> новое), хвост — отдельными сообщениями ---
     parts = _split_for_telegram(text)
     try:
         await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=parts[0], reply_markup=kb_retry())
     except TelegramBadRequest:
-        sent = await bot.send_message(chat_id, parts[0], reply_markup=kb_retry())
-        msg_id = sent.message_id
+        try:
+            await bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=parts[0], reply_markup=kb_retry())
+        except TelegramBadRequest:
+            sent = await bot.send_message(chat_id, parts[0], reply_markup=kb_retry())
+            msg_id = sent.message_id
     for p in parts[1:]:
         await bot.send_message(chat_id, p)
 
-    # Сохраняем в историю (user_id == chat_id)
+    # --- История (user_id == chat_id) ---
     try:
         db.description_add(user_id=chat_id, fields=fields, result_text=text)
     except Exception:
-        # Не ломаем колбэк
         pass
 
     return web.json_response({"ok": True})
@@ -894,47 +887,6 @@ SUBSCRIBE_KB = InlineKeyboardMarkup(
     inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
 )
 
-# ==========================
-# CALLBACK ОТ EXECUTOR (ПРИЁМ РЕЗУЛЬТАТА)
-# ==========================
-async def _cb_description_result(request: web.Request):
-    """
-    Принимает POST от executor с результатом генерации.
-    Ждёт JSON: {chat_id, msg_id, text?, error?, token?}
-    """
-    try:
-        data = await request.json()
-        token = (data.get("token") or "").strip()
-        if EXECUTOR_CALLBACK_TOKEN and token != EXECUTOR_CALLBACK_TOKEN:
-            return web.json_response({"error": "forbidden"}, status=403)
-
-        chat_id = int(data["chat_id"])
-        msg_id  = int(data["msg_id"])
-        text    = (data.get("text") or "").strip()
-        error   = (data.get("error") or "").strip()
-    except Exception as e:
-        return web.json_response({"error": "bad_request", "detail": str(e)}, status=400)
-
-    bot: Bot = request.app["bot"]  # положен при монтаже
-
-    # Если ошибка/пусто — заменить «⏳» на ERROR_TEXT
-    if error or not text:
-        try:
-            await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=ERROR_TEXT, reply_markup=kb_retry())
-        except TelegramBadRequest:
-            await bot.send_message(chat_id, ERROR_TEXT, reply_markup=kb_retry())
-        return web.json_response({"ok": True})
-
-    # Есть текст — первый чанк заменяет старое сообщение, остальные отправляем ниже
-    parts = _split_for_telegram(text)
-    try:
-        await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=parts[0], reply_markup=kb_retry())
-    except TelegramBadRequest:
-        sent = await bot.send_message(chat_id, parts[0], reply_markup=kb_retry())
-        msg_id = sent.message_id
-    for p in parts[1:]:
-        await bot.send_message(chat_id, p)
-    return web.json_response({"ok": True})
 
 def mount_internal_routes(app: web.Application, bot: Bot):
     """
