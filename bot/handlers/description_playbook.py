@@ -168,7 +168,7 @@ async def _with_summary(state: FSMContext, text: str) -> str:
 def _kb_add_back_exit(rows: list[list[InlineKeyboardButton]]) -> list[list[InlineKeyboardButton]]:
     """
     Унифицированный нижний ряд для всех экранов: Назад/Выход.
-    'Назад' -> desc_back; 'Выход' -> nav.ai_tools (глобальный выход).
+    'Назад' -> desc_back; 'Выход' -> desc_start (главоне меню).
     """
     rows.append([
         InlineKeyboardButton(text="⬅️ Назад", callback_data="desc_back"),
@@ -248,6 +248,8 @@ ASK_FREE_COMMENT         = "1️⃣4️⃣ При желании добавьт�
 
 GENERATING = "⏳ Генерирую описание… это займёт до минуты."
 ERROR_TEXT = "😔 Не получилось сгенерировать описание. Попробуйте ещё раз."
+
+COUNTRY_ASK_AREA = "Где расположен загородный объект?"
 
 SUB_FREE = """
 🎁 Бесплатный период завершён
@@ -606,6 +608,20 @@ def kb_country_entry() -> InlineKeyboardMarkup:
 def kb_class()   -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_CLASSES,"desc_class_",  1)
 def kb_complex() -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_COMPLEX,"desc_complex_",1)
 def kb_area()    -> InlineKeyboardMarkup: return _kb_from_map(ai_cfg.DESCRIPTION_AREA,   "desc_area_",   1)
+
+# --- НОВОЕ: кнопки расположения для «Загородной недвижимости»
+def kb_country_area() -> InlineKeyboardMarkup:
+    """
+    Две фиксированные кнопки:
+    — За городом  -> area=out
+    — В черте города -> area=city
+    """
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="За городом",      callback_data="desc_country_area_out")],
+        [InlineKeyboardButton(text="В черте города",  callback_data="desc_country_area_city")],
+    ]
+    _kb_add_back_exit(rows)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 # ==========================
 # Утилиты редактирования
@@ -1788,7 +1804,8 @@ async def handle_country_entry(cb: CallbackQuery, state: FSMContext):
 
     # Технически считаем, что первый ключ уже выбран → начинаем со следующего шага
     await state.update_data(__form_keys=new_keys, __form_step=1)
-    await _ask_next_country_step(cb.message, state)
+    # Прежде чем идти по анкете — спросим расположение (За городом / В черте города)
+    await _edit_text_or_caption(cb.message, await _with_summary(state, COUNTRY_ASK_AREA), kb_country_area())
 
 # --- НОВОЕ: обработчик выбора вида для «Коммерческой»
 async def handle_commercial_entry(cb: CallbackQuery, state: FSMContext):
@@ -1817,6 +1834,27 @@ async def handle_commercial_entry(cb: CallbackQuery, state: FSMContext):
     # Технически первый ключ уже выбран → шаг со следующего
     await state.update_data(__form_keys=new_keys, __form_step=1)
     await _ask_next_commercial_step(cb.message, state)
+
+async def handle_country_area(cb: CallbackQuery, state: FSMContext):
+    """
+    Сохраняем area для «Загородной недвижимости»:
+    - desc_country_area_out  -> area='out'
+    - desc_country_area_city -> area='city'
+    После выбора продолжаем анкету по «country».
+    """
+    await _cb_ack(cb)
+    data = await state.get_data()
+    if not data.get("__country_mode"):
+        return
+    payload = cb.data
+    if payload == "desc_country_area_out":
+        await state.update_data(area="out")
+    elif payload == "desc_country_area_city":
+        await state.update_data(area="city")
+    else:
+        return
+    # Переходим к следующему шагу анкеты
+    await _ask_next_country_step(cb.message, state)
 
 async def handle_enum_other(cb: CallbackQuery, state: FSMContext):
     await _cb_ack(cb)
@@ -2066,6 +2104,8 @@ def router(rt: Router):
     rt.callback_query.register(handle_country_entry, F.data.in_(["desc_country_entry_house", "desc_country_entry_plot"]), DescriptionStates.waiting_for_comment)
     # Коммерческая: выбор вида объекта
     rt.callback_query.register(handle_commercial_entry, F.data.startswith("desc_comm_entry_"), DescriptionStates.waiting_for_comment)
+    # Загородная: выбор расположения
+    rt.callback_query.register(handle_country_area, F.data.in_(["desc_country_area_out", "desc_country_area_city"]), DescriptionStates.waiting_for_comment)
 
     # анкета + свободный комментарий / пропуск
     rt.message.register(handle_comment_message, DescriptionStates.waiting_for_comment, F.text)
