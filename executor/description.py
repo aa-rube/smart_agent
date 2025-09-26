@@ -239,13 +239,65 @@ DESCRIPTION_USER_TEMPLATE_RU = """
 # =====================================================================================
 # ВСПОМОГАТЕЛЬНЫЕ УТИЛИТЫ
 # =====================================================================================
-def _strip_format_specifiers(s: str) -> str:
+def _sanitize_format_template(s: str) -> str:
     """
-    Удаляет формат-спецификаторы внутри плейсхолдеров str.format.
-    Пример: '{apt_class:+, класс —}' -> '{apt_class}'
-    Работает только для имён вида [a-zA-Z_][a-zA-Z0-9_]*.
+    Делает шаблон безопасным для str.format:
+      — для плейсхолдера {name:...} удаляет формат-часть (включая вложенные скобки) -> {name}
+      — экранирует одиночные '{' и '}' вне валидных плейсхолдеров -> '{{' / '}}'
+    Допустимое имя: [a-zA-Z_][a-zA-Z0-9_]*
     """
-    return re.sub(r'{([a-zA-Z_]\w*):[^}]*}', r'{\1}', s)
+    out: list[str] = []
+    i = 0
+    n = len(s)
+    ident_re = re.compile(r'[a-zA-Z_][a-zA-Z0-9_]*')
+    while i < n:
+        ch = s[i]
+        if ch == '{':
+            # Экранированные "{{"
+            if i + 1 < n and s[i + 1] == '{':
+                out.append('{{'); i += 2; continue
+            # Пытаемся разобрать {identifier ...}
+            j = i + 1
+            m = ident_re.match(s, j)
+            if not m:
+                # Не валидное начало плейсхолдера — экранируем
+                out.append('{{'); i += 1; continue
+            name_end = m.end()
+            name = s[j:name_end]
+            if name_end < n and s[name_end] == '}':
+                # Простой {name}
+                out.append('{'); out.append(name); out.append('}')
+                i = name_end + 1; continue
+            if name_end < n and s[name_end] == ':':
+                # {name: ...} — нужно пропустить формат-часть с учётом вложенных скобок
+                k = name_end + 1
+                depth = 0
+                while k < n:
+                    if s[k] == '{':
+                        depth += 1
+                    elif s[k] == '}':
+                        if depth == 0:
+                            # конец формат-части
+                            out.append('{'); out.append(name); out.append('}')
+                            k += 1
+                            break
+                        depth -= 1
+                    k += 1
+                else:
+                    # Не нашли закрывающую — экранируем исходную '{'
+                    out.append('{{'); i += 1; continue
+                i = k; continue
+            # Иной символ после имени — не формат, экранируем '{'
+            out.append('{{'); i += 1; continue
+        elif ch == '}':
+            # Экранированные "}}"
+            if i + 1 < n and s[i + 1] == '}':
+                out.append('}}'); i += 2; continue
+            # Одиночная закрывающая — экранируем
+            out.append('}}'); i += 1; continue
+        else:
+            out.append(ch); i += 1
+    return ''.join(out)
 
 def _default_api_key() -> str:
     """
@@ -472,9 +524,8 @@ def compose_description_user_message(fields: Dict[str, Any]) -> str:
     msg = "Сгенерируй продающее описание по анкете. Соблюдай «Х-П-В», без воды, с явным CTA.\n\n"
     msg += f"— Сделка: {user_payload['deal_label']}\n"
     msg += DESCRIPTION_USER_TEMPLATE_RU
-    # В шаблоне могли оказаться двоеточия после имени плейсхолдера,
-    # что воспринимается как формат-спецификатор → чистим их.
-    tmpl = _strip_format_specifiers(msg)
+    # Санитизируем шаблон: убираем формат-спеки и экранируем одиночные скобки
+    tmpl = _sanitize_format_template(msg)
     try:
         return tmpl.format(**user_payload)
     except Exception as e:

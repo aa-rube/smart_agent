@@ -2215,4 +2215,6 @@ def register_http_endpoints(app: web.Application, bot: Bot):
     Вызывается из run.py после создания app.
     """
     app["bot"] = bot
+    # Совместимость: оба пути, чтобы не зависеть от того, какой использует executor
     app.router.add_post("/description/callback", _cb_description_result)
+    app.router.add_post("/api/v1/description/result", _cb_description_result)
