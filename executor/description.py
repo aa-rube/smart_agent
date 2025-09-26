@@ -6,6 +6,10 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 from flask import jsonify, Request
 from executor.config import OPENAI_API_KEY
+import threading
+import requests
+import json
+from urllib.parse import urlparse
 
 try:
     from openai import OpenAI
@@ -484,6 +488,21 @@ def send_description_generate_request_from_fields(
     )
 
 
+def _post_callback(callback_url: str, payload: Dict[str, Any]) -> None:
+    """
+    Безопасно шлём результат на callback_url. Не бросаем исключения наружу.
+    """
+    try:
+        # небольшая валидация URL
+        pr = urlparse(callback_url)
+        if pr.scheme not in {"http", "https"}:
+            raise ValueError("callback_url must be http/https")
+        headers = {"Content-Type": "application/json"}
+        requests.post(callback_url, data=json.dumps(payload), headers=headers, timeout=30)
+    except Exception as e:
+        LOG.warning("Callback POST failed: %s", e)
+
+
 # =====================================================================================
 # PUBLIC ENTRYPOINT for thin controller
 # =====================================================================================
@@ -522,7 +541,54 @@ def description_generate(req: Request):
     if not t:
         return jsonify({"error": "bad_request", "detail": "field 'type' is required"}), 400
 
+    # Параметры для обратного вызова
+    callback_url   = (data.get("callback_url") if isinstance(data, dict) else None) or req.args.get("callback_url")
+    callback_token = (data.get("callback_token") if isinstance(data, dict) else None) or req.args.get("callback_token")
+    cb_chat_id     = (data.get("chat_id") if isinstance(data, dict) else None) or req.args.get("chat_id")
+    cb_msg_id      = (data.get("msg_id") if isinstance(data, dict) else None) or req.args.get("msg_id")
+
     debug_flag = req.args.get("debug") == "1"
+
+    # Режим async callback
+    if callback_url and cb_chat_id and cb_msg_id:
+        try:
+            chat_id = int(cb_chat_id)
+            msg_id  = int(cb_msg_id)
+        except Exception:
+            return jsonify({"error": "bad_request", "detail": "chat_id and msg_id must be integers"}), 400
+
+        def _bg():
+            """Фоновая генерация и POST результата на callback_url."""
+            try:
+                text, used_model = send_description_generate_request_from_fields(
+                    fields=fields,
+                    allow_fallback=True,
+                    api_key=api_key,
+                )
+                payload = {
+                    "chat_id": chat_id,
+                    "msg_id": msg_id,
+                    "text": text,
+                    "error": "",
+                    "token": callback_token or "",
+                }
+                _post_callback(callback_url, payload)
+            except Exception as e:
+                LOG.exception("OpenAI error (description, async)")
+                payload = {
+                    "chat_id": chat_id,
+                    "msg_id": msg_id,
+                    "text": "",
+                    "error": str(e),
+                    "token": callback_token or "",
+                }
+                _post_callback(callback_url, payload)
+
+        threading.Thread(target=_bg, daemon=True).start()
+        # Быстрый ACK, чтобы бот не «ждал»
+        return jsonify({"accepted": True}), 202
+
+    # Обычный синхронный режим (совместимость)
     try:
         text, used_model = send_description_generate_request_from_fields(
             fields=fields,

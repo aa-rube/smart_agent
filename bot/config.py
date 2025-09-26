@@ -7,6 +7,9 @@ from urllib.parse import quote_plus
 
 load_dotenv()
 
+EXECUTOR_CALLBACK_TOKEN = os.getenv("EXECUTOR_CALLBACK_TOKEN")
+
+
 # === Директории ===
 CURRENT_FILE = Path(__file__).resolve()         # .../smart_agent/bot/config.py
 BOT_DIR      = CURRENT_FILE.parent              # .../smart_agent/bot

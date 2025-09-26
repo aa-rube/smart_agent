@@ -16,6 +16,17 @@ _config_issues = validate_config()
 LOG = logging.getLogger(__name__)
 
 
+@api.post("/description/generate")
+def description_generate():
+    return description_module.description_generate(request)
+
+
+
+
+
+
+
+
 @api.get("/../health")  # доступно и как /health
 def compat_health():
     ok = not _config_issues
@@ -173,10 +184,6 @@ def objection_generate():
         return jsonify(body), 502
 
 
-@api.post("/description/generate")
-def description_generate():
-    return description_module.description_generate(request)
-
 # ==============================
 #   NEW: FEEDBACK / REVIEW API
 # ==============================
@@ -294,9 +301,6 @@ def review_mutate():
             body["debug"] = {"model": FEEDBACK_MODEL}
         return jsonify(body), 502
 
-
-
-# smart_agent/executor/controller.py
 
 @api.post("/summary/analyze")
 def summary_analyze():

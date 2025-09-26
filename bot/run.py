@@ -18,6 +18,7 @@ from bot.handlers.payment_handler import process_yookassa_webhook
 from bot.utils import youmoney
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from bot.handlers.description_playbook import register_http_endpoints
 
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
@@ -51,6 +52,8 @@ async def main():
 
     app = web.Application()
     app.router.add_post("/payment", yookassa_webhook_handler)
+    # колбэк от executor'а: заменяет "⏳ Генерирую..." итогом
+    register_http_endpoints(app, bot)
 
     runner = web.AppRunner(app)
     await runner.setup()

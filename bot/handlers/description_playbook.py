@@ -1,8 +1,6 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\description_playbook.py
 from typing import Optional, List, Dict, Set
-
 from aiogram.types import CallbackQuery as _CbType
-import os
 import re
 
 import aiohttp
@@ -13,11 +11,17 @@ from aiogram.types import (
 )
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
-from aiogram.enums.chat_action import ChatAction
+from aiohttp import web
+from yarl import URL
+import os
 
 from bot.config import EXECUTOR_BASE_URL, get_file_path
+from bot.config import EXECUTOR_CALLBACK_TOKEN
 from bot.states.states import DescriptionStates
-from bot.utils.chat_actions import run_long_operation_with_action
+
+# --- Новые конфиги для коллбэка от executor ---
+BOT_PUBLIC_BASE_URL = os.getenv("BOT_PUBLIC_BASE_URL", "").rstrip("/")
+
 
 # ==========================
 # Навигация (Назад/Выход) и резюме
@@ -807,6 +811,72 @@ def kb_apt_condition() -> InlineKeyboardMarkup:
     _kb_add_back_exit(rows)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+
+# ==========================
+# HTTP callback от executor'а (fire-and-forget результат описания)
+# ==========================
+async def _cb_description_result(request: web.Request):
+    """
+    Приём результата генерации описания от executor'а.
+    Тело запроса (JSON):
+      {
+        "chat_id": <int>,
+        "msg_id":  <int>,     # якорь, который показывал "⏳ Генерирую..."
+        "text":    <str>,     # готовое описание (или "")
+        "error":   <str>,     # текст ошибки (или "")
+        "token":   <str>,     # простой HMAC/токен защиты (опционально)
+        "fields":  <dict>     # исходные поля анкеты — для истории в БД
+      }
+    """
+    try:
+        data = await request.json()
+        token  = (data.get("token") or "").strip()
+        if EXECUTOR_CALLBACK_TOKEN and token != EXECUTOR_CALLBACK_TOKEN:
+            return web.json_response({"error": "forbidden"}, status=403)
+
+        chat_id = int(data["chat_id"])
+        msg_id  = int(data["msg_id"])
+        text    = (data.get("text") or "").strip()
+        error   = (data.get("error") or "").strip()
+        fields  = data.get("fields") or {}
+    except Exception as e:
+        return web.json_response({"error": "bad_request", "detail": str(e)}, status=400)
+
+    bot: Bot = request.app["bot"]
+
+    # Ошибка от executor'а — покажем стандартный текст и кнопку «Ещё раз»
+    if error and not text:
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg_id,
+                text=ERROR_TEXT,
+                reply_markup=kb_retry()
+            )
+        except TelegramBadRequest:
+            await bot.send_message(chat_id, ERROR_TEXT, reply_markup=kb_retry())
+        return web.json_response({"ok": True})
+
+    # Есть текст — заменяем якорь и досылаем хвосты, если они есть
+    parts = _split_for_telegram(text)
+    try:
+        await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=parts[0], reply_markup=kb_retry())
+    except TelegramBadRequest:
+        sent = await bot.send_message(chat_id, parts[0], reply_markup=kb_retry())
+        msg_id = sent.message_id
+    for p in parts[1:]:
+        await bot.send_message(chat_id, p)
+
+    # Сохраняем в историю (user_id == chat_id)
+    try:
+        db.description_add(user_id=chat_id, fields=fields, result_text=text)
+    except Exception:
+        # Не ломаем колбэк
+        pass
+
+    return web.json_response({"ok": True})
+
+
 APT_COND_LABELS = {
     "designer": "Дизайнерский ремонт",
     "euro":     "Евро-ремонт",
@@ -825,6 +895,55 @@ def kb_skip_comment() -> InlineKeyboardMarkup:
 SUBSCRIBE_KB = InlineKeyboardMarkup(
     inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
 )
+
+# ==========================
+# CALLBACK ОТ EXECUTOR (ПРИЁМ РЕЗУЛЬТАТА)
+# ==========================
+async def _cb_description_result(request: web.Request):
+    """
+    Принимает POST от executor с результатом генерации.
+    Ждёт JSON: {chat_id, msg_id, text?, error?, token?}
+    """
+    try:
+        data = await request.json()
+        token = (data.get("token") or "").strip()
+        if EXECUTOR_CALLBACK_TOKEN and token != EXECUTOR_CALLBACK_TOKEN:
+            return web.json_response({"error": "forbidden"}, status=403)
+
+        chat_id = int(data["chat_id"])
+        msg_id  = int(data["msg_id"])
+        text    = (data.get("text") or "").strip()
+        error   = (data.get("error") or "").strip()
+    except Exception as e:
+        return web.json_response({"error": "bad_request", "detail": str(e)}, status=400)
+
+    bot: Bot = request.app["bot"]  # положен при монтаже
+
+    # Если ошибка/пусто — заменить «⏳» на ERROR_TEXT
+    if error or not text:
+        try:
+            await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=ERROR_TEXT, reply_markup=kb_retry())
+        except TelegramBadRequest:
+            await bot.send_message(chat_id, ERROR_TEXT, reply_markup=kb_retry())
+        return web.json_response({"ok": True})
+
+    # Есть текст — первый чанк заменяет старое сообщение, остальные отправляем ниже
+    parts = _split_for_telegram(text)
+    try:
+        await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=parts[0], reply_markup=kb_retry())
+    except TelegramBadRequest:
+        sent = await bot.send_message(chat_id, parts[0], reply_markup=kb_retry())
+        msg_id = sent.message_id
+    for p in parts[1:]:
+        await bot.send_message(chat_id, p)
+    return web.json_response({"ok": True})
+
+def mount_internal_routes(app: web.Application, bot: Bot):
+    """
+    Вызывается при старте: добавляет POST /api/v1/description/result и кладёт bot в app['bot'].
+    """
+    app["bot"] = bot
+    app.router.add_post("/api/v1/description/result", _cb_description_result)
 
 # ==========================
 # HTTP к контроллеру
@@ -850,6 +969,36 @@ async def _request_description_text(fields: dict, *, timeout_sec: int = 70) -> s
             if not txt:
                 raise RuntimeError("Executor returned empty text")
             return txt
+
+# --- Новый: асинхронная постановка задачи без ожидания результата ---
+async def _request_description_async(fields: dict, *, chat_id: int, msg_id: int, timeout_sec: int = 10) -> None:
+    """
+    Отправляет задачу в executor и НЕ ждёт результата.
+    Executor позже вызовет наш callback.
+    """
+    if not BOT_PUBLIC_BASE_URL:
+        raise RuntimeError("BOT_PUBLIC_BASE_URL is not set")
+    callback_url = str(URL(BOT_PUBLIC_BASE_URL) / "api" / "v1" / "description" / "result")
+
+    payload = dict(fields)
+    payload.update({
+        "callback_url": callback_url,
+        "callback_token": EXECUTOR_CALLBACK_TOKEN,
+        "chat_id": chat_id,
+        "msg_id": msg_id,
+    })
+
+    url = f"{EXECUTOR_BASE_URL.rstrip('/')}/api/v1/description/generate"
+    t = aiohttp.ClientTimeout(total=timeout_sec)
+    async with aiohttp.ClientSession(timeout=t) as session:
+        async with session.post(url, json=payload) as resp:
+            if resp.status not in (200, 202):
+                try:
+                    data = await resp.json()
+                    detail = data.get("detail") or data.get("error") or str(data)
+                except Exception:
+                    detail = await resp.text()
+                raise RuntimeError(f"Executor HTTP {resp.status}: {detail}")
 
 # ==========================
 # Шаги (callbacks)
@@ -1425,36 +1574,9 @@ async def _generate_and_output(
         gen_msg = await message.answer(GENERATING)
         anchor_id = gen_msg.message_id
 
-    async def _do_req():
-        return await _request_description_text(fields)
-
+    # --- Новый режим: fire-and-forget, ответ придёт на callback и заменит это сообщение ---
     try:
-        text = await run_long_operation_with_action(
-            bot=bot, chat_id=message.chat.id, action=ChatAction.TYPING, coro=_do_req()
-        )
-        parts = _split_for_telegram(text)
-
-        # --- Сохраняем в историю запросов пользователя ---
-        try:
-            db.description_add(user_id=user_id, fields=fields, result_text=text)
-        except Exception:
-            # не ломаем основной флоу на ошибках БД
-            pass
-
-        # редактируем anchor результатом
-        try:
-            await bot.edit_message_text(
-                chat_id=message.chat.id,
-                message_id=anchor_id,
-                text=parts[0],
-                reply_markup=kb_retry()
-            )
-        except TelegramBadRequest:
-            await message.answer(parts[0], reply_markup=kb_retry())
-
-        for p in parts[1:]:
-            await message.answer(p)
-
+        await _request_description_async(fields, chat_id=message.chat.id, msg_id=anchor_id)
     except Exception:
         try:
             await bot.edit_message_text(
@@ -1465,7 +1587,6 @@ async def _generate_and_output(
             )
         except TelegramBadRequest:
             await message.answer(ERROR_TEXT, reply_markup=kb_retry())
-
     finally:
         await state.clear()
 
@@ -2134,3 +2255,14 @@ def router(rt: Router):
 
     # Назад
     rt.callback_query.register(handle_back, F.data == "desc_back")
+
+
+# ==========================
+# Публичная регистрация HTTP-эндпоинтов (aiohttp)
+# ==========================
+def register_http_endpoints(app: web.Application, bot: Bot):
+    """
+    Вызывается из run.py после создания app.
+    """
+    app["bot"] = bot
+    app.router.add_post("/description/callback", _cb_description_result)
