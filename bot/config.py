@@ -63,8 +63,9 @@ CONTENT_GROUP_ID    = int(os.getenv("CONTENT_GROUP_ID", "0"))
 PARTNER_CHANNELS=[{"chat_id":"-1002969803274","url":"https://t.me/setrealtora","label":"Сеть Риэлтора"}]
 
 
-# === Интеграции / сервисы ===
-EXECUTOR_BASE_URL = os.getenv("EXECUTOR_BASE_URL", "http://127.0.0.1:5001")
+# --- Новые конфиги для callback от executor ---
+BOT_PUBLIC_BASE_URL = os.getenv("BOT_CALLBACK_BASE_URL", "").rstrip("/")
+EXECUTOR_BASE_URL = os.getenv("EXECUTOR_BASE_URL")
 
 
 # Основная база данных

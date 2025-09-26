@@ -19,8 +19,6 @@ from bot.config import EXECUTOR_BASE_URL, get_file_path
 from bot.config import EXECUTOR_CALLBACK_TOKEN
 from bot.states.states import DescriptionStates
 
-# --- Новые конфиги для коллбэка от executor ---
-BOT_PUBLIC_BASE_URL = os.getenv("BOT_PUBLIC_BASE_URL", "").rstrip("/")
 
 
 # ==========================
