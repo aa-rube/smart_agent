@@ -1906,8 +1906,14 @@ async def handle_history_item(cb: CallbackQuery, state: FSMContext):
     if not full_text:
         await cb.message.answer("Текст записи пуст.")
         return
-    for part in _split_for_telegram(full_text):
-        await cb.message.answer(part)
+    parts = _split_for_telegram(full_text)
+    for i, part in enumerate(parts):
+        is_last = (i == len(parts) - 1)
+        if is_last:
+            # На последний чанк вешаем клавиатуру записи
+            await cb.message.answer(part, reply_markup=_kb_history_item(entry_id))
+        else:
+            await cb.message.answer(part)
 
 async def handle_history_delete(cb: CallbackQuery, state: FSMContext):
     await _cb_ack(cb)
