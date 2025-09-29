@@ -228,6 +228,20 @@ class Subscription(Base):
     user: Mapped[User] = relationship(backref="subscriptions")
 
 
+class ChargeAttempt(Base):
+    """
+    Попытки автосписаний по подписке (для лимита ретраев).
+    """
+    __tablename__ = "charge_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    subscription_id: Mapped[int] = mapped_column(Integer, ForeignKey("subscriptions.id", ondelete="CASCADE"), index=True, nullable=False)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.user_id", ondelete="CASCADE"), index=True, nullable=False)
+    payment_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # id платежа в YooKassa (если есть)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="created")  # created|succeeded|canceled|expired
+    attempted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 # =========================
 #       Repository
 # =========================
@@ -420,6 +434,10 @@ class UserRepository:
             return rec.id
 
     def subscriptions_due(self, *, now: datetime, limit: int = 200) -> List[Dict[str, Any]]:
+        """
+        Возвращает подписки, у которых наступил срок списания И
+        за последние 24 часа было < 2 попыток списания.
+        """
         with self._session() as s:
             q = (
                 s.query(Subscription)
@@ -430,10 +448,25 @@ class UserRepository:
                     Subscription.payment_method_id != None,                  # noqa: E711
                 )
                 .order_by(Subscription.next_charge_at.asc())
-                .limit(limit)
+                .limit(limit * 3)  # небольшой "запас" перед фильтрацией по попыткам
             )
+            subs = list(q)
+
+            # Вычислим "перегретые" подписки с >=2 попытками за 24ч
+            since = now - timedelta(hours=24)
+            blocked_ids = {
+                sub_id for (sub_id,) in
+                s.query(ChargeAttempt.subscription_id)
+                 .filter(ChargeAttempt.attempted_at >= since)
+                 .group_by(ChargeAttempt.subscription_id)
+                 .having(text("COUNT(*) >= 2"))
+                 .all()
+            }
+
             items: List[Dict[str, Any]] = []
-            for rec in q:
+            for rec in subs:
+                if rec.id in blocked_ids:
+                    continue
                 items.append({
                     "id": rec.id,
                     "user_id": rec.user_id,
@@ -443,7 +476,28 @@ class UserRepository:
                     "amount_currency": rec.amount_currency,
                     "payment_method_id": rec.payment_method_id,
                 })
+                if len(items) >= limit:
+                    break
             return items
+
+    # --- charge attempts (лимит ретраев) ---
+    def record_charge_attempt(self, *, subscription_id: int, user_id: int, payment_id: Optional[str], status: str) -> int:
+        with self._session() as s, s.begin():
+            rec = ChargeAttempt(
+                subscription_id=subscription_id,
+                user_id=user_id,
+                payment_id=payment_id,
+                status=status,
+            )
+            s.add(rec)
+            s.flush()
+            return rec.id
+
+    def mark_charge_attempt_status(self, *, payment_id: str, status: str) -> None:
+        with self._session() as s, s.begin():
+            rec = s.query(ChargeAttempt).filter(ChargeAttempt.payment_id == payment_id).one_or_none()
+            if rec:
+                rec.status = status
 
     # -------- Mailing recipients (from variables) --------
     def list_active_subscriber_ids(self, *, include_grace_days: int = 0) -> List[int]:
@@ -775,3 +829,10 @@ def subscription_mark_charged_for_user(user_id: int, *, next_charge_at: datetime
 # -------- Mailing recipients (compat wrapper) --------
 def list_active_subscriber_ids(include_grace_days: int = 0) -> List[int]:
     return _repo.list_active_subscriber_ids(include_grace_days=include_grace_days)
+
+# -------- Charge attempts (обёртки) --------
+def record_charge_attempt(*, subscription_id: int, user_id: int, payment_id: Optional[str], status: str) -> int:
+    return _repo.record_charge_attempt(subscription_id=subscription_id, user_id=user_id, payment_id=payment_id, status=status)
+
+def mark_charge_attempt_status(*, payment_id: str, status: str) -> None:
+    _repo.mark_charge_attempt_status(payment_id=payment_id, status=status)

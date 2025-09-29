@@ -432,6 +432,16 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
         metadata = obj.get("metadata") or {}
         payment_method = obj.get("payment_method") or {}
         pm_id = payment_method.get("id")
+        # если знаем payment_id → пометим исходную попытку (если она была создана с записью)
+        try:
+            if payment_id and status in ("succeeded", "canceled", "expired"):
+                from bot.utils import database as _db_for_attempts
+                _db_for_attempts.mark_charge_attempt_status(
+                    payment_id=payment_id,
+                    status="succeeded" if status == "succeeded" else status
+                )
+        except Exception:
+            pass
 
         if not payment_id or not status:
             return 400, "missing payment_id/status"
@@ -501,6 +511,11 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
 
         is_recurring = str(metadata.get("is_recurring") or "0") == "1"
         phase = str(metadata.get("phase") or "").strip()  # "trial" | "renewal" | "trial_tokenless"
+        subscription_id_meta = metadata.get("subscription_id")
+        try:
+            subscription_id_meta = int(subscription_id_meta) if subscription_id_meta is not None else None
+        except Exception:
+            subscription_id_meta = None
 
         db.check_and_add_user(user_id)
         paid_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
@@ -548,7 +563,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                 except Exception:
                     next_at = datetime.utcnow() + timedelta(days=30 * interval_m)
                 try:
-                    db.subscription_mark_charged(metadata.get("subscription_id"), next_charge_at=next_at)
+                    db.subscription_mark_charged(subscription_id_meta, next_charge_at=next_at)
                 except Exception:
                     try:
                         db.subscription_mark_charged_for_user(user_id=user_id, next_charge_at=next_at)

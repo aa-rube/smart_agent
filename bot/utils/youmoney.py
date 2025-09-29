@@ -5,6 +5,7 @@ from typing import Optional, Dict
 from yookassa.domain.exceptions.forbidden_error import ForbiddenError
 from yookassa import Configuration, Payment
 from bot.config import YOUMONEY_SHOP_ID, YOUMONEY_SECRET_KEY
+from bot.utils import database as db
 
 Configuration.account_id = YOUMONEY_SHOP_ID
 Configuration.secret_key = YOUMONEY_SECRET_KEY
@@ -66,10 +67,27 @@ def charge_saved_method(
     amount_rub: str,
     description: str,
     metadata: Optional[Dict[str, str]] = None,
+    subscription_id: Optional[int] = None,
 ) -> str:
-    md = {"user_id": str(user_id), "kind": "recurring"}
+    """
+    Создаёт повторное списание по сохранённой карте.
+    В metadata принудительно добавляются поля:
+      - kind=recurring
+      - is_recurring=1
+      - phase=renewal
+      - subscription_id (если передан)
+    Также пишется запись о попытке списания в БД для ограничения ретраев.
+    """
+    md = {
+        "user_id": str(user_id),
+        "kind": "recurring",
+        "is_recurring": "1",
+        "phase": "renewal",
+    }
     if metadata:
         md.update({k: str(v) for k, v in metadata.items()})
+    if subscription_id is not None:
+        md["subscription_id"] = str(subscription_id)
 
     body = {
         "amount": {"value": amount_rub, "currency": "RUB"},
@@ -79,4 +97,16 @@ def charge_saved_method(
         "metadata": md,
     }
     payment = Payment.create(body, uuid.uuid4())
+    # зафиксируем попытку списания (даже если затем вебхук сообщит об отмене)
+    try:
+        if subscription_id is not None:
+            db.record_charge_attempt(
+                subscription_id=subscription_id,
+                user_id=user_id,
+                payment_id=payment.id,
+                status="created",
+            )
+    except Exception:
+        # логируем молча — не должно ронять платеж
+        pass
     return payment.id
