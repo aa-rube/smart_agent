@@ -16,6 +16,7 @@ import bot.utils.admin_db as adb
 import bot.utils.database as app_db
 import bot.utils.billing_db as billing_db
 
+
 MSK = ZoneInfo("Europe/Moscow")
 
 

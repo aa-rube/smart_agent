@@ -16,6 +16,7 @@ from bot.utils import youmoney
 import bot.utils.database as app_db
 import bot.utils.billing_db as billing_db
 from bot.utils.mailing import send_last_published_to_user
+from bot.utils.redis_repo import yookassa_dedup
 
 logger = logging.getLogger(__name__)
 
@@ -296,6 +297,21 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
         metadata = obj.get("metadata") or {}
         pmethod = obj.get("payment_method") or {}
 
+        # --- ИДЕМПОТЕНТНОСТЬ НА REDIS (быстрый путь) ---
+        if not payment_id or not status:
+            return 400, "missing payment_id/status"
+        status_lc = str(status).lower()
+        # waiting_for_capture: фиксируем и без побочек выходим
+        if status_lc == "waiting_for_capture":
+            # Запомним, но побочных эффектов не делаем
+            await yookassa_dedup.should_process(payment_id, status_lc)  # просто зафиксирует, если надо
+            return 200, "ack waiting_for_capture"
+
+        # Для финальных статусов проверяем «надо ли обрабатывать?»
+        ok = await yookassa_dedup.should_process(payment_id, status_lc)
+        if not ok:
+            return 200, f"duplicate/no-op status={status_lc}"
+
         # помечаем попытку списания, если где-то создавали (не критично)
         try:
             if payment_id and status in ("succeeded", "canceled", "expired"):
@@ -303,9 +319,6 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                                                       status=("succeeded" if status == "succeeded" else status))
         except Exception:
             pass
-
-        if not payment_id or not status:
-            return 400, "missing payment_id/status"
 
         # неуспех — просто уведомим
         if (event in ("payment.canceled", "payment.expired") or status in ("canceled", "expired")):
@@ -328,14 +341,14 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                     logger.warning("Failed to send fail notice to %s: %s", user_id_fail, e)
             return 200, f"fail event={event} status={status}"
 
-        if event not in ("payment.succeeded", "payment.waiting_for_capture"):
+        if event not in ("payment.succeeded",):
             return 200, f"skip event={event}"
 
         user_id = int(metadata.get("user_id") or 0)
         if not user_id:
             return 400, "missing user_id in metadata"
 
-        # --- идемпотентность/аудит ---
+        # --- аудит в БД (на случай рестартов/отладка) ---
         try:
             billing_db.payment_log_upsert(
                 payment_id=payment_id,
@@ -347,8 +360,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                 metadata=metadata,
                 raw_payload=payload,
             )
-            if billing_db.payment_log_is_processed(payment_id):
-                return 200, "already processed"
+            # Не полагаемся больше на БД для идемпотентности; Redis уже отфильтровал.
         except Exception:
             logger.exception("payment_log_upsert failed for %s", payment_id)
 
@@ -425,7 +437,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             trial_until = app_db.set_trial(user_id, hours=trial_hours)
             await _notify_after_payment(bot, user_id, code, trial_until.date().isoformat())
 
-        # помечаем как обработанный
+        # помечаем как обработанный в БД (а в Redis уже зафиксирован финальный статус)
         try:
             billing_db.payment_log_mark_processed(payment_id)
         except Exception:
@@ -568,8 +580,13 @@ async def upgrade_plan(cb: CallbackQuery) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 # ROUTER
 # ──────────────────────────────────────────────────────────────────────────────
+from .clicklog_mw import CallbackClickLogger, MessageLogger
 
 def router(rt: Router) -> None:
+    # messages
+    rt.message.outer_middleware(MessageLogger())
+    rt.callback_query.outer_middleware(CallbackClickLogger())
+
     # /settings
     rt.message.register(open_settings_cmd, Command("settings"))
 

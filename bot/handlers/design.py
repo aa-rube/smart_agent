@@ -623,7 +623,14 @@ async def handle_zero_back_to_upload(callback: CallbackQuery, state: FSMContext,
 # Router
 # =============================================================================
 
-def router(rt: Router):
+from .clicklog_mw import CallbackClickLogger, MessageLogger
+
+def router(rt: Router) -> None:
+
+    # messages
+    rt.message.outer_middleware(MessageLogger())
+    rt.callback_query.outer_middleware(CallbackClickLogger())
+
     # Главный экран раздела «Дизайн»
     rt.callback_query.register(design_home, F.data == 'nav.design_home')
 

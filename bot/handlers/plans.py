@@ -348,7 +348,12 @@ async def handle_plan_back_to_upload(callback: CallbackQuery, state: FSMContext,
 # Router
 # ===========================
 
-def router(rt: Router):
+from .clicklog_mw import CallbackClickLogger, MessageLogger
+def router(rt: Router) -> None:
+    # messages
+    rt.message.outer_middleware(MessageLogger())
+    rt.callback_query.outer_middleware(CallbackClickLogger())
+
     # Старт сценария планировок
     rt.callback_query.register(start_plans_flow, F.data == "floor_plan")
 

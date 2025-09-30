@@ -2166,7 +2166,12 @@ async def handle_back(cb: CallbackQuery, state: FSMContext):
 # ==========================
 # Router
 # ==========================
-def router(rt: Router):
+from .clicklog_mw import CallbackClickLogger, MessageLogger
+def router(rt: Router) -> None:
+    # messages
+    rt.message.outer_middleware(MessageLogger())
+    rt.callback_query.outer_middleware(CallbackClickLogger())
+
     # старт
     rt.callback_query.register(start_description_flow, F.data == "nav.descr_home")
     rt.callback_query.register(start_description_flow, F.data == "desc_start")

@@ -1,11 +1,11 @@
 # smart_agent/bot/handlers/handler_manager.py
 #Всегда пиши код без «поддержки старых версий». Если они есть - удаляй.
-
 from __future__ import annotations
 
 import logging
 from pathlib import Path
 from typing import Union, Optional
+from datetime import datetime, timezone
 
 from aiogram import Router, F, Bot
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -20,10 +20,13 @@ from aiogram.types import (
     InputMediaPhoto,
 )
 
+from .clicklog_mw import CallbackClickLogger, MessageLogger
 from bot.config import get_file_path
 from bot.utils.subscribe_partner_manager import ensure_partner_subs
 from bot.handlers.payment_handler import show_rates as show_rates_handler
 import bot.utils.database as app_db
+import bot.utils.billing_db as billing_db
+from bot.utils.mailing import send_last_published_to_user
 from aiogram.types import User as TgUser
 
 
@@ -267,7 +270,6 @@ async def frst_msg(message: Message, bot: Bot) -> None:
         return
     # главный экран: фото + caption в одном сообщении
     await send_menu_with_logo(bot, user_id)
-    app_db.event_add(user_id=user_id, text="MAIN_MENU")
 
 
 # =============================================================================
@@ -286,7 +288,6 @@ async def ai_tools(callback: CallbackQuery) -> None:
         caption=ai_tools_text,
         kb=ai_tools_inline,
     )
-    app_db.event_add(user_id=user_id, text="AI_TOOLS_HOME")
 
 
 
@@ -299,18 +300,40 @@ async def check_subscribe_retry(callback: CallbackQuery, bot: Bot) -> None:
         return
 
     await _replace_with_menu_with_logo(callback)
-    app_db.event_add(user_id=user_id, text="CHECK_SUBSCRIBE")
 
 
 
 async def smm_content(callback: CallbackQuery) -> None:
     await init_user(callback)
     user_id = callback.from_user.id
-    await _edit_or_replace_with_photo_cb(callback, image_rel_path="img/bot/smm.png", caption=smm_description,
-                                         kb=get_smm_subscribe_inline)
-    app_db.event_add(user_id=user_id, text="SMM_HOME")
 
+    # Проверяем доступ: активный триал ИЛИ активная подписка на текущий момент
+    has_access = False
+    try:
+        now = datetime.now(timezone.utc)
+        active_paid_ids = set(billing_db.list_active_subscription_user_ids(now))
+        has_access = app_db.is_trial_active(user_id) or (user_id in active_paid_ids)
+    except Exception as e:
+        logging.warning("Access check failed for %s: %s", user_id, e)
 
+    if has_access:
+        # Только мейлинг (последний уже опубликованный), без экрана SMM
+        try:
+            await callback.answer("Отправляю свежий пост 📬", show_alert=False)
+        except Exception:
+            pass
+        try:
+            await send_last_published_to_user(callback.bot, user_id)
+        except Exception as e:
+            logging.warning("Failed to send last published mailing to %s: %s", user_id, e)
+    else:
+        # Обычный сценарий: экран SMM
+        await _edit_or_replace_with_photo_cb(
+            callback,
+            image_rel_path="img/bot/smm.png",
+            caption=smm_description,
+            kb=get_smm_subscribe_inline
+        )
 
 
 # =============================================================================
@@ -321,7 +344,6 @@ async def sub_cmd(message: Message) -> None:
     user_id = message.from_user.id
     # централизованный показ тарифов/оплаты
     await show_rates_handler(message)
-    app_db.event_add(user_id=user_id, text="SUBSCRIBE_HOME")
 
 
 
@@ -331,14 +353,15 @@ async def help_cmd(message: Message) -> None:
     await message.answer(HELP, reply_markup=help_kb())
     app_db.event_add(user_id=user_id, text="MAIN_HELP")
 
-# =============================================================================
-# Router
-# =============================================================================
+from .clicklog_mw import CallbackClickLogger, MessageLogger
 def router(rt: Router) -> None:
     # messages
+    rt.message.outer_middleware(MessageLogger())
+    rt.callback_query.outer_middleware(CallbackClickLogger())
+
     rt.message.register(frst_msg, CommandStart())
     rt.message.register(frst_msg, Command("main"))
-    rt.message.register(sub_cmd, Command("sub"))
+    rt.message.register(sub_cmd,  Command("sub"))
     rt.message.register(help_cmd, Command("support"))
 
     # callbacks

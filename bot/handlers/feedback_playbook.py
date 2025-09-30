@@ -1644,7 +1644,13 @@ async def go_menu(callback: CallbackQuery, state: FSMContext):
 # =============================================================================
 # Router
 # =============================================================================
-def router(rt: Router):
+from .clicklog_mw import CallbackClickLogger, MessageLogger
+
+def router(rt: Router) -> None:
+    # messages
+    rt.message.outer_middleware(MessageLogger())
+    rt.callback_query.outer_middleware(CallbackClickLogger())
+
     # start & cancel & menu
     rt.callback_query.register(start_feedback_flow, F.data == "nav.feedback_start")
     rt.callback_query.register(go_menu, F.data == "nav.menu")

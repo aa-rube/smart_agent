@@ -8,6 +8,7 @@ import logging
 import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
+from contextlib import asynccontextmanager
 
 try:
     # redis-py 5.x с async API
@@ -135,8 +136,6 @@ class FeedbackRedisRepo:
 
     async def read_buffer(self, user_id: int, *, buf_name: str = "buffer") -> List[str]:
         return await self.r.lrange(self._buf_key(user_id, buf_name), 0, -1)
-
-
 
 
 # === Summary (саммари переговоров) ===========================================
@@ -326,3 +325,79 @@ class QuotaRedisRepo:
 feedback_repo = FeedbackRedisRepo(_redis, prefix=os.getenv("REDIS_PREFIX", "sa"))
 summary_repo  = SummaryRedisRepo(_redis,  prefix=os.getenv("REDIS_PREFIX", "sa"))
 quota_repo    = QuotaRedisRepo(_redis,    prefix=os.getenv("REDIS_PREFIX", "sa"))
+
+
+# === YooKassa Webhook Idempotency ============================================
+class YooWebhookDedupRepo:
+    """
+    Идемпотентность wh-событий YooKassa по payment_id.
+    Ключ: {prefix}:yk:pay:{payment_id}  (HASH)
+      поля: status, updated_at
+    TTL: 144 часа (6 суток)
+    Политика:
+      - нет ключа        -> записываем new_status, allow=True
+      - status == new    -> allow=False
+      - status == 'waiting_for_capture' и new in {'succeeded','canceled','expired'} -> обновляем, allow=True
+      - иначе (ранг(new) <= ранг(old)) -> allow=False
+    """
+    STATUS_RANK = {
+        "waiting_for_capture": 1,
+        "succeeded": 2,
+        "canceled": 2,   # финальный
+        "expired": 2,    # финальный
+    }
+
+    def __init__(self, redis: Redis, prefix: str = "sa", ttl_sec: int = 144 * 3600):
+        self.r = redis
+        self.prefix = prefix
+        self.ttl = ttl_sec
+
+    def _key(self, payment_id: str) -> str:
+        return f"{self.prefix}:yk:pay:{payment_id}"
+
+    @asynccontextmanager
+    async def _watched(self, key: str):
+        pipe = self.r.pipeline()
+        await pipe.watch(key)
+        try:
+            yield pipe
+        finally:
+            await pipe.reset()
+
+    async def should_process(self, payment_id: str, new_status: str) -> bool:
+        """
+        Атомично решает, надо ли обрабатывать событие.
+        Также обновляет HASH и TTL, если решение = True (CAS через WATCH/MULTI).
+        """
+        key = self._key(payment_id)
+        new_status = (new_status or "").strip().lower()
+        new_rank = self.STATUS_RANK.get(new_status, 0)
+        async with self._watched(key) as pipe:
+            cur = await self.r.hget(key, "status")
+            cur_status = (cur or "").strip().lower()
+            if not cur_status:
+                # первый раз видим этот payment_id
+                pipe.multi()
+                pipe.hset(key, mapping={"status": new_status, "updated_at": _now_ts()})
+                pipe.expire(key, self.ttl)
+                await pipe.execute()
+                return True
+
+            if cur_status == new_status:
+                return False
+
+            cur_rank = self.STATUS_RANK.get(cur_status, 0)
+            # Разрешаем апгрейд статуса (например, waiting_for_capture -> succeeded/…)
+            if new_rank > cur_rank:
+                pipe.multi()
+                pipe.hset(key, mapping={"status": new_status, "updated_at": _now_ts()})
+                pipe.expire(key, self.ttl)
+                await pipe.execute()
+                return True
+
+            # Иначе — статус «не новее», повторная обработка не нужна
+            return False
+
+
+# Глобальный экземпляр
+yookassa_dedup = YooWebhookDedupRepo(_redis, prefix=os.getenv("REDIS_PREFIX", "sa"))
