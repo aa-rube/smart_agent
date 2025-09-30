@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Optional, Any, List, Dict
 from datetime import datetime, timedelta
+from datetime import timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
@@ -460,13 +461,21 @@ class UserRepository:
         Возвращает подписки, у которых наступил срок списания И
         за последние 24 часа было < 2 попыток списания.
         """
+        # Приводим now к НАИВНОМУ UTC, т.к. attempted_at пишется как datetime.utcnow()
+        if now.tzinfo is not None:
+            now_naive_utc = now.astimezone(timezone.utc).replace(tzinfo=None)
+        else:
+            now_naive_utc = now
+        short_cooldown = timedelta(minutes=30)   # защита от частых ретраев
+        long_window    = timedelta(hours=24)     # суточный лимит на попытки
+
         with self._session() as s:
             q = (
                 s.query(Subscription)
                 .filter(
                     Subscription.status == "active",
                     Subscription.next_charge_at != None,                     # noqa: E711
-                    Subscription.next_charge_at <= now,
+                    Subscription.next_charge_at <= now_naive_utc,
                     Subscription.payment_method_id != None,                  # noqa: E711
                 )
                 .order_by(Subscription.next_charge_at.asc())
@@ -474,20 +483,30 @@ class UserRepository:
             )
             subs = list(q)
 
-            # Вычислим "перегретые" подписки с >=2 попытками за 24ч
-            since = now - timedelta(hours=24)
-            blocked_ids = {
+            # 1) "Перегретые" подписки с >=2 попытками за 24ч
+            since_long = now_naive_utc - long_window
+            blocked_ids_long = {
                 sub_id for (sub_id,) in
                 s.query(ChargeAttempt.subscription_id)
-                 .filter(ChargeAttempt.attempted_at >= since)
+                 .filter(ChargeAttempt.attempted_at >= since_long)
                  .group_by(ChargeAttempt.subscription_id)
                  .having(text("COUNT(*) >= 2"))
                  .all()
             }
 
+            # 2) Короткий cooldown: была ЛЮБАЯ попытка за последние 30 минут
+            since_short = now_naive_utc - short_cooldown
+            blocked_ids_short = {
+                sub_id for (sub_id,) in
+                s.query(ChargeAttempt.subscription_id)
+                 .filter(ChargeAttempt.attempted_at >= since_short)
+                 .group_by(ChargeAttempt.subscription_id)
+                 .all()
+            }
+
             items: List[Dict[str, Any]] = []
             for rec in subs:
-                if rec.id in blocked_ids:
+                if rec.id in blocked_ids_long or rec.id in blocked_ids_short:
                     continue
                 items.append({
                     "id": rec.id,

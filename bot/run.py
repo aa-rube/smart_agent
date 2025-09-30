@@ -2,6 +2,8 @@
 import asyncio
 import logging
 import signal
+import os
+from contextlib import suppress
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -121,6 +123,7 @@ async def main():
                             amount_rub=amount,
                             description=f"Подписка {plan_code}",
                             metadata={"is_recurring": "1", "plan_code": plan_code},
+                            subscription_id=sub.get("id"),
                         )
                         logging.info("Recurring charge created: %s (user=%s)", pay_id, user_id)
                     except Exception as e:
@@ -138,37 +141,64 @@ async def main():
             except asyncio.TimeoutError:
                 continue
 
-    def signal_handler(signum, frame):
-        logging.info(f"Получен сигнал {signum}, начинаю graceful shutdown...")
-        shutdown_event.set()
-    
-    # Регистрируем обработчики сигналов
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
+    # --- Жёсткий стоп по сигналу ---
+    def _hard_stop(signum, frame):
+        # максимально быстрый stop: ставим флаг и отменяем ВСЕ задачи event-loop
+        logging.warning(f"Получен сигнал {signum}, выполняю немедленную остановку...")
+        try:
+            shutdown_event.set()
+            loop = asyncio.get_event_loop()
+            for task in asyncio.all_tasks(loop):
+                if task is not asyncio.current_task(loop):
+                    task.cancel()
+        except Exception:
+            pass
+
+    signal.signal(signal.SIGTERM, _hard_stop)
+    signal.signal(signal.SIGINT, _hard_stop)
     
     try:
         logging.info("Бот запущен")
-        # Запускаем фоновый биллинг-процесс и поллинг бота параллельно
-        tasks = await asyncio.gather(
-            billing_loop(),
-            mailing_loop(),
-            dp.start_polling(bot),
-            return_exceptions=True
+        # Запускаем задачи как отдельные таски, чтобы их можно было отменить мгновенно
+        billing_task = asyncio.create_task(billing_loop(), name="billing_loop")
+        mailing_task = asyncio.create_task(mailing_loop(), name="mailing_loop")
+        polling_task = asyncio.create_task(dp.start_polling(bot), name="polling")
+
+        # ждём, пока любая из задач завершится с исключением или по отмене
+        done, pending = await asyncio.wait(
+            {billing_task, mailing_task, polling_task},
+            return_when=asyncio.FIRST_EXCEPTION,
         )
-        
-        # Логируем результаты задач
-        for i, result in enumerate(tasks):
-            if isinstance(result, Exception):
-                logging.error(f"Задача {i} завершилась с ошибкой: {result}")
+
+        # если что-то упало — залогируем
+        for t in done:
+            with suppress(asyncio.CancelledError):
+                exc = t.exception()
+                if exc:
+                    logging.error("Задача %s завершилась с ошибкой: %s", t.get_name() or t, exc)
                 
     except Exception as e:
         logging.error(f"Ошибка при запуске бота: {e}")
     finally:
         logging.info("Завершаю работу...")
         shutdown_event.set()
-        await runner.cleanup()
-        await bot.session.close()
-        logging.info("Бот и веб-сервер остановлены")
+        # Отменяем оставшиеся задачи и ждём очень недолго
+        for t in asyncio.all_tasks():
+            if t is not asyncio.current_task():
+                t.cancel()
+        with suppress(asyncio.CancelledError):
+            try:
+                await asyncio.wait(asyncio.all_tasks(), timeout=2)
+            except Exception:
+                pass
+        # Быстрый cleanup с таймаутом
+        with suppress(Exception):
+            await asyncio.wait_for(runner.cleanup(), timeout=2)
+        with suppress(Exception):
+            await asyncio.wait_for(bot.session.close(), timeout=2)
+        logging.info("Бот и веб-сервер остановлены (жёсткий стоп)")
+        # На всякий случай, если что-то держит цикл — принудительный выход
+        os._exit(0)
 
 
 if __name__ == '__main__':
