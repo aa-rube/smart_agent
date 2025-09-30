@@ -1,11 +1,9 @@
 # smart_agent/bot/utils/database.py
-#Всегда пиши код без «поддержки старых версий». Если они есть в коде - удаляй.
 
 from __future__ import annotations
 
 from typing import Optional, Any, List, Dict
-from datetime import datetime, timedelta
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
@@ -21,6 +19,17 @@ from bot.config import DB_URL
 import json
 
 MSK = ZoneInfo("Europe/Moscow")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# UTC helpers (современный подход: aware-дата/время в UTC + ISO8601 с 'Z')
+# ──────────────────────────────────────────────────────────────────────────────
+def now_utc() -> datetime:
+    """Timezone-aware 'now' в UTC."""
+    return datetime.now(timezone.utc)
+
+def iso_utc_z(dt: datetime) -> str:
+    """ISO8601 в UTC с 'Z' без микросекунд."""
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 # =========================
@@ -109,7 +118,7 @@ class ReviewHistory(Base):
         index=True,
         nullable=False,
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
     # payload
     client_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -142,7 +151,7 @@ class SummaryHistory(Base):
         index=True,
         nullable=False,
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
     # метаданные запроса
     source_type: Mapped[str] = mapped_column(String(32), nullable=False)  # "text" | "audio" | "unknown"
@@ -169,7 +178,7 @@ class DescriptionHistory(Base):
         index=True,
         nullable=False,
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
     # Входные поля (что отправляли в executor) — как JSON
     fields_json: Mapped[str] = mapped_column(Text, nullable=False)
@@ -194,8 +203,8 @@ class PaymentLog(Base):
     metadata_json:    Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     raw_payload_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    created_at:   Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at:   Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Subscription(Base):
@@ -219,19 +228,48 @@ class Subscription(Base):
     payment_method_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")   # active|canceled
-    next_charge_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    last_charge_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
-    cancel_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    next_charge_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_charge_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancel_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+
+
+class ChargeAttempt(Base):
+    attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+
+class PaymentMethod(Base):
+    """
+    Привязанные платёжные методы (карты) пользователей.
+    Храним метаданные карты для UI и токен провайдера для списаний.
+    """
+    __tablename__ = "payment_methods"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, default="yookassa")
+    pm_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)  # токен провайдера
+    brand: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)       # 'VISA', 'MC', ...
+    first6: Mapped[Optional[str]] = mapped_column(String(6), nullable=True)
+    last4: Mapped[Optional[str]] = mapped_column(String(4), nullable=True)
+    exp_month: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    exp_year:  Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user: Mapped[User] = relationship(backref="subscriptions")
 
 
 class ChargeAttempt(Base):
     """
-    Попытки автосписаний по подписке (для лимита ретраев).
+    Попытки авто-списаний по подписке (для лимита ретраев).
     """
     __tablename__ = "charge_attempts"
 
@@ -240,7 +278,7 @@ class ChargeAttempt(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.user_id", ondelete="CASCADE"), index=True, nullable=False)
     payment_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # id платежа в YooKassa (если есть)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="created")  # created|succeeded|canceled|expired
-    attempted_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
 
 # =========================
@@ -274,12 +312,10 @@ class UserRepository:
             if not existed:
                 u = User(user_id=user_id)
                 s.add(u)
+                trial_until = iso_utc_z(now_utc() + timedelta(hours=72))
                 s.add_all([
                     Variable(user_id=user_id, variable_name="have_sub", variable_value="0"),
-                    Variable(
-                        user_id=user_id, variable_name="trial_until",
-                        variable_value=(datetime.utcnow() + timedelta(hours=72)).isoformat(timespec="seconds") + "Z"
-                    ),
+                    Variable(user_id=user_id, variable_name="trial_until", variable_value=trial_until),
                 ])
             return existed
 
@@ -351,39 +387,41 @@ class UserRepository:
         with self._session() as s, s.begin():
             rec = s.get(PaymentLog, payment_id)
             if rec is None:
-                rec = PaymentLog(payment_id=payment_id, processed_at=datetime.utcnow())
+                rec = PaymentLog(payment_id=payment_id, processed_at=now_utc())
                 s.add(rec)
             else:
-                rec.processed_at = datetime.utcnow()
+                rec.processed_at = now_utc()
 
     # --- payment method presence ---
     def has_saved_card(self, user_id: int) -> bool:
-        """
-        Возвращает True, если у пользователя реально есть привязанный способ оплаты.
-        Критерии:
-          1) переменная yk:payment_method_id непуста после .strip()
-             и не в {"none","null","0","false"}
-          ИЛИ
-          2) есть активная подписка с непустым payment_method_id.
-        """
+        "True, если есть НЕ удалённый payment_method для пользователя."
         with self._session() as s:
-            # 1) переменная
-            v = s.get(Variable, (user_id, "yk:payment_method_id"))
-            raw = (v.variable_value if v else "") or ""
-            norm = raw.strip().lower()
-            if norm and norm not in {"none", "null", "0", "false"}:
-                return True
-            # 2) активные подписки с pm_id
-            sub = (
-                s.query(Subscription)
-                 .filter(
-                    Subscription.user_id == user_id,
-                    Subscription.status == "active",
-                    Subscription.payment_method_id.isnot(None),
-                 )
+            return (
+                s.query(PaymentMethod)
+                 .filter(PaymentMethod.user_id == user_id, PaymentMethod.deleted_at.is_(None))
+                 .first()
+                is not None
+            )
+
+    def get_user_card(self, user_id: int) -> Optional[dict]:
+        "Возвращает первую активную карту пользователя (для UI)."
+        with self._session() as s:
+            rec = (
+                s.query(PaymentMethod)
+                 .filter(PaymentMethod.user_id == user_id, PaymentMethod.deleted_at.is_(None))
+                 .order_by(PaymentMethod.id.desc())
                  .first()
             )
-            return sub is not None
+            if not rec:
+                return None
+            return {
+                "pm_id": rec.pm_id,
+                "brand": rec.brand or "",
+                "first6": rec.first6 or "",
+                "last4": rec.last4 or "",
+                "exp_month": rec.exp_month,
+                "exp_year": rec.exp_year,
+            }
 
     def debug_payment_state(self, user_id: int) -> dict:
         """
@@ -452,7 +490,7 @@ class UserRepository:
                     rec.payment_method_id = payment_method_id
                 rec.next_charge_at = next_charge_at
                 rec.status = status
-                rec.updated_at = datetime.utcnow()
+                rec.updated_at = now_utc()
                 s.flush()
                 return rec.id
 
@@ -468,7 +506,7 @@ class UserRepository:
                 .filter(Subscription.user_id == user_id, Subscription.status == "active")
             )
             updated = 0
-            now = datetime.utcnow()
+            now = now_utc()
             for rec in q:
                 rec.status = "canceled"
                 rec.cancel_at = now
@@ -482,9 +520,9 @@ class UserRepository:
         with self._session() as s, s.begin():
             rec = s.get(Subscription, sub_id)
             if rec:
-                rec.last_charge_at = datetime.utcnow()
+                rec.last_charge_at = now_utc()
                 rec.next_charge_at = next_charge_at
-                rec.updated_at = datetime.utcnow()
+                rec.updated_at = now_utc()
 
     def subscription_mark_charged_for_user(self, user_id: int, *, next_charge_at: datetime) -> Optional[int]:
         """
@@ -504,22 +542,48 @@ class UserRepository:
             )
             if not rec:
                 return None
-            rec.last_charge_at = datetime.utcnow()
+            rec.last_charge_at = now_utc()
             rec.next_charge_at = next_charge_at
-            rec.updated_at = datetime.utcnow()
+            rec.updated_at = now_utc()
             s.flush()
             return rec.id
+
+    def delete_user_card_and_detach_subscriptions(self, *, user_id: int) -> int:
+        """
+        Мягко удаляет карту (deleted_at = now) и для ВСЕХ активных подписок пользователя
+        выставляет payment_method_id = NULL. Статус подписок не меняем.
+        Возвращает количество «затронутых» подписок.
+        """
+        with self._session() as s, s.begin():
+            # пометить все карты как deleted (если несколько — удалим все)
+            now = now_utc()
+            for pm in s.query(PaymentMethod).filter(
+                PaymentMethod.user_id == user_id,
+                PaymentMethod.deleted_at.is_(None),
+            ).all():
+                pm.deleted_at = now
+            # обнулить pm_id в активных подписках
+            cnt = 0
+            for sub in s.query(Subscription).filter(
+                Subscription.user_id == user_id,
+                Subscription.status == "active",
+                Subscription.payment_method_id.isnot(None),
+            ).all():
+                sub.payment_method_id = None
+                sub.updated_at = now
+                cnt += 1
+            return cnt
 
     def subscriptions_due(self, *, now: datetime, limit: int = 200) -> List[Dict[str, Any]]:
         """
         Возвращает подписки, у которых наступил срок списания И
         за последние 24 часа было < 2 попыток списания.
+        Now — ожидается как aware-UTC; при необходимости приводим.
         """
-        # Приводим now к НАИВНОМУ UTC, т.к. attempted_at пишется как datetime.utcnow()
-        if now.tzinfo is not None:
-            now_naive_utc = now.astimezone(timezone.utc).replace(tzinfo=None)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
         else:
-            now_naive_utc = now
+            now = now.astimezone(timezone.utc)
         short_cooldown = timedelta(minutes=30)   # защита от частых ретраев
         long_window    = timedelta(hours=24)     # суточный лимит на попытки
 
@@ -529,7 +593,7 @@ class UserRepository:
                 .filter(
                     Subscription.status == "active",
                     Subscription.next_charge_at != None,                     # noqa: E711
-                    Subscription.next_charge_at <= now_naive_utc,
+                    Subscription.next_charge_at <= now,
                     Subscription.payment_method_id != None,                  # noqa: E711
                 )
                 .order_by(Subscription.next_charge_at.asc())
@@ -538,7 +602,7 @@ class UserRepository:
             subs = list(q)
 
             # 1) "Перегретые" подписки с >=2 попытками за 24ч
-            since_long = now_naive_utc - long_window
+            since_long = now - long_window
             blocked_ids_long = {
                 sub_id for (sub_id,) in
                 s.query(ChargeAttempt.subscription_id)
@@ -549,7 +613,7 @@ class UserRepository:
             }
 
             # 2) Короткий cooldown: была ЛЮБАЯ попытка за последние 30 минут
-            since_short = now_naive_utc - short_cooldown
+            since_short = now - short_cooldown
             blocked_ids_short = {
                 sub_id for (sub_id,) in
                 s.query(ChargeAttempt.subscription_id)
@@ -594,6 +658,47 @@ class UserRepository:
             if rec:
                 rec.status = status
 
+    # --- payment methods (cards) ---
+    def card_upsert_from_provider(
+        self,
+        *,
+        user_id: int,
+        provider: str,
+        pm_id: str,
+        brand: Optional[str],
+        first6: Optional[str],
+        last4: Optional[str],
+        exp_month: Optional[int],
+        exp_year: Optional[int],
+    ) -> int:
+        """
+        Создаёт/обновляет запись карты по token (pm_id).
+        Снимает 'deleted_at', если карта была помечена удалённой.
+        Возвращает id карты.
+        """
+        with self._session() as s, s.begin():
+            rec = s.query(PaymentMethod).filter(PaymentMethod.pm_id == pm_id).one_or_none()
+            if rec is None:
+                rec = PaymentMethod(
+                    user_id=user_id, provider=provider, pm_id=pm_id,
+                    brand=brand, first6=first6, last4=last4,
+                    exp_month=exp_month, exp_year=exp_year,
+                )
+                s.add(rec)
+                s.flush()
+                return rec.id
+            # обновим метаданные и снимем "deleted"
+            rec.user_id = user_id
+            rec.provider = provider or rec.provider
+            rec.brand = brand or rec.brand
+            rec.first6 = first6 or rec.first6
+            rec.last4 = last4 or rec.last4
+            rec.exp_month = exp_month or rec.exp_month
+            rec.exp_year = exp_year or rec.exp_year
+            rec.deleted_at = None
+            s.flush()
+            return rec.id
+
     # -------- Mailing recipients (from variables) --------
     def list_active_subscriber_ids(self, *, include_grace_days: int = 0) -> List[int]:
         """
@@ -630,13 +735,13 @@ class UserRepository:
             )
             if rec and rec.status != "canceled":
                 rec.status = "canceled"
-                rec.cancel_at = datetime.utcnow()
-                rec.updated_at = datetime.utcnow()
+                rec.cancel_at = now_utc()
+                rec.updated_at = now_utc()
 
     # --- trial helpers ---
     def set_trial(self, user_id: int, hours: int = 72) -> str:
-        until = datetime.utcnow() + timedelta(hours=int(hours))
-        iso = until.isoformat(timespec="seconds") + "Z"
+        until = now_utc() + timedelta(hours=int(hours))
+        iso = iso_utc_z(until)
         self.set_var(user_id, "trial_until", iso)
         return iso
 
@@ -650,10 +755,12 @@ class UserRepository:
         # допускаем формат ISO с 'Z' в конце
         try:
             ts = raw[:-1] if raw.endswith("Z") else raw
-            until = datetime.fromisoformat(ts)
+            # если без таймзоны — считаем это UTC
+            parsed = datetime.fromisoformat(ts)
+            until = parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
         except Exception:
             return False
-        return datetime.utcnow() < until
+        return now_utc() < until
 
     def trial_remaining_hours(self, user_id: int) -> int:
         raw = self.get_trial_until(user_id)
@@ -661,8 +768,9 @@ class UserRepository:
             return 0
         try:
             ts = raw[:-1] if raw.endswith("Z") else raw
-            until = datetime.fromisoformat(ts)
-            return max(0, int((until - datetime.utcnow()).total_seconds() // 3600))
+            parsed = datetime.fromisoformat(ts)
+            until = parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+            return max(0, int((until - now_utc()).total_seconds() // 3600))
         except Exception:
             return 0
 
@@ -942,3 +1050,21 @@ def record_charge_attempt(*, subscription_id: int, user_id: int, payment_id: Opt
 
 def mark_charge_attempt_status(*, payment_id: str, status: str) -> None:
     _repo.mark_charge_attempt_status(payment_id=payment_id, status=status)
+
+# -------- Cards (facade) --------
+def card_upsert_from_provider(
+    *, user_id: int, provider: str, pm_id: str,
+    brand: Optional[str], first6: Optional[str], last4: Optional[str],
+    exp_month: Optional[int], exp_year: Optional[int],
+) -> int:
+    return _repo.card_upsert_from_provider(
+        user_id=user_id, provider=provider, pm_id=pm_id,
+        brand=brand, first6=first6, last4=last4,
+        exp_month=exp_month, exp_year=exp_year,
+    )
+
+def get_user_card(user_id: int) -> Optional[dict]:
+    return _repo.get_user_card(user_id)
+
+def delete_user_card_and_detach_subscriptions(*, user_id: int) -> int:
+    return _repo.delete_user_card_and_detach_subscriptions(user_id=user_id)

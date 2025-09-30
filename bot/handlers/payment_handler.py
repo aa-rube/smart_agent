@@ -87,18 +87,10 @@ def kb_settings_main(user_id: int) -> InlineKeyboardMarkup:
     if _is_subscription_active(user_id):
         rows.append([InlineKeyboardButton(text="⚙️ Управлять подпиской", callback_data="sub:manage")])
     # Кнопка удалить и отказаться — только при наличии привязанной карты
-    has_card = _has_saved_card(user_id)
-    try:
-        dbg = db.debug_payment_state(user_id)
-    except Exception:
-        dbg = {}
-    logger.info(
-        "payment_handler.kb_settings_main user_id=%s active=%s has_card=%s plan=%s until=%s | pm.var_raw=%r pm.var_norm=%r subs_active_with_pm=%s",
-        user_id, _is_subscription_active(user_id), has_card, cur_code, sub_until,
-        dbg.get('var_raw'), dbg.get('var_norm'), dbg.get('subs_active_with_pm')
-    )
-    if has_card:
-        rows.append([InlineKeyboardButton(text="🗑️ Удалить и отказаться", callback_data="sub:cancel_all")])
+    if _has_saved_card(user_id):
+        card = db.get_user_card(user_id) or {}
+        suffix = f"{(card.get('brand') or '').upper()} ••••{card.get('last4','')}"
+        rows.append([InlineKeyboardButton(text=f"🗑️ Удалить карту ({suffix})", callback_data="sub:cancel_all")])
     else:
         logger.debug("payment_handler.kb_settings_main: hide delete button (no saved card) user_id=%s", user_id)
     rows.append([InlineKeyboardButton(text="⬅️ К тарифам", callback_data="show_rates")])
@@ -220,23 +212,11 @@ def _is_subscription_active(user_id: int) -> bool:
         return False
 
 def _has_saved_card(user_id: int) -> bool:
-    """
-    Есть ли привязанный способ оплаты.
-    Истина берётся из БД:
-      - валидная переменная yk:payment_method_id (после strip)
-        и не в {"none","null","0","false"}
-      - ИЛИ активная подписка с payment_method_id.
-    """
+    "True, если у юзера есть активная карта в payment_methods."
     try:
-        ok = db.has_saved_card(user_id)
-        dbg = db.debug_payment_state(user_id)
-        logger.info(
-            "payment_handler._has_saved_card user_id=%s -> %s | var_raw=%r var_norm=%r subs_active_with_pm=%s",
-            user_id, ok, dbg.get("var_raw"), dbg.get("var_norm"), dbg.get("subs_active_with_pm")
-        )
-        return ok
-    except Exception as e:
-        logger.exception("payment_handler._has_saved_card failed for user_id=%s: %s", user_id, e)
+        return db.has_saved_card(user_id)
+    except Exception:
+        logger.exception("payment_handler._has_saved_card failed user_id=%s", user_id)
         return False
 
 
@@ -667,16 +647,8 @@ async def open_settings_cmd(msg: Message) -> None:
     Только здесь доступна кнопка «Удалить и отказаться».
     """
     user_id = msg.from_user.id
-    has_card = _has_saved_card(user_id)
-    try:
-        dbg = db.debug_payment_state(user_id)
-    except Exception:
-        dbg = {}
-    logger.info(
-        "payment_handler.open_settings_cmd user_id=%s active=%s has_card=%s | pm.var_raw=%r pm.var_norm=%r subs_active_with_pm=%s",
-        user_id, _is_subscription_active(user_id), has_card,
-        dbg.get('var_raw'), dbg.get('var_norm'), dbg.get('subs_active_with_pm')
-    )
+    logger.info("payment_handler.open_settings_cmd user_id=%s active=%s has_card=%s",
+                user_id, _is_subscription_active(user_id), _has_saved_card(user_id))
     text = (
         "⚙️ *Настройки подписки*\n"
         "Здесь вы можете управлять подпиской, а также полностью удалить подписку и привязанную карту.\n\n"
@@ -691,11 +663,13 @@ async def cancel_request(cb: CallbackQuery) -> None:
     """
     logger.info("payment_handler.cancel_request user_id=%s has_card=%s",
                 cb.from_user.id, _has_saved_card(cb.from_user.id))
+    card = db.get_user_card(cb.from_user.id) or {}
+    suffix = f"{(card.get('brand') or '').upper()} ••••{card.get('last4','')}"
     text = (
-        "Вы уверены, что хотите *немедленно отменить подписку* и *удалить карту*?\n\n"
-        "• Доступ будет закрыт сразу.\n"
-        "• Автосписания прекращаются.\n"
-        "• Привязанный способ оплаты будет удалён."
+        f"Удалить карту *{suffix}*?\n\n"
+        "• Автосписания прекратятся.\n"
+        "• Подписка НЕ отменяется, доступ останется до оплаченной даты.\n"
+        "• Данные карты будут удалены."
     )
     await _edit_safe(cb, text, kb_cancel_confirm())
 
@@ -706,41 +680,18 @@ async def cancel_no(cb: CallbackQuery) -> None:
     await _edit_safe(cb, "Действие отменено. Вы в настройках подписки.", kb_settings_main(user_id))
 
 async def cancel_yes(cb: CallbackQuery) -> None:
-    """
-    Полная отмена: закрыть доступ, отменить подписку, удалить способ оплаты.
-    """
+    """Удаляем карту и отцепляем её от подписок. Ничего не отменяем, уведомлений не шлём."""
     user_id = cb.from_user.id
-    # 1) Пытаемся отменить ВСЕ активные подписки в БД
     try:
-        db.subscription_cancel_for_user(user_id=user_id)
+        affected = db.delete_user_card_and_detach_subscriptions(user_id=user_id)
+        logger.info("Card deleted for user %s; detached from %s subscriptions", user_id, affected)
     except Exception:
-        logging.exception("Failed to cancel subscription for user %s", user_id)
+        logging.exception("Failed to delete card for user %s", user_id)
+        await _edit_safe(cb, "Не удалось удалить карту. Попробуйте позже.", kb_settings_main(user_id))
+        return
 
-    # 2) Удаляем карту у платёжного провайдера (если поддерживается)
-    try:
-        pm_id = db.get_variable(user_id, "yk:payment_method_id")
-        if pm_id:
-            youmoney.detach_payment_method(pm_id)
-    except Exception:
-        logging.exception("Failed to detach payment method for user %s", user_id)
-
-    # 3) Чистим локальные ключи доступа
-    try:
-        db.set_variable(user_id, "have_sub", "")
-        db.set_variable(user_id, "sub_paid_at", "")
-        db.set_variable(user_id, "sub_until", (datetime.utcnow() - timedelta(days=1)).date().isoformat())
-        db.set_variable(user_id, "sub_plan_code", "")
-        # ключевое: локально стираем токен, чтобы billing_loop его не увидел
-        db.set_variable(user_id, "yk:payment_method_id", "")
-    except Exception:
-        logging.exception("Failed to clear sub state for user %s", user_id)
-
-    # 4) Сообщение пользователю
-    await _edit_safe(
-        cb,
-        "✅ Подписка отменена, карта удалена.\nДоступ закрыт. Вы всегда можете оформить новый тариф из раздела тарифов.",
-        kb_rates()
-    )
+    # Финальный экран настроек
+    await _edit_safe(cb, "✅ Карта удалена. Автосписания остановлены. Подписка не отменена.", kb_settings_main(user_id))
 
 
 # ──────────────────────────────────────────────────────────────────────────────

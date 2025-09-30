@@ -350,13 +350,6 @@ async def help_cmd(message: Message) -> None:
     await message.answer(HELP, reply_markup=help_kb())
 
 
-async def add_tokens(message: Message) -> None:
-    await init_user_event(message)
-    user_id = message.chat.id
-    tk.add_tokens(user_id, 100)
-    await message.answer("Added 100 tokens, be happy")
-
-
 # =============================================================================
 # Router
 # =============================================================================
@@ -364,7 +357,6 @@ def router(rt: Router) -> None:
     # messages
     rt.message.register(frst_msg, CommandStart())
     rt.message.register(sub_cmd, Command("sub"))
-    rt.message.register(add_tokens, Command("add"))
     rt.message.register(frst_msg, Command("main"))
     rt.message.register(help_cmd, Command("support"))
 

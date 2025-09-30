@@ -2,7 +2,6 @@
 import asyncio
 import logging
 import signal
-import os
 from contextlib import suppress
 
 from aiogram import Bot, Dispatcher
@@ -63,8 +62,8 @@ async def main():
     await site.start()
     logging.info("Webhook server started on http://0.0.0.0:8000")
 
-    # Московская таймзона (UTC+3, без сезонных переводов)
-    MSK = ZoneInfo("Europe/Moscow")
+    #UTC+3
+    msk = ZoneInfo("Europe/Moscow")
 
     async def mailing_loop():
         """
@@ -99,7 +98,7 @@ async def main():
         while not shutdown_event.is_set():
             try:
                 # timezone-aware MSK:
-                now_msk = datetime.now(MSK)
+                now_msk = datetime.now(msk)
                 due = db.subscriptions_due(now=now_msk, limit=100)
                 for sub in due:
                     if shutdown_event.is_set():
@@ -115,7 +114,7 @@ async def main():
                     plan_code = sub["plan_code"]
                     interval_m = int(sub["interval_months"] or 1)
 
-                    # Создаём платёж (без участия пользователя)
+                    # Создаём платёж
                     try:
                         pay_id = youmoney.charge_saved_method(
                             user_id=user_id,
@@ -141,7 +140,7 @@ async def main():
             except asyncio.TimeoutError:
                 continue
 
-    # --- Жёсткий стоп по сигналу ---
+    # ---Жёсткий стоп по сигналу---
     def _hard_stop(signum, frame):
         # максимально быстрый stop: ставим флаг и отменяем ВСЕ задачи event-loop
         logging.warning(f"Получен сигнал {signum}, выполняю немедленную остановку...")
@@ -179,26 +178,6 @@ async def main():
                 
     except Exception as e:
         logging.error(f"Ошибка при запуске бота: {e}")
-    finally:
-        logging.info("Завершаю работу...")
-        shutdown_event.set()
-        # Отменяем оставшиеся задачи и ждём очень недолго
-        for t in asyncio.all_tasks():
-            if t is not asyncio.current_task():
-                t.cancel()
-        with suppress(asyncio.CancelledError):
-            try:
-                await asyncio.wait(asyncio.all_tasks(), timeout=2)
-            except Exception:
-                pass
-        # Быстрый cleanup с таймаутом
-        with suppress(Exception):
-            await asyncio.wait_for(runner.cleanup(), timeout=2)
-        with suppress(Exception):
-            await asyncio.wait_for(bot.session.close(), timeout=2)
-        logging.info("Бот и веб-сервер остановлены (жёсткий стоп)")
-        # На всякий случай, если что-то держит цикл — принудительный выход
-        os._exit(0)
 
 
 if __name__ == '__main__':

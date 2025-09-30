@@ -17,7 +17,7 @@ def create_pay_ex(
     amount_rub: str,
     description: str,
     metadata: Optional[Dict[str, str]] = None,
-    return_url: str = "https://t.me/",
+    return_url: str = "https://t.me/realtornetworkai_bot",
     save_payment_method: bool = False,
 ) -> str:
     """
@@ -110,13 +110,3 @@ def charge_saved_method(
         # логируем молча — не должно ронять платеж
         pass
     return payment.id
-
-
-def detach_payment_method(payment_method_id: str) -> bool:
-    """
-    YooKassa SDK не предоставляет прямого API для удаления «сохранённой карты» из нашего магазина.
-    На нашей стороне достаточно очистить привязку (payment_method_id) и прекратить рекуррентные списания.
-    Функция-заглушка для единообразия вызова.
-    """
-    # здесь можно добавить реальный вызов к стороннему хранилищу токенов, если появится
-    return True
