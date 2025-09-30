@@ -20,7 +20,6 @@ from aiogram.types import (
     InputMediaPhoto,
 )
 
-from .clicklog_mw import CallbackClickLogger, MessageLogger
 from bot.config import get_file_path
 from bot.utils.subscribe_partner_manager import ensure_partner_subs
 from bot.handlers.payment_handler import show_rates as show_rates_handler

@@ -8,6 +8,7 @@ import logging
 from typing import Dict, Any, List
 from zoneinfo import ZoneInfo
 from datetime import datetime, timezone
+from html import escape as _html_escape
 
 from aiogram import Bot
 from aiogram.types import InputMediaPhoto, InputMediaVideo
@@ -27,22 +28,29 @@ def _chunk(items: List[Any], n: int = CHUNK_SIZE) -> List[List[Any]]:
     return [items[i : i + n] for i in range(0, len(items), n)]
 
 
+def _safe_cap(caption: str | None) -> str | None:
+    if not caption:
+        return None
+    # экранируем под HTML, чтобы никакая разметка не ломала подпись
+    return _html_escape(caption, quote=False)
+
 def _build_media_group(items: List[Dict[str, str]], caption: str | None) -> List[List[InputMediaPhoto | InputMediaVideo]]:
     """
     Возвращает список "чанков" медиа-объектов для последовательных вызовов send_media_group.
     Подпись ставится только на первый элемент каждого чанка (ограничение Telegram).
     """
     result: List[List[InputMediaPhoto | InputMediaVideo]] = []
+    safe_caption = _safe_cap(caption)
     for chunk in _chunk(items, CHUNK_SIZE):
         media_chunk: List[InputMediaPhoto | InputMediaVideo] = []
         for idx, it in enumerate(chunk):
             t = (it.get("type") or "photo").lower()
             fid = it["file_id"]
-            cap = caption if (idx == 0 and caption) else None
+            cap = safe_caption if (idx == 0 and safe_caption) else None
             if t == "video":
-                media_chunk.append(InputMediaVideo(media=fid, caption=cap))
+                media_chunk.append(InputMediaVideo(media=fid, caption=cap, parse_mode="HTML"))
             else:
-                media_chunk.append(InputMediaPhoto(media=fid, caption=cap))
+                media_chunk.append(InputMediaPhoto(media=fid, caption=cap, parse_mode="HTML"))
         result.append(media_chunk)
     return result
 
@@ -66,19 +74,19 @@ async def send_to_user(bot: Bot, user_id: int, mailing: Dict[str, Any]) -> None:
         return
 
     if ctype == "photo":
-        await bot.send_photo(user_id, payload["file_id"], caption=caption or None)
+        await bot.send_photo(user_id, payload["file_id"], caption=_safe_cap(caption), parse_mode="HTML")
         return
 
     if ctype == "video":
-        await bot.send_video(user_id, payload["file_id"], caption=caption or None)
+        await bot.send_video(user_id, payload["file_id"], caption=_safe_cap(caption), parse_mode="HTML")
         return
 
     if ctype == "audio":
-        await bot.send_audio(user_id, payload["file_id"], caption=caption or None)
+        await bot.send_audio(user_id, payload["file_id"], caption=_safe_cap(caption), parse_mode="HTML")
         return
 
     if ctype == "animation":
-        await bot.send_animation(user_id, payload["file_id"], caption=caption or None)
+        await bot.send_animation(user_id, payload["file_id"], caption=_safe_cap(caption), parse_mode="HTML")
         return
 
     if ctype == "media_group":
