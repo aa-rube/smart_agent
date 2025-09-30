@@ -151,7 +151,6 @@ async def _edit_text_safe(cb: CallbackQuery, text: str, kb: InlineKeyboardMarkup
                 pass
     await cb.answer()
 
-
 async def send_menu_with_logo(bot: Bot, chat_id: int) -> None:
     """
     Главный экран одним сообщением: фото-логотип + caption + клавиатура.
@@ -263,14 +262,12 @@ async def _edit_or_replace_with_photo_cb(
 # =============================================================================
 async def frst_msg(message: Message, bot: Bot) -> None:
     await init_user(message)
-
-    user_id = message.chat.id
-
+    user_id = message.from_user.id
     if not await ensure_partner_subs(bot, message, retry_callback_data="start_retry", columns=2):
         return
-
     # главный экран: фото + caption в одном сообщении
     await send_menu_with_logo(bot, user_id)
+    app_db.event_add(user_id=user_id, text="MAIN_MENU")
 
 
 # =============================================================================
@@ -282,28 +279,37 @@ async def ai_tools(callback: CallbackQuery) -> None:
     меняем текущий экран на картинку ai_tools.png + подпись + клавиатуру.
     """
     await init_user(callback)
+    user_id = callback.from_user.id
     await _edit_or_replace_with_photo_cb(
         callback=callback,
         image_rel_path="img/bot/ai_tools.png",  # путь внутри DATA_DIR
         caption=ai_tools_text,
         kb=ai_tools_inline,
     )
+    app_db.event_add(user_id=user_id, text="AI_TOOLS_HOME")
+
 
 
 async def check_subscribe_retry(callback: CallbackQuery, bot: Bot) -> None:
     await init_user(callback)
+    user_id = callback.from_user.id
 
     if not await ensure_partner_subs(bot, callback, retry_callback_data="start_retry", columns=2):
         await callback.answer("Похоже, ещё не на все каналы подписаны 🤏", show_alert=True)
         return
 
     await _replace_with_menu_with_logo(callback)
+    app_db.event_add(user_id=user_id, text="CHECK_SUBSCRIBE")
+
 
 
 async def smm_content(callback: CallbackQuery) -> None:
     await init_user(callback)
+    user_id = callback.from_user.id
     await _edit_or_replace_with_photo_cb(callback, image_rel_path="img/bot/smm.png", caption=smm_description,
                                          kb=get_smm_subscribe_inline)
+    app_db.event_add(user_id=user_id, text="SMM_HOME")
+
 
 
 
@@ -312,14 +318,18 @@ async def smm_content(callback: CallbackQuery) -> None:
 # =============================================================================
 async def sub_cmd(message: Message) -> None:
     await init_user(message)
+    user_id = message.from_user.id
     # централизованный показ тарифов/оплаты
     await show_rates_handler(message)
+    app_db.event_add(user_id=user_id, text="SUBSCRIBE_HOME")
+
 
 
 async def help_cmd(message: Message) -> None:
     await init_user(message)
+    user_id = message.from_user.id
     await message.answer(HELP, reply_markup=help_kb())
-
+    app_db.event_add(user_id=user_id, text="MAIN_HELP")
 
 # =============================================================================
 # Router
@@ -327,8 +337,8 @@ async def help_cmd(message: Message) -> None:
 def router(rt: Router) -> None:
     # messages
     rt.message.register(frst_msg, CommandStart())
-    rt.message.register(sub_cmd, Command("sub"))
     rt.message.register(frst_msg, Command("main"))
+    rt.message.register(sub_cmd, Command("sub"))
     rt.message.register(help_cmd, Command("support"))
 
     # callbacks
