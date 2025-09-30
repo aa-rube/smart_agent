@@ -78,7 +78,7 @@ def kb_rates() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="1 месяц", callback_data="sub:choose:1m"),
             InlineKeyboardButton(text="3 месяца", callback_data="sub:choose:3m"),
-            InlineKeyboardButton(text="6 месяцев", callback_data="sub:choose:6м"),
+            InlineKeyboardButton(text="6 месяцев", callback_data="sub:choose:6m"),
         ],
         [InlineKeyboardButton(text="12 месяцев", callback_data="sub:choose:12m")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")],
@@ -391,7 +391,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             if pm_token:
                 billing_db.card_upsert_from_provider(
                     user_id=user_id, provider=pmethod.get("type", "yookassa"),
-                    pm_id=pm_token, brand=brand, first6=first6, last4=last4,
+                    pm_token=pm_token, brand=brand, first6=first6, last4=last4,
                     exp_month=exp_month, exp_year=exp_year,
                 )
             # 2) включаем триал доступа

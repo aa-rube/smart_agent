@@ -18,11 +18,13 @@ import json
 
 MSK = ZoneInfo("Europe/Moscow")
 
+
 # ──────────────────────────────────────────────────────────────────────────────
 # UTC helpers
 # ──────────────────────────────────────────────────────────────────────────────
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
 
 def iso_utc_z(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -57,6 +59,12 @@ class User(Base):
 
     user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
 
+    # Логи событий
+    events: Mapped[list["EventLog"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+    )
     # История черновиков
     history: Mapped[list["ReviewHistory"]] = relationship(
         back_populates="user",
@@ -100,16 +108,16 @@ class ReviewHistory(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
     client_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    agent_name:  Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    company:     Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    city:        Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
-    address:     Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    deal_type:   Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    agent_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    company: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    city: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    address: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    deal_type: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     deal_custom: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    situation:   Mapped[Optional[str]] = mapped_column(Text,   nullable=True)
-    style:       Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    situation: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    style: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
-    final_text:  Mapped[str] = mapped_column(Text, nullable=False)
+    final_text: Mapped[str] = mapped_column(Text, nullable=False)
 
     user: Mapped[User] = relationship(back_populates="history")
 
@@ -128,7 +136,7 @@ class SummaryHistory(Base):
     options_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
 
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
-    result_json:  Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    result_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     user: Mapped[User] = relationship(back_populates="summaries")
 
@@ -182,6 +190,24 @@ class Trial(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
     user: Mapped[User] = relationship(back_populates="trials")
+
+
+class EventLog(Base):
+    """
+    Простые события пользователя.
+    Храним автоинкрементный id, user_id, строку сообщения и время с точностью до мс.
+    """
+    __tablename__ = "event_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.user_id", ondelete="CASCADE"),
+        index=True, nullable=False,
+    )
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+
+    user: Mapped[User] = relationship(back_populates="events")
 
 
 # =========================
@@ -286,7 +312,8 @@ class AppRepository:
             return rec
 
     # --- summary ---
-    def summary_add_entry(self, user_id: int, *, source_type: str, options: dict, payload: dict, result: Optional[dict]) -> int:
+    def summary_add_entry(self, user_id: int, *, source_type: str, options: dict, payload: dict,
+                          result: Optional[dict]) -> int:
         with self._session() as s, s.begin():
             if s.get(User, user_id) is None:
                 s.add(User(user_id=user_id))
@@ -384,56 +411,96 @@ class AppRepository:
             s.delete(rec)
             return True
 
+    # --- events ---
+    def event_add(self, user_id: int, text: str) -> None:
+        """Сохраняет событие (user_id, сообщение и точный timestamp)."""
+        ts = now_utc()
+        with self._session() as s, s.begin():
+            if s.get(User, user_id) is None:
+                s.add(User(user_id=user_id))
+            rec = EventLog(user_id=user_id, message=str(text), created_at=ts)
+            s.add(rec)
+
 
 # Глобальный репозиторий (app DB)
 _repo = AppRepository(SessionLocal)
 init_schema()
 
+
 # ========= Facade (имена прежние, без «variables») =========
 def init_db() -> None:
     init_schema()
 
+
 def check_and_add_user(user_id: int) -> bool:
     return _repo.ensure_user(user_id)
+
 
 # Trial (возвращаем datetime, чтобы вызывать .date() в хендлере без плясок)
 def set_trial(user_id: int, hours: int = 72) -> datetime:
     return _repo.set_trial(user_id, hours)
 
+
 def get_trial_until(user_id: int) -> Optional[datetime]:
     return _repo.get_trial_until(user_id)
 
+
 def is_trial_active(user_id: int) -> bool:
     return _repo.is_trial_active(user_id)
+
+
 def trial_remaining_hours(user_id: int) -> int:
     return _repo.trial_remaining_hours(user_id)
+
 
 # History
 def history_add(user_id: int, payload: dict, final_text: str) -> ReviewHistory:
     return _repo.history_add(user_id, payload, final_text)
+
+
 def history_list(user_id: int, limit: int = 10) -> list[ReviewHistory]:
     return _repo.history_list(user_id, limit)
+
+
 def history_get(user_id: int, item_id: int) -> Optional[ReviewHistory]:
     return _repo.history_get(user_id, item_id)
+
 
 # Summary
 def summary_add_entry(*, user_id: int, source_type: str, options: dict, payload: dict, result: Optional[dict]) -> int:
     return _repo.summary_add_entry(user_id, source_type=source_type, options=options, payload=payload, result=result)
+
+
 def summary_list_entries(user_id: int, limit: int = 10) -> list[dict]:
     return _repo.summary_list_entries(user_id, limit=limit)
+
+
 def summary_get_entry(user_id: int, entry_id: int) -> Optional[dict]:
     return _repo.summary_get_entry(user_id, entry_id)
+
 
 # Descriptions
 def description_add(*, user_id: int, fields: dict, result_text: str) -> int:
     return _repo.description_add(user_id, fields=fields, result_text=result_text)
+
+
 def description_list(user_id: int, limit: int = 10) -> list[dict]:
     return _repo.description_list(user_id, limit=limit)
+
+
 def description_get(user_id: int, entry_id: int) -> Optional[dict]:
     return _repo.description_get(user_id, entry_id)
+
+
 def description_delete(user_id: int, entry_id: int) -> bool:
     return _repo.description_delete(user_id, entry_id)
+
 
 # Consents
 def add_consent(user_id: int, kind: str, when: Optional[datetime] = None) -> int:
     return _repo.add_consent(user_id, kind, when)
+
+
+# Event log (простой интерфейс)
+def event_add(user_id: int, text: str) -> None:
+    return _repo.event_add(user_id, text)
