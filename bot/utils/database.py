@@ -401,6 +401,28 @@ class UserRepository:
                 s.flush()
                 return rec.id
 
+    def subscription_cancel_for_user(self, *, user_id: int) -> int:
+        """
+        Отменяет ВСЕ активные подписки пользователя: ставит status='canceled',
+        обнуляет payment_method_id и next_charge_at, фиксирует cancel_at.
+        Возвращает количество изменённых записей.
+        """
+        with self._session() as s, s.begin():
+            q = (
+                s.query(Subscription)
+                .filter(Subscription.user_id == user_id, Subscription.status == "active")
+            )
+            updated = 0
+            now = datetime.utcnow()
+            for rec in q:
+                rec.status = "canceled"
+                rec.cancel_at = now
+                rec.updated_at = now
+                rec.payment_method_id = None
+                rec.next_charge_at = None
+                updated += 1
+            return updated
+
     def subscription_mark_charged(self, sub_id: int, *, next_charge_at: datetime) -> None:
         with self._session() as s, s.begin():
             rec = s.get(Subscription, sub_id)
@@ -825,6 +847,10 @@ def subscription_cancel(user_id: int, plan_code: str) -> None:
 def subscription_mark_charged_for_user(user_id: int, *, next_charge_at: datetime) -> Optional[int]:
     """Совместимая обёртка для обновления подписки по user_id."""
     return _repo.subscription_mark_charged_for_user(user_id, next_charge_at=next_charge_at)
+
+def subscription_cancel_for_user(*, user_id: int) -> int:
+    """Отменить все активные подписки пользователя (очистит pm_id/next_charge_at)."""
+    return _repo.subscription_cancel_for_user(user_id=user_id)
 
 # -------- Mailing recipients (compat wrapper) --------
 def list_active_subscriber_ids(include_grace_days: int = 0) -> List[int]:

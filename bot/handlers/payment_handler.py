@@ -661,24 +661,9 @@ async def cancel_yes(cb: CallbackQuery) -> None:
     Полная отмена: закрыть доступ, отменить подписку, удалить способ оплаты.
     """
     user_id = cb.from_user.id
-    # 1) Пытаемся отменить подписку в БД
+    # 1) Пытаемся отменить ВСЕ активные подписки в БД
     try:
-        # если есть специализированная функция
-        if hasattr(db, "subscription_cancel_for_user"):
-            db.subscription_cancel_for_user(user_id=user_id)
-        else:
-            # мягкая деактивация: ставим статус inactive/next_charge_at None (если есть апсерт-функция)
-            if hasattr(db, "subscription_upsert"):
-                db.subscription_upsert(
-                    user_id=user_id,
-                    plan_code="",
-                    interval_months=0,
-                    amount_value="0.00",
-                    amount_currency="RUB",
-                    payment_method_id="",
-                    next_charge_at=None,
-                    status="inactive",
-                )
+        db.subscription_cancel_for_user(user_id=user_id)
     except Exception:
         logging.exception("Failed to cancel subscription for user %s", user_id)
 
@@ -686,8 +671,7 @@ async def cancel_yes(cb: CallbackQuery) -> None:
     try:
         pm_id = db.get_variable(user_id, "yk:payment_method_id")
         if pm_id:
-            if hasattr(youmoney, "detach_payment_method"):
-                youmoney.detach_payment_method(pm_id)
+            youmoney.detach_payment_method(pm_id)
     except Exception:
         logging.exception("Failed to detach payment method for user %s", user_id)
 
@@ -697,6 +681,7 @@ async def cancel_yes(cb: CallbackQuery) -> None:
         db.set_variable(user_id, "sub_paid_at", "")
         db.set_variable(user_id, "sub_until", (datetime.utcnow() - timedelta(days=1)).date().isoformat())
         db.set_variable(user_id, "sub_plan_code", "")
+        # ключевое: локально стираем токен, чтобы billing_loop его не увидел
         db.set_variable(user_id, "yk:payment_method_id", "")
     except Exception:
         logging.exception("Failed to clear sub state for user %s", user_id)
