@@ -16,6 +16,9 @@ import bot.utils.database as db
 from bot.utils import youmoney
 from aiogram.filters import Command
 
+# Локальный логгер модуля
+logger = logging.getLogger(__name__)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ТАРИФЫ И НАСТРОЙКИ
@@ -83,10 +86,14 @@ def kb_settings_main(user_id: int) -> InlineKeyboardMarkup:
     # Управление (без удаления)
     if _is_subscription_active(user_id):
         rows.append([InlineKeyboardButton(text="⚙️ Управлять подпиской", callback_data="sub:manage")])
-    # Кнопка удалить и отказаться (только если карта привязана)
-    pm_id = db.get_variable(user_id, "yk:payment_method_id")
-    if pm_id:
+    # Кнопка удалить и отказаться — только при наличии привязанной карты
+    has_card = _has_saved_card(user_id)
+    logger.info("payment_handler.kb_settings_main user_id=%s active=%s has_card=%s plan=%s until=%s",
+                user_id, _is_subscription_active(user_id), has_card, cur_code, sub_until)
+    if has_card:
         rows.append([InlineKeyboardButton(text="🗑️ Удалить и отказаться", callback_data="sub:cancel_all")])
+    else:
+        logger.debug("payment_handler.kb_settings_main: hide delete button (no saved card) user_id=%s", user_id)
     rows.append([InlineKeyboardButton(text="⬅️ К тарифам", callback_data="show_rates")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -206,8 +213,14 @@ def _is_subscription_active(user_id: int) -> bool:
         return False
 
 def _has_saved_card(user_id: int) -> bool:
-    """Есть ли сохранённый способ оплаты у провайдера (привязана ли карта)."""
-    return bool(db.get_variable(user_id, "yk:payment_method_id"))
+    """
+    Есть ли привязанный способ оплаты (card token) у провайдера.
+    Считаем валидным только непустой, не-«нулл», не-«None» и не-пробельный идентификатор.
+    """
+    raw = db.get_variable(user_id, "yk:payment_method_id")
+    ok = bool(raw) and raw.strip().lower() not in {"none", "null"}
+    logger.debug("payment_handler._has_saved_card user_id=%s pm_id_raw=%r -> %s", user_id, raw, ok)
+    return ok
 
 
 def _current_plan_code(user_id: int) -> str:
@@ -637,6 +650,8 @@ async def open_settings_cmd(msg: Message) -> None:
     Только здесь доступна кнопка «Удалить и отказаться».
     """
     user_id = msg.from_user.id
+    logger.info("payment_handler.open_settings_cmd user_id=%s has_card=%s active=%s",
+                user_id, _has_saved_card(user_id), _is_subscription_active(user_id))
     text = (
         "⚙️ *Настройки подписки*\n"
         "Здесь вы можете управлять подпиской, а также полностью удалить подписку и привязанную карту.\n\n"
@@ -649,6 +664,8 @@ async def cancel_request(cb: CallbackQuery) -> None:
     """
     Шаг подтверждения перед окончательной отменой.
     """
+    logger.info("payment_handler.cancel_request user_id=%s has_card=%s",
+                cb.from_user.id, _has_saved_card(cb.from_user.id))
     text = (
         "Вы уверены, что хотите *немедленно отменить подписку* и *удалить карту*?\n\n"
         "• Доступ будет закрыт сразу.\n"
@@ -660,6 +677,7 @@ async def cancel_request(cb: CallbackQuery) -> None:
 async def cancel_no(cb: CallbackQuery) -> None:
     """Возврат в настройки без отмены."""
     user_id = cb.from_user.id
+    logger.debug("payment_handler.cancel_no user_id=%s", user_id)
     await _edit_safe(cb, "Действие отменено. Вы в настройках подписки.", kb_settings_main(user_id))
 
 async def cancel_yes(cb: CallbackQuery) -> None:
@@ -706,6 +724,8 @@ async def cancel_yes(cb: CallbackQuery) -> None:
 
 async def open_manage(cb: CallbackQuery) -> None:
     user_id = cb.from_user.id
+    logger.debug("payment_handler.open_manage user_id=%s active=%s has_card=%s",
+                 user_id, _is_subscription_active(user_id), _has_saved_card(user_id))
     if not _is_subscription_active(user_id):
         await _edit_safe(cb, "Подписка не активна. Выберите тариф для оформления:", kb_rates())
         return
