@@ -236,9 +236,6 @@ class Subscription(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
 
-class ChargeAttempt(Base):
-    attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
-
 class PaymentMethod(Base):
     """
     Привязанные платёжные методы (карты) пользователей.

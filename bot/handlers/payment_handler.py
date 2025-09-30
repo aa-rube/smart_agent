@@ -183,9 +183,9 @@ def _compute_sub_until(months: int) -> str:
     """
     try:
         from dateutil.relativedelta import relativedelta
-        until = datetime.utcnow() + relativedelta(months=+months)
+        until = db.now_utc() + relativedelta(months=+months)
     except Exception:
-        until = datetime.utcnow() + timedelta(days=30 * months)
+        until = db.now_utc() + timedelta(days=30 * months)
     return until.date().isoformat()
 
 
@@ -207,7 +207,8 @@ def _is_subscription_active(user_id: int) -> bool:
         if not until:
             return False
         d_until = datetime.fromisoformat(until).date()
-        return d_until >= datetime.utcnow().date()
+        # сравниваем с текущей датой в UTC (aware)
+        return d_until >= db.now_utc().date()
     except Exception:
         return False
 
@@ -389,7 +390,8 @@ async def toggle_tos(cb: CallbackQuery) -> None:
     if cur:
         db.set_variable(user_id, "tos:accepted_at", "")  # снимаем галочку
     else:
-        db.set_variable(user_id, "tos:accepted_at", datetime.utcnow().isoformat(timespec="seconds") + "Z")
+        # современный формат: timezone-aware UTC → ISO с 'Z'
+        db.set_variable(user_id, "tos:accepted_at", db.iso_utc_z(db.now_utc()))
 
     consent = not bool(cur)
     pay_url = db.get_variable(user_id, "yk:last_pay_url") or None
@@ -534,7 +536,8 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             subscription_id_meta = None
 
         db.check_and_add_user(user_id)
-        paid_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        # аудитные метки времени в ISO UTC с 'Z'
+        paid_at = db.iso_utc_z(db.now_utc())
 
         if is_recurring:
             # Сохраняем способ оплаты и создаём/обновляем запись подписки
@@ -554,7 +557,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                     amount_value=plan_amount,
                     amount_currency=str(obj.get("amount", {}).get("currency") or "RUB"),
                     payment_method_id=pm_id or db.get_variable(user_id, "yk:payment_method_id"),
-                    next_charge_at=datetime.utcnow() + timedelta(hours=trial_hours),
+                    next_charge_at=db.now_utc() + timedelta(hours=trial_hours),
                     status="active",
                 )
 
@@ -575,9 +578,9 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                 # перенос next_charge_at только после успеха
                 try:
                     from dateutil.relativedelta import relativedelta
-                    next_at = datetime.utcnow() + relativedelta(months=+interval_m)
+                    next_at = db.now_utc() + relativedelta(months=+interval_m)
                 except Exception:
-                    next_at = datetime.utcnow() + timedelta(days=30 * interval_m)
+                    next_at = db.now_utc() + timedelta(days=30 * interval_m)
                 try:
                     db.subscription_mark_charged(subscription_id_meta, next_charge_at=next_at)
                 except Exception:
@@ -745,7 +748,7 @@ async def upgrade_plan(cb: CallbackQuery) -> None:
     except Exception:
         try:
             sub = getattr(db, "subscription_get_for_user", lambda **_: None)(user_id=user_id)  # может не существовать
-            next_charge_at = (sub or {}).get("next_charge_at", datetime.utcnow() + timedelta(days=3))
+            next_charge_at = (sub or {}).get("next_charge_at", db.now_utc() + timedelta(days=3))
             db.subscription_upsert(
                 user_id=user_id,
                 plan_code=code,
