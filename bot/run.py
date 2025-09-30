@@ -114,7 +114,6 @@ async def main():
                         continue
                     amount = sub["amount_value"]
                     plan_code = sub["plan_code"]
-                    interval_m = int(sub["interval_months"] or 1)
 
                     # Создаём платёж
                     try:
@@ -171,7 +170,6 @@ async def main():
             return_when=asyncio.FIRST_EXCEPTION,
         )
 
-        # если что-то упало — залогируем
         for t in done:
             with suppress(asyncio.CancelledError):
                 exc = t.exception()

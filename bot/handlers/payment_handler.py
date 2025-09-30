@@ -1,5 +1,4 @@
 # smart_agent/bot/handlers/payment_handler.py
-# Всегда пиши код без «поддержки старых версий». Если они есть — удаляй.
 from __future__ import annotations
 
 import logging
@@ -14,26 +13,21 @@ from aiogram.filters import Command
 
 from bot.config import get_file_path
 from bot.utils import youmoney
-import bot.utils.database as app_db  # приложение: история/триал/consent
-import bot.utils.billing_db as billing_db  # биллинг: карты/подписки/лог платежей
+import bot.utils.database as app_db
+import bot.utils.billing_db as billing_db
 
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ТАРИФЫ
 # ──────────────────────────────────────────────────────────────────────────────
-
 TARIFFS: Dict[str, Dict] = {
-    # Все планы рекуррентные: 1 ₽ на 72 часа, далее автосписание по периоду плана
-    "1m": {"label": "1 месяц", "months": 1, "amount": "2490.00", "recurring": True, "trial_amount": "1.00",
-           "trial_hours": 72},
-    "3m": {"label": "3 месяца", "months": 3, "amount": "6490.00", "recurring": True, "trial_amount": "1.00",
-           "trial_hours": 72},
-    "6m": {"label": "6 месяцев", "months": 6, "amount": "11490.00", "recurring": True, "trial_amount": "1.00",
-           "trial_hours": 72},
-    "12m": {"label": "12 месяцев", "months": 12, "amount": "19900.00", "recurring": True, "trial_amount": "1.00",
-            "trial_hours": 72},
+    "1m": {"label": "1 месяц", "months": 1, "amount": "2490.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
+    "3m": {"label": "3 месяца", "months": 3, "amount": "6490.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
+    "6m": {"label": "6 месяцев", "months": 6, "amount": "11490.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
+    "12m": {"label": "12 месяцев", "months": 12, "amount": "19900.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
 }
+
 
 RATES_TEXT = ('''
 🎁 Хочешь смотреть контент для соцсетей риэлтора без ограничений?
@@ -77,7 +71,7 @@ _LAST_PAY_HEADER: dict[int, str] = {}
 
 def kb_rates() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=" 🎁 3 дня за 1₽", callback_data="sub:choose:1m")],
+        [InlineKeyboardButton(text="🎁 3 дня за 1₽", callback_data="sub:choose:1m")],
         [
             InlineKeyboardButton(text="1 месяц", callback_data="sub:choose:1m"),
             InlineKeyboardButton(text="3 месяца", callback_data="sub:choose:3m"),
@@ -113,7 +107,6 @@ def kb_settings_main(user_id: int) -> InlineKeyboardMarkup:
         else:
             rows.append([InlineKeyboardButton(text="Статус: неактивна", callback_data="noop")])
 
-    rows.append([InlineKeyboardButton(text="⚙️ Управлять подпиской", callback_data="sub:manage")])
 
     # Кнопка удаления карты
     if billing_db.has_saved_card(user_id):
@@ -132,13 +125,12 @@ def kb_cancel_confirm() -> InlineKeyboardMarkup:
     ])
 
 
-def kb_pay_with_consent(*, consent: bool, pay_url: Optional[str], show_manage: bool) -> InlineKeyboardMarkup:
+def kb_pay_with_consent(*, consent: bool, pay_url: Optional[str]) -> InlineKeyboardMarkup:
     check = "✅ Я ознакомлен и согласен" if consent else "⬜️ Я ознакомлен и согласен"
     rows: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton(text=check, callback_data="tos:toggle")]]
     if consent and pay_url:
         rows.append([InlineKeyboardButton(text="💳 Оплатить", url=pay_url)])
-    if show_manage:
-        rows.append([InlineKeyboardButton(text="⚙️ Управлять подпиской", callback_data="sub:manage")])
+
     rows.append([InlineKeyboardButton(text="⬅️ Выбрать другой тариф", callback_data="show_rates")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -209,7 +201,6 @@ async def choose_rate(cb: CallbackQuery) -> None:
         "v": "2",  # версия схемы метаданных
     }
 
-    pay_url: Optional[str] = None
     if plan.get("recurring"):
         first_amount = plan.get("trial_amount", "1.00")
         meta.update({
@@ -253,12 +244,11 @@ async def choose_rate(cb: CallbackQuery) -> None:
     _LAST_PAY_URL[user_id] = pay_url or ""
     _LAST_PAY_HEADER[user_id] = description
 
-    show_manage = app_db.is_trial_active(user_id) or billing_db.has_saved_card(user_id)
 
     await _edit_safe(
         cb,
         f"{description}\n\n{PRE_PAY_TEXT}",
-        kb_pay_with_consent(consent=_CONSENT_FLAG[user_id], pay_url=None, show_manage=show_manage),
+        kb_pay_with_consent(consent=_CONSENT_FLAG[user_id], pay_url=None),
     )
 
 
@@ -284,8 +274,7 @@ async def toggle_tos(cb: CallbackQuery) -> None:
     await _edit_safe(
         cb,
         text,
-        kb_pay_with_consent(consent=new_state, pay_url=(pay_url if new_state else None),
-                            show_manage=(app_db.is_trial_active(user_id) or billing_db.has_saved_card(user_id)))
+        kb_pay_with_consent(consent=new_state, pay_url=(pay_url if new_state else None))
     )
 
 
@@ -430,7 +419,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             await _notify_after_payment(bot, user_id, code, next_at.date().isoformat())
 
         else:
-            # Нерекуррентный кейс (включая trial_tokenless): только триал.
+            # Не рекуррентный кейс (включая trial_tokenless): только триал.
             trial_hours = int(str(metadata.get("trial_hours") or "72"))
             trial_until = app_db.set_trial(user_id, hours=trial_hours)
             await _notify_after_payment(bot, user_id, code, trial_until.date().isoformat())
@@ -524,14 +513,12 @@ def _upgrade_options_from(code: str) -> list[tuple[str, str]]:
     return sorted(opts, key=lambda x: TARIFFS[x[0]]["months"])
 
 
-def _current_plan_code_guess(user_id: int) -> str:
-    # Без хранения «плана» в app DB: просто дефолт 1m
-    # (если нужно — можно подтягивать из биллинга отдельным методом get_active_subscription)
+def _current_plan_code_guess() -> str:
     return "1m"
 
 
-def kb_manage_menu(user_id: int) -> InlineKeyboardMarkup:
-    cur_code = _current_plan_code_guess(user_id)
+def kb_manage_menu() -> InlineKeyboardMarkup:
+    cur_code = _current_plan_code_guess()
     rows: List[List[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text=f"Текущий план: {TARIFFS[cur_code]['label']}", callback_data="noop")]
     ]
@@ -550,28 +537,25 @@ async def open_manage(cb: CallbackQuery) -> None:
     await _edit_safe(
         cb,
         "Управление подпиской:\nВы можете повысить тариф. Изменения вступят в силу со следующего списания.",
-        kb_manage_menu(user_id)
+        kb_manage_menu()
     )
 
 
 async def upgrade_plan(cb: CallbackQuery) -> None:
-    user_id = cb.from_user.id
     try:
         _, _, code = cb.data.split(":", 2)  # sub:upgrade:<code>
     except Exception:
-        await _edit_safe(cb, "Не удалось определить новый тариф.", kb_manage_menu(user_id))
+        await _edit_safe(cb, "Не удалось определить новый тариф.", kb_manage_menu())
         return
 
     if code not in TARIFFS:
-        await _edit_safe(cb, "Такого тарифа нет.", kb_manage_menu(user_id))
+        await _edit_safe(cb, "Такого тарифа нет.", kb_manage_menu())
         return
 
-    # В этой версии не меняем next_charge_at, только препаратим новый план к следующему циклу.
-    # Т.к. у нас нет хранилища «план текущей подписки», выводим сообщение-заглушку.
     await _edit_safe(
         cb,
         f"Готово! Новый план будет применён со следующего автосписания: *{TARIFFS[code]['label']}*.",
-        kb_manage_menu(user_id)
+        kb_manage_menu()
     )
 
 
