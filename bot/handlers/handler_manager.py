@@ -94,7 +94,7 @@ ai_tools_inline = InlineKeyboardMarkup(
 
 get_smm_subscribe_inline = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")],
+        [InlineKeyboardButton(text="🏡 Смотреть примеры постов", callback_data="show_rates")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")]
     ]
 )
