@@ -25,6 +25,11 @@ MSK = ZoneInfo("Europe/Moscow")
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
+def to_aware_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
 
 def iso_utc_z(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -293,15 +298,18 @@ class AppRepository:
     def get_trial_until(self, user_id: int) -> Optional[datetime]:
         with self._session() as s:
             rec = s.get(Trial, user_id)
-            return rec.until_at if rec else None
+            if not rec:
+                return None
+            # MySQL часто возвращает naive DATETIME — приводим к UTC-aware
+            return to_aware_utc(rec.until_at)
 
     def is_trial_active(self, user_id: int) -> bool:
         until = self.get_trial_until(user_id)
-        return bool(until and now_utc() < until)
+        return bool(until and now_utc() < to_aware_utc(until))
 
     def trial_remaining_hours(self, user_id: int) -> int:
-        until = self.get_trial_until(user_id)
-        if not until:
+        until = to_aware_utc(self.get_trial_until(user_id))
+        if until is None:
             return 0
         return max(0, int((until - now_utc()).total_seconds() // 3600))
 
