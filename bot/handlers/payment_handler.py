@@ -83,8 +83,10 @@ def kb_settings_main(user_id: int) -> InlineKeyboardMarkup:
     # Управление (без удаления)
     if _is_subscription_active(user_id):
         rows.append([InlineKeyboardButton(text="⚙️ Управлять подпиской", callback_data="sub:manage")])
-    # Кнопка удалить и отказаться (только тут)
-    rows.append([InlineKeyboardButton(text="🗑️ Удалить и отказаться", callback_data="sub:cancel_all")])
+    # Кнопка удалить и отказаться (только если карта привязана)
+    pm_id = db.get_variable(user_id, "yk:payment_method_id")
+    if pm_id:
+        rows.append([InlineKeyboardButton(text="🗑️ Удалить и отказаться", callback_data="sub:cancel_all")])
     rows.append([InlineKeyboardButton(text="⬅️ К тарифам", callback_data="show_rates")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -202,6 +204,10 @@ def _is_subscription_active(user_id: int) -> bool:
         return d_until >= datetime.utcnow().date()
     except Exception:
         return False
+
+def _has_saved_card(user_id: int) -> bool:
+    """Есть ли сохранённый способ оплаты у провайдера (привязана ли карта)."""
+    return bool(db.get_variable(user_id, "yk:payment_method_id"))
 
 
 def _current_plan_code(user_id: int) -> str:
