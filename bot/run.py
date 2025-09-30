@@ -13,6 +13,7 @@ from aiohttp import web
 from bot import setup
 from bot.config import TOKEN
 import bot.utils.database as db
+import bot.utils.billing_db as billing_db
 from bot.utils.mailing import run_mailing_scheduler
 
 from bot.handlers.payment_handler import process_yookassa_webhook
@@ -49,6 +50,7 @@ async def yookassa_webhook_handler(request: web.Request):
 async def main():
     # Инициализация БД перед любыми обработками
     db.init_db()
+    billing_db.init_billing_db()
     logging.info("DB initialized")
 
     app = web.Application()
@@ -99,7 +101,7 @@ async def main():
             try:
                 # timezone-aware MSK:
                 now_msk = datetime.now(msk)
-                due = db.subscriptions_due(now=now_msk, limit=100)
+                due = billing_db.subscriptions_due(now=now_msk, limit=100)
                 for sub in due:
                     if shutdown_event.is_set():
                         break
