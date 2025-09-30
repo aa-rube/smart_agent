@@ -64,8 +64,8 @@ class Subscription(Base):
     amount_value: Mapped[str] = mapped_column(String(32), nullable=False)            # "19900.00"
     amount_currency: Mapped[str] = mapped_column(String(8), nullable=False, default="RUB")
 
-    # FK на payment_methods.id — нормальная связь на одну из активных карт
-    payment_method_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("payment_methods.id", ondelete="SET NULL"), nullable=True)
+    # Храним провайдерский токен карты (строка от YooKassa), а НЕ числовой ID:
+    payment_method_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
 
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")   # active|canceled
     next_charge_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
