@@ -1,7 +1,7 @@
 # smart_agent/bot/utils/database.py
 from __future__ import annotations
 
-from typing import Optional, Any, List, Dict, cast
+from typing import Optional, List
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 

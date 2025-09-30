@@ -20,7 +20,6 @@ async def run_long_operation_with_action(
 
     typing_task = asyncio.create_task(send_action_periodically())
 
-    result = None
     try:
         result = await coro
     finally:
