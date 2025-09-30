@@ -105,7 +105,7 @@ get_smm_subscribe_inline = InlineKeyboardMarkup(
 
 def help_kb():
     builder = InlineKeyboardBuilder()
-    builder.button(text="🛟 Поддержка", url="https://t.me/admrecontent")
+    builder.button(text="🛟 Поддержка", url="https://t.me/dashaadminrealtor")
     return builder.as_markup()
 
 
