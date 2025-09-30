@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Union
+from typing import Union, Optional
 
 from aiogram import Router, F, Bot
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -23,6 +23,9 @@ from aiogram.types import (
 from bot.config import get_file_path
 from bot.utils.subscribe_partner_manager import ensure_partner_subs
 from bot.handlers.payment_handler import show_rates as show_rates_handler
+import bot.utils.database as app_db
+from aiogram.types import User as TgUser
+
 
 # =============================================================================
 # Тексты
@@ -109,17 +112,23 @@ def help_kb():
 # =============================================================================
 # Инициализация пользователя
 # =============================================================================
-async def init_user_event(evt: Union[Message, CallbackQuery]) -> None:
+async def init_user(evt: Union[Message, CallbackQuery]) -> None:
     """
     Гарантирует, что пользователь есть в БД (дефолты ставятся в repo.ensure_user).
     Работает и для входящих сообщений, и для callback’ов.
     """
     if isinstance(evt, CallbackQuery):
         msg = evt.message
-        username = evt.from_user.username if evt.from_user else ""
+        tg_from: Optional[TgUser] = evt.from_user
     else:
         msg = evt
-        username = evt.from_user.username if evt.from_user else ""
+        tg_from = evt.from_user
+
+    username = (tg_from.username if tg_from and tg_from.username else None)
+    chat_id = msg.chat.id if msg else None
+    user_id = tg_from.id if tg_from else (msg.chat.id if msg else None)
+    if user_id is not None and chat_id is not None:
+        app_db.check_and_add_user(user_id, chat_id=chat_id, username=username)
 
     if not msg:
         return
@@ -253,7 +262,7 @@ async def _edit_or_replace_with_photo_cb(
 # /start и основной экран
 # =============================================================================
 async def frst_msg(message: Message, bot: Bot) -> None:
-    await init_user_event(message)
+    await init_user(message)
 
     user_id = message.chat.id
 
@@ -272,7 +281,7 @@ async def ai_tools(callback: CallbackQuery) -> None:
     Переход в раздел «Продвинутые инструменты»:
     меняем текущий экран на картинку ai_tools.png + подпись + клавиатуру.
     """
-    await init_user_event(callback)
+    await init_user(callback)
     await _edit_or_replace_with_photo_cb(
         callback=callback,
         image_rel_path="img/bot/ai_tools.png",  # путь внутри DATA_DIR
@@ -282,7 +291,7 @@ async def ai_tools(callback: CallbackQuery) -> None:
 
 
 async def check_subscribe_retry(callback: CallbackQuery, bot: Bot) -> None:
-    await init_user_event(callback)
+    await init_user(callback)
 
     if not await ensure_partner_subs(bot, callback, retry_callback_data="start_retry", columns=2):
         await callback.answer("Похоже, ещё не на все каналы подписаны 🤏", show_alert=True)
@@ -292,7 +301,7 @@ async def check_subscribe_retry(callback: CallbackQuery, bot: Bot) -> None:
 
 
 async def smm_content(callback: CallbackQuery) -> None:
-    await init_user_event(callback)
+    await init_user(callback)
     await _edit_or_replace_with_photo_cb(callback, image_rel_path="img/bot/smm.png", caption=smm_description,
                                          kb=get_smm_subscribe_inline)
 
@@ -302,13 +311,13 @@ async def smm_content(callback: CallbackQuery) -> None:
 # Команды
 # =============================================================================
 async def sub_cmd(message: Message) -> None:
-    await init_user_event(message)
+    await init_user(message)
     # централизованный показ тарифов/оплаты
     await show_rates_handler(message)
 
 
 async def help_cmd(message: Message) -> None:
-    await init_user_event(message)
+    await init_user(message)
     await message.answer(HELP, reply_markup=help_kb())
 
 

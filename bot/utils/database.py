@@ -1,7 +1,7 @@
 # smart_agent/bot/utils/database.py
 from __future__ import annotations
 
-from typing import Optional, Any, List, Dict
+from typing import Optional, Any, List, Dict, cast
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -58,6 +58,10 @@ class User(Base):
     __tablename__ = "users"
 
     user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # Новые поля
+    chat_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, index=True)
+    username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+
 
     # Логи событий
     events: Mapped[list["EventLog"]] = relationship(
@@ -215,6 +219,21 @@ class EventLog(Base):
 # =========================
 def init_schema() -> None:
     Base.metadata.create_all(bind=engine)
+    # Лёгкая миграция: добавим поля, если их нет (MySQL 8+)
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS chat_id BIGINT NULL"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(64) NULL"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_users_username ON users (username)"
+            )
+    except Exception:
+        # Не падаем на старых версиях MySQL — таблица уже может быть мигрирована вручную.
+        pass
 
 
 class AppRepository:
@@ -225,12 +244,27 @@ class AppRepository:
         return self._session_factory()
 
     # --- users ---
-    def ensure_user(self, user_id: int) -> bool:
+    def ensure_user(self, user_id: int, *, chat_id: Optional[int] = None, username: Optional[str] = None) -> bool:
         with self._session() as s, s.begin():
-            existed = s.get(User, user_id) is not None
+            rec = s.get(User, user_id)
+            existed = rec is not None
             if not existed:
-                s.add(User(user_id=user_id))
-            return existed
+                s.add(User(
+                    user_id=user_id,
+                    chat_id=chat_id if chat_id is not None else user_id,
+                    username=username
+                ))
+                return False
+            # Обновляем при изменениях
+            updated = False
+            if chat_id is not None and rec.chat_id != chat_id:
+                rec.chat_id = chat_id
+                updated = True
+            if username is not None and rec.username != username:
+                rec.username = username
+                updated = True
+            # Коммит произойдёт по exit из контекста begin()
+            return True
 
     # --- consents ---
     def add_consent(self, user_id: int, kind: str, when: Optional[datetime] = None) -> int:
@@ -432,8 +466,8 @@ def init_db() -> None:
     init_schema()
 
 
-def check_and_add_user(user_id: int) -> bool:
-    return _repo.ensure_user(user_id)
+def check_and_add_user(user_id: int, *, chat_id: Optional[int] = None, username: Optional[str] = None) -> bool:
+    return _repo.ensure_user(user_id, chat_id=chat_id, username=username)
 
 
 # Trial (возвращаем datetime, чтобы вызывать .date() в хендлере без плясок)
