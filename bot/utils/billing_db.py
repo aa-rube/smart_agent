@@ -64,7 +64,7 @@ class Subscription(Base):
     amount_value: Mapped[str] = mapped_column(String(32), nullable=False)            # "19900.00"
     amount_currency: Mapped[str] = mapped_column(String(8), nullable=False, default="RUB")
 
-    # Храним провайдерский токен карты (строка от YooKassa), а НЕ числовой ID:
+    # Храним провайдерский токен карты (строка от YooKassa)
     payment_method_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
 
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")   # active|canceled
@@ -248,7 +248,7 @@ class BillingRepository:
         interval_months: int,
         amount_value: str,
         amount_currency: str = "RUB",
-        payment_method_id: Optional[int],
+        payment_method_id: Optional[str],
         next_charge_at: Optional[datetime],
         status: str = "active",
     ) -> int:
@@ -479,7 +479,7 @@ def card_upsert_from_provider(
 
 # Subscriptions
 def subscription_upsert(*, user_id: int, plan_code: str, interval_months: int, amount_value: str,
-                        amount_currency: str, payment_method_id: Optional[int],
+                        amount_currency: str, payment_method_id: Optional[str],
                         next_charge_at: Optional[datetime], status: str = "active") -> int:
     return _repo.subscription_upsert(
         user_id=user_id, plan_code=plan_code, interval_months=interval_months,
