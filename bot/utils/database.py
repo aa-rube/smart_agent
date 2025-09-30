@@ -356,6 +356,60 @@ class UserRepository:
             else:
                 rec.processed_at = datetime.utcnow()
 
+    # --- payment method presence ---
+    def has_saved_card(self, user_id: int) -> bool:
+        """
+        Возвращает True, если у пользователя реально есть привязанный способ оплаты.
+        Критерии:
+          1) переменная yk:payment_method_id непуста после .strip()
+             и не в {"none","null","0","false"}
+          ИЛИ
+          2) есть активная подписка с непустым payment_method_id.
+        """
+        with self._session() as s:
+            # 1) переменная
+            v = s.get(Variable, (user_id, "yk:payment_method_id"))
+            raw = (v.variable_value if v else "") or ""
+            norm = raw.strip().lower()
+            if norm and norm not in {"none", "null", "0", "false"}:
+                return True
+            # 2) активные подписки с pm_id
+            sub = (
+                s.query(Subscription)
+                 .filter(
+                    Subscription.user_id == user_id,
+                    Subscription.status == "active",
+                    Subscription.payment_method_id.isnot(None),
+                 )
+                 .first()
+            )
+            return sub is not None
+
+    def debug_payment_state(self, user_id: int) -> dict:
+        """
+        Диагностика состояния «привязанной карты»:
+          - var_raw/var_norm — как хранится токен в variables
+          - subs_active_with_pm — количество активных подписок с payment_method_id
+        """
+        with self._session() as s:
+            v = s.get(Variable, (user_id, "yk:payment_method_id"))
+            raw = (v.variable_value if v else "") or ""
+            norm = raw.strip().lower()
+            subs_active_with_pm = (
+                s.query(Subscription)
+                 .filter(
+                    Subscription.user_id == user_id,
+                    Subscription.status == "active",
+                    Subscription.payment_method_id.isnot(None),
+                 )
+                 .count()
+            )
+            return {
+                "var_raw": raw,
+                "var_norm": norm,
+                "subs_active_with_pm": int(subs_active_with_pm),
+            }
+
     # --- subscriptions ---
     def subscription_upsert(
         self,
@@ -870,6 +924,13 @@ def subscription_mark_charged_for_user(user_id: int, *, next_charge_at: datetime
 def subscription_cancel_for_user(*, user_id: int) -> int:
     """Отменить все активные подписки пользователя (очистит pm_id/next_charge_at)."""
     return _repo.subscription_cancel_for_user(user_id=user_id)
+
+# -------- Card presence / debug --------
+def has_saved_card(user_id: int) -> bool:
+    return _repo.has_saved_card(user_id)
+
+def debug_payment_state(user_id: int) -> dict:
+    return _repo.debug_payment_state(user_id)
 
 # -------- Mailing recipients (compat wrapper) --------
 def list_active_subscriber_ids(include_grace_days: int = 0) -> List[int]:

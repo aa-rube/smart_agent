@@ -88,8 +88,15 @@ def kb_settings_main(user_id: int) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text="⚙️ Управлять подпиской", callback_data="sub:manage")])
     # Кнопка удалить и отказаться — только при наличии привязанной карты
     has_card = _has_saved_card(user_id)
-    logger.info("payment_handler.kb_settings_main user_id=%s active=%s has_card=%s plan=%s until=%s",
-                user_id, _is_subscription_active(user_id), has_card, cur_code, sub_until)
+    try:
+        dbg = db.debug_payment_state(user_id)
+    except Exception:
+        dbg = {}
+    logger.info(
+        "payment_handler.kb_settings_main user_id=%s active=%s has_card=%s plan=%s until=%s | pm.var_raw=%r pm.var_norm=%r subs_active_with_pm=%s",
+        user_id, _is_subscription_active(user_id), has_card, cur_code, sub_until,
+        dbg.get('var_raw'), dbg.get('var_norm'), dbg.get('subs_active_with_pm')
+    )
     if has_card:
         rows.append([InlineKeyboardButton(text="🗑️ Удалить и отказаться", callback_data="sub:cancel_all")])
     else:
@@ -214,13 +221,23 @@ def _is_subscription_active(user_id: int) -> bool:
 
 def _has_saved_card(user_id: int) -> bool:
     """
-    Есть ли привязанный способ оплаты (card token) у провайдера.
-    Считаем валидным только непустой, не-«нулл», не-«None» и не-пробельный идентификатор.
+    Есть ли привязанный способ оплаты.
+    Истина берётся из БД:
+      - валидная переменная yk:payment_method_id (после strip)
+        и не в {"none","null","0","false"}
+      - ИЛИ активная подписка с payment_method_id.
     """
-    raw = db.get_variable(user_id, "yk:payment_method_id")
-    ok = bool(raw) and raw.strip().lower() not in {"none", "null"}
-    logger.debug("payment_handler._has_saved_card user_id=%s pm_id_raw=%r -> %s", user_id, raw, ok)
-    return ok
+    try:
+        ok = db.has_saved_card(user_id)
+        dbg = db.debug_payment_state(user_id)
+        logger.info(
+            "payment_handler._has_saved_card user_id=%s -> %s | var_raw=%r var_norm=%r subs_active_with_pm=%s",
+            user_id, ok, dbg.get("var_raw"), dbg.get("var_norm"), dbg.get("subs_active_with_pm")
+        )
+        return ok
+    except Exception as e:
+        logger.exception("payment_handler._has_saved_card failed for user_id=%s: %s", user_id, e)
+        return False
 
 
 def _current_plan_code(user_id: int) -> str:
@@ -650,8 +667,16 @@ async def open_settings_cmd(msg: Message) -> None:
     Только здесь доступна кнопка «Удалить и отказаться».
     """
     user_id = msg.from_user.id
-    logger.info("payment_handler.open_settings_cmd user_id=%s has_card=%s active=%s",
-                user_id, _has_saved_card(user_id), _is_subscription_active(user_id))
+    has_card = _has_saved_card(user_id)
+    try:
+        dbg = db.debug_payment_state(user_id)
+    except Exception:
+        dbg = {}
+    logger.info(
+        "payment_handler.open_settings_cmd user_id=%s active=%s has_card=%s | pm.var_raw=%r pm.var_norm=%r subs_active_with_pm=%s",
+        user_id, _is_subscription_active(user_id), has_card,
+        dbg.get('var_raw'), dbg.get('var_norm'), dbg.get('subs_active_with_pm')
+    )
     text = (
         "⚙️ *Настройки подписки*\n"
         "Здесь вы можете управлять подпиской, а также полностью удалить подписку и привязанную карту.\n\n"
