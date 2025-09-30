@@ -104,6 +104,12 @@ get_smm_subscribe_inline = InlineKeyboardMarkup(
     ]
 )
 
+def back_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")]]
+    )
+
+
 
 def help_kb():
     builder = InlineKeyboardBuilder()
@@ -262,7 +268,7 @@ async def _edit_or_replace_with_photo_cb(
 # =============================================================================
 # /start и основной экран
 # =============================================================================
-async def frst_msg(message: Message, bot: Bot) -> None:
+async def first_msg(message: Message, bot: Bot) -> None:
     await init_user(message)
     user_id = message.from_user.id
     if not await ensure_partner_subs(bot, message, retry_callback_data="start_retry", columns=2):
@@ -301,7 +307,6 @@ async def check_subscribe_retry(callback: CallbackQuery, bot: Bot) -> None:
     await _replace_with_menu_with_logo(callback)
 
 
-
 async def smm_content(callback: CallbackQuery) -> None:
     await init_user(callback)
     user_id = callback.from_user.id
@@ -316,23 +321,45 @@ async def smm_content(callback: CallbackQuery) -> None:
         logging.warning("Access check failed for %s: %s", user_id, e)
 
     if has_access:
-        # Только мейлинг (последний уже опубликованный), без экрана SMM
+        # ── ПРОСЬБА: «либо-либо» → шлём пост вместо экрана SMM ──
+        # 1) удаляем исходное сообщение (кнопку)
         try:
-            await callback.answer("Отправляю свежий пост 📬", show_alert=False)
-        except Exception:
+            await callback.message.delete()
+        except TelegramBadRequest:
             pass
+        except Exception as e:
+            logging.warning("Failed to delete triggering message for %s: %s", user_id, e)
+
+        # 2) отправляем последний уже опубликованный пост
         try:
             await send_last_published_to_user(callback.bot, user_id)
         except Exception as e:
             logging.warning("Failed to send last published mailing to %s: %s", user_id, e)
-    else:
-        # Обычный сценарий: экран SMM
-        await _edit_or_replace_with_photo_cb(
-            callback,
-            image_rel_path="img/bot/smm.png",
-            caption=smm_description,
-            kb=get_smm_subscribe_inline
-        )
+
+        # 3) короткое сообщение с кнопкой «Назад»
+        try:
+            await callback.bot.send_message(
+                chat_id=user_id,
+                text="Что бы вернуться в галвное меню нажмите Назад",
+                reply_markup=back_kb()
+            )
+        except Exception as e:
+            logging.warning("Failed to send back prompt to %s: %s", user_id, e)
+
+        # ответим на колбэк, чтобы убрать “часики”
+        try:
+            await callback.answer()
+        except Exception:
+            pass
+        return
+
+    # ── нет доступа → обычный экран SMM ──
+    await _edit_or_replace_with_photo_cb(
+        callback,
+        image_rel_path="img/bot/smm.png",
+        caption=smm_description,
+        kb=get_smm_subscribe_inline
+    )
 
 
 # =============================================================================
@@ -340,7 +367,6 @@ async def smm_content(callback: CallbackQuery) -> None:
 # =============================================================================
 async def sub_cmd(message: Message) -> None:
     await init_user(message)
-    user_id = message.from_user.id
     # централизованный показ тарифов/оплаты
     await show_rates_handler(message)
 
@@ -358,8 +384,8 @@ def router(rt: Router) -> None:
     rt.message.outer_middleware(MessageLogger())
     rt.callback_query.outer_middleware(CallbackClickLogger())
 
-    rt.message.register(frst_msg, CommandStart())
-    rt.message.register(frst_msg, Command("main"))
+    rt.message.register(first_msg, CommandStart())
+    rt.message.register(first_msg, Command("main"))
     rt.message.register(sub_cmd,  Command("sub"))
     rt.message.register(help_cmd, Command("support"))
 
