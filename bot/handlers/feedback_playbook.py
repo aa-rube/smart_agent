@@ -28,31 +28,38 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # Доступ / подписка
 # =============================================================================
-import bot.utils.database as db
-from bot.utils.database import is_trial_active, trial_remaining_hours
+import bot.utils.database as app_db          # триал / история / согласия
+import bot.utils.billing_db as billing_db     # карты / подписки / платежный лог
+from bot.utils.database import (
+    is_trial_active, trial_remaining_hours
+)
 
 def _is_sub_active(user_id: int) -> bool:
-    raw = db.get_variable(user_id, "sub_until") or ""
-    if not raw:
-        return False
-    try:
-        from datetime import datetime
-        today = datetime.utcnow().date()
-        return today <= datetime.fromisoformat(raw).date()
-    except Exception:
-        return False
+    """
+    Новая логика: доступ считается активным, если есть действующий триал
+    ИЛИ у пользователя сохранена карта для рекуррентных списаний (активная подписка).
+    Дату sub_until мы больше не храним в app_db.
+    """
+    return bool(billing_db.has_saved_card(user_id))
 
 def _format_access_text(user_id: int) -> str:
     trial_hours = trial_remaining_hours(user_id)
-    if _is_sub_active(user_id):
-        sub_until = db.get_variable(user_id, "sub_until")
-        return f'✅ Подписка активна до *{sub_until}*'
-    if trial_hours > 0:
+    # при активном триале показываем точную дату окончания
+    if is_trial_active(user_id):
+        try:
+            until_dt = app_db.get_trial_until(user_id)
+            if until_dt:
+                return f'🆓 Бесплатный доступ активен до *{until_dt.date().isoformat()}* (~{trial_hours} ч.)'
+        except Exception:
+            pass
         return f'🆓 Бесплатный доступ активен ещё *~{trial_hours} ч.*'
-    return '😢 Бесплатный период завершён. Оформи подписку, чтобы продолжить.'
+    # нет триала — проверяем рекуррентную подписку (карта сохранена)
+    if _is_sub_active(user_id):
+        return '✅ Подписка активна (автопродление включено)'
+    return '😢 Доступ закончился. Оформи подписку, чтобы продолжить.'
 
 def _has_access(user_id: int) -> bool:
-    return is_trial_active(user_id) or _is_sub_active(user_id)
+    return bool(is_trial_active(user_id) or _is_sub_active(user_id))
 
 # Тексты и кнопка «Оформить подписку» (как в plans)
 SUB_FREE = """

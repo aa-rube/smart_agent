@@ -20,7 +20,6 @@ from aiogram.types import (
     InputMediaPhoto,
 )
 
-import bot.utils.database as db
 from bot.config import get_file_path
 from bot.utils.subscribe_partner_manager import ensure_partner_subs
 from bot.handlers.payment_handler import show_rates as show_rates_handler
@@ -124,14 +123,6 @@ async def init_user_event(evt: Union[Message, CallbackQuery]) -> None:
 
     if not msg:
         return
-
-    user_id = msg.chat.id
-
-    # Основная БД: гарантируем пользователя и дефолты
-    if not db.check_and_add_user(user_id):
-        db.set_variable(user_id, "tokens", 2)
-        db.set_variable(user_id, "have_sub", 0)
-        # Примечание: отдельная admin_db больше не требуется
 
 
 # =============================================================================
@@ -265,12 +256,9 @@ async def frst_msg(message: Message, bot: Bot) -> None:
     await init_user_event(message)
 
     user_id = message.chat.id
-    skip = db.get_variable(user_id, "skip_subscribe")
 
-    if not skip:
-        # проверка партнёрских подписок (если не подписан — покажем ссылки и выйдем)
-        if not await ensure_partner_subs(bot, message, retry_callback_data="start_retry", columns=2):
-            return
+    if not await ensure_partner_subs(bot, message, retry_callback_data="start_retry", columns=2):
+        return
 
     # главный экран: фото + caption в одном сообщении
     await send_menu_with_logo(bot, user_id)
@@ -303,36 +291,11 @@ async def check_subscribe_retry(callback: CallbackQuery, bot: Bot) -> None:
     await _replace_with_menu_with_logo(callback)
 
 
-async def skip_subscribe(callback: CallbackQuery) -> None:
-    await init_user_event(callback)
-
-    user_id = callback.from_user.id
-    db.set_variable(user_id, "tokens", 0)
-    db.set_variable(user_id, "skip_subscribe", True)
-
-    await _replace_with_menu_with_logo(callback)
-
-
 async def smm_content(callback: CallbackQuery) -> None:
     await init_user_event(callback)
     await _edit_or_replace_with_photo_cb(callback, image_rel_path="img/bot/smm.png", caption=smm_description,
                                          kb=get_smm_subscribe_inline)
 
-
-async def my_profile(callback: CallbackQuery) -> None:
-    await init_user_event(callback)
-
-    user_id = callback.from_user.id
-    have_sub = (db.get_variable(user_id, "have_sub") == "1")
-    paid_at = db.get_variable(user_id, "sub_paid_at") or "-"
-    sub_until = db.get_variable(user_id, "sub_until") or "-"
-
-    text = (
-        f"Подписка: {'YES' if have_sub else 'NO'}\n"
-        f"Дата оплаты подписки: {paid_at}\n"
-        f"Дата окончания подписки: {sub_until}"
-    )
-    await _edit_text_safe(callback, text)
 
 
 # =============================================================================
@@ -362,6 +325,4 @@ def router(rt: Router) -> None:
     # callbacks
     rt.callback_query.register(ai_tools, F.data == "nav.ai_tools")
     rt.callback_query.register(check_subscribe_retry, F.data == "start_retry")
-    rt.callback_query.register(skip_subscribe, F.data == "skip_subscribe")
-    rt.callback_query.register(my_profile, F.data == "my_profile")
     rt.callback_query.register(smm_content, F.data == "smm_content")

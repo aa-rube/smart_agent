@@ -19,6 +19,10 @@ from bot.config import EXECUTOR_BASE_URL, get_file_path
 from bot.config import EXECUTOR_CALLBACK_TOKEN, BOT_PUBLIC_BASE_URL
 from bot.states.states import DescriptionStates
 
+# ====== Доступ / подписка  ======
+import bot.utils.database as app_db          # триал/согласия/история
+import bot.utils.billing_db as billing_db     # карты/подписки/лог платежей
+from bot.utils.database import is_trial_active, trial_remaining_hours
 
 
 # ==========================
@@ -167,7 +171,7 @@ async def _with_summary(state: FSMContext, text: str) -> str:
 def _kb_add_back_exit(rows: list[list[InlineKeyboardButton]]) -> list[list[InlineKeyboardButton]]:
     """
     Унифицированный нижний ряд для всех экранов: Назад/Выход.
-    'Назад' -> desc_back; 'Выход' -> desc_start (главоне меню).
+    'Назад' -> desc_back; 'Выход' -> desc_start (главное меню).
     """
     rows.append([
         InlineKeyboardButton(text="⬅️ Назад", callback_data="desc_back"),
@@ -175,32 +179,33 @@ def _kb_add_back_exit(rows: list[list[InlineKeyboardButton]]) -> list[list[Inlin
     ])
     return rows
 
-# ====== Доступ / подписка (как в plans/design) ======
-import bot.utils.database as db
-from bot.utils.database import is_trial_active, trial_remaining_hours
+
 
 def _is_sub_active(user_id: int) -> bool:
-    raw = db.get_variable(user_id, "sub_until") or ""
-    if not raw:
-        return False
-    try:
-        from datetime import datetime
-        today = datetime.utcnow().date()
-        return today <= datetime.fromisoformat(raw).date()
-    except Exception:
-        return False
+    """
+    Новая модель: активная подписка = привязанная НЕ удалённая карта
+    (автопродление включено). Дату sub_until больше не читаем из variables.
+    """
+    return bool(billing_db.has_saved_card(user_id))
 
 def _format_access_text(user_id: int) -> str:
     trial_hours = trial_remaining_hours(user_id)
-    if _is_sub_active(user_id):
-        sub_until = db.get_variable(user_id, "sub_until")
-        return f'✅ Подписка активна до *{sub_until}*'
-    if trial_hours > 0:
+    # Есть активный триал — показываем дату окончания, если доступна
+    if is_trial_active(user_id):
+        try:
+            until_dt = app_db.get_trial_until(user_id)
+            if until_dt:
+                return f'🆓 Бесплатный доступ активен до *{until_dt.date().isoformat()}* (~{trial_hours} ч.)'
+        except Exception:
+            pass
         return f'🆓 Бесплатный доступ активен ещё *~{trial_hours} ч.*'
+    # Нет триала — проверяем подписку
+    if _is_sub_active(user_id):
+        return '✅ Подписка активна (автопродление включено)'
     return '😢 Бесплатный период завершён. Оформи подписку, чтобы продолжить.'
 
 def _has_access(user_id: int) -> bool:
-    return is_trial_active(user_id) or _is_sub_active(user_id)
+    return bool(is_trial_active(user_id) or _is_sub_active(user_id))
 
 # ==========================
 # Безопасный ACK callback-запроса (чтобы не получить "query is too old")
@@ -861,7 +866,7 @@ async def _cb_description_result(request: web.Request):
 
     # --- История (user_id == chat_id) ---
     try:
-        db.description_add(user_id=chat_id, fields=fields, result_text=text)
+        app_db.description_add(user_id=chat_id, fields=fields, result_text=text)
     except Exception:
         pass
 
@@ -2008,7 +2013,7 @@ async def handle_country_multi_done(cb: CallbackQuery, state: FSMContext):
 async def handle_history_entry(cb: CallbackQuery):
     await _cb_ack(cb)
     user_id = cb.message.chat.id
-    items = db.description_list(user_id=user_id, limit=10)
+    items = app_db.description_list(user_id=user_id, limit=10)
     await _edit_text_or_caption(cb.message, "🗂 История запросов (последние 10):", _kb_history_list(items))
 
 async def handle_history_item(cb: CallbackQuery):
@@ -2018,9 +2023,10 @@ async def handle_history_item(cb: CallbackQuery):
         entry_id = int(cb.data.removeprefix("desc_hist_item_"))
     except Exception:
         return
-    entry = db.description_get(user_id=user_id, entry_id=entry_id)
+    entry = app_db.description_get(user_id=user_id, entry_id=entry_id)
     if not entry:
-        await _edit_text_or_caption(cb.message, "Запись не найдена или удалена.", _kb_history_list(db.description_list(user_id, 10)))
+        await _edit_text_or_caption(cb.message, "Запись не найдена или удалена.",
+                                    _kb_history_list(app_db.description_list(user_id, 10)))
         return
     # Покажем меню (кнопки) в текущем сообщении и отправим ПОЛНЫЙ текст отдельным(и) сообщением(ями)
     header = f"📝 Запись #{entry['id']} от {entry['created_at']}\n\nТекст записи отправлен ниже 👇"
@@ -2046,8 +2052,8 @@ async def handle_history_delete(cb: CallbackQuery):
         entry_id = int(cb.data.removeprefix("desc_hist_del_"))
     except Exception:
         return
-    db.description_delete(user_id=user_id, entry_id=entry_id)
-    items = db.description_list(user_id=user_id, limit=10)
+    app_db.description_delete(user_id=user_id, entry_id=entry_id)
+    items = app_db.description_list(user_id=user_id, limit=10)
     await _edit_text_or_caption(cb.message, "🗂 История запросов (обновлено):", _kb_history_list(items))
 
 async def handle_history_repeat(cb: CallbackQuery, state: FSMContext, bot: Bot):
@@ -2060,9 +2066,10 @@ async def handle_history_repeat(cb: CallbackQuery, state: FSMContext, bot: Bot):
         entry_id = int(cb.data.removeprefix("desc_hist_repeat_"))
     except Exception:
         return
-    entry = db.description_get(user_id=user_id, entry_id=entry_id)
+    entry = app_db.description_get(user_id=user_id, entry_id=entry_id)
     if not entry:
-        await _edit_text_or_caption(cb.message, "Запись не найдена или удалена.", _kb_history_list(db.description_list(user_id, 10)))
+        await _edit_text_or_caption(cb.message, "Запись не найдена или удалена.",
+                                    _kb_history_list(app_db.description_list(user_id, 10)))
         return
     # Отправляем «повторную генерацию» с комментарием = прежний результат (для доработки)
     # Стейт очищаем, чтобы не мешали старые шаги

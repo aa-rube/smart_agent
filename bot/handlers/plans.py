@@ -290,6 +290,7 @@ async def handle_style_plan(callback: CallbackQuery, state: FSMContext, bot: Bot
 
     await _edit_text_or_caption(callback.message, "⏳ Генерирую визуализацию… Это может занять до 1–2 минут.")
 
+    success = False
     try:
         coro = generate_floor_plan(floor_plan_path=plan_path, prompt=prompt)
         image_url = await run_long_operation_with_action(
@@ -300,12 +301,21 @@ async def handle_style_plan(callback: CallbackQuery, state: FSMContext, bot: Bot
         )
 
         if image_url:
-            await _edit_or_replace_with_photo_url(bot, callback.message, image_url, TEXT_FINAL, kb=kb_result_back())
+            # Обновляем исходное сообщение - убираем клавиатуру и меняем текст
+            try:
+                await callback.message.edit_text("✅ Генерация завершена. Результат ниже 👇", reply_markup=None)
+            except TelegramBadRequest:
+                # Если не получилось отредактировать (например, было фото), просто убираем клавиатуру
+                await callback.message.edit_reply_markup(reply_markup=None)
+            
+            # Отправляем результат в новом сообщении
+            await bot.send_photo(chat_id=user_id, photo=image_url, caption=TEXT_FINAL, reply_markup=kb_result_back())
+            success = True
         else:
             await _edit_text_or_caption(callback.message, SORRY_TRY_AGAIN, kb=kb_back_to_tools())
 
     finally:
-        if plan_path and os.path.exists(plan_path):
+        if not success and plan_path and os.path.exists(plan_path):
             if safe_remove(plan_path):
                 print(f"Временный файл удален: {plan_path}")
             else:

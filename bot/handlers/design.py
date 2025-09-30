@@ -17,7 +17,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.enums.chat_action import ChatAction
 from aiogram.exceptions import TelegramBadRequest
 
-import bot.utils.database as db
+import bot.utils.database as db                    # приложение: триал/история/consents
+import bot.utils.billing_db as billing_db          # биллинг: карты/подписки/лог платежей
 from bot.config import get_file_path
 from bot.utils.database import is_trial_active, trial_remaining_hours
 from bot.states.states import RedesignStates, ZeroDesignStates
@@ -33,27 +34,31 @@ from bot.utils.file_utils import safe_remove
 # =============================================================================
 
 def _is_sub_active(user_id: int) -> bool:
-    raw = db.get_variable(user_id, "sub_until") or ""
-    if not raw:
-        return False
-    try:
-        from datetime import datetime
-        today = datetime.utcnow().date()
-        return today <= datetime.fromisoformat(raw).date()
-    except Exception:
-        return False
+    """
+    Новая модель: активная подписка = есть привязанная (не удалённая) карта.
+    Никаких variables['sub_until'] больше не используем.
+    """
+    return bool(billing_db.has_saved_card(user_id))
 
 def _format_access_text(user_id: int) -> str:
     trial_hours = trial_remaining_hours(user_id)
-    if _is_sub_active(user_id):
-        sub_until = db.get_variable(user_id, "sub_until")
-        return f'✅ Подписка активна до *{sub_until}*'
-    if trial_hours > 0:
+    # приоритет — активный триал
+    if is_trial_active(user_id):
+        try:
+            until_dt = db.get_trial_until(user_id)
+            if until_dt:
+                return f'🆓 Бесплатный доступ активен до *{until_dt.date().isoformat()}* (~{trial_hours} ч.)'
+        except Exception:
+            pass
         return f'🆓 Бесплатный доступ активен ещё *~{trial_hours} ч.*'
+    # затем — подписка (автопродление включено)
+    if _is_sub_active(user_id):
+        return '✅ Подписка активна (автопродление включено)'
+    # иначе — нет доступа
     return '😢 Бесплатный период завершён. Оформи подписку, чтобы продолжить.'
 
 def _has_access(user_id: int) -> bool:
-    return is_trial_active(user_id) or _is_sub_active(user_id)
+    return bool(is_trial_active(user_id) or _is_sub_active(user_id))
 
 
 # =============================================================================

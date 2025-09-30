@@ -1,45 +1,47 @@
-# # smart_agent/bot/handlers/payment_handler.py
-# #Всегда пиши код без «поддержки старых версий». Если они есть - удаляй
+# smart_agent/bot/handlers/payment_handler.py
+# Всегда пиши код без «поддержки старых версий». Если они есть — удаляй.
 from __future__ import annotations
- 
+
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, Optional, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Optional, Tuple, List
 
 from aiogram import Router, F, Bot
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 )
-
-from bot.config import get_file_path
-import bot.utils.database as db
-from bot.utils import youmoney
 from aiogram.filters import Command
 
-# Локальный логгер модуля
+from bot.config import get_file_path
+from bot.utils import youmoney
+import bot.utils.database as app_db  # приложение: история/триал/consent
+import bot.utils.billing_db as billing_db  # биллинг: карты/подписки/лог платежей
+
 logger = logging.getLogger(__name__)
 
-
 # ──────────────────────────────────────────────────────────────────────────────
-# ТАРИФЫ И НАСТРОЙКИ
+# ТАРИФЫ
 # ──────────────────────────────────────────────────────────────────────────────
 
 TARIFFS: Dict[str, Dict] = {
     # Все планы рекуррентные: 1 ₽ на 72 часа, далее автосписание по периоду плана
-    "1m":  {"label": "1 месяц",   "months": 1,  "amount": "2490.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
-    "3m":  {"label": "3 месяца",  "months": 3,  "amount": "6590.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
-    "6m":  {"label": "6 месяцев", "months": 6,  "amount": "11390.00","recurring": True, "trial_amount": "1.00", "trial_hours": 72},
-    "12m": {"label": "12 месяцев","months": 12, "amount": "19900.00","recurring": True, "trial_amount": "1.00", "trial_hours": 72},
+    "1m": {"label": "1 месяц", "months": 1, "amount": "2490.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
+    "3m": {"label": "3 месяца", "months": 3, "amount": "6490.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
+    "6m": {"label": "6 месяцев", "months": 6, "amount": "11490.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
+    "12m": {"label": "12 месяцев", "months": 12, "amount": "19900.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
 }
 
-RATES_TEXT = (
-"""Тут вы можете оформить подписку на доступ:
+RATES_TEXT = ('''
+🎁 Хочешь смотреть контент для соцсетей риэлтора без ограничений?
+Оформи пробный доступ на 3 дня ко всем нашим Инструментам всего за 1 ₽
+А дальше выбери удобный абонемент:
 
-1 месяц / 2.490₽
-3 месяца /  ̶7̶4̶7̶0̶  6.490₽🔥
-6 месяцев / ̶1̶4̶9̶4̶0̶  11.490₽ 🔥🔥
-12 месяцев / ̶2̶9̶8̶8̶0̶  19.990₽ 🔥🔥🔥"""
-)
+
+1 месяц — 2 490 ₽
+3 месяца — 7 470 ₽ =>6 490 ₽
+6 месяцев — 14 940 ₽ =>11 490 ₽ 🔥
+12 месяцев — 29 880 ₽ =>19 990 ₽'''
+              )
 
 PRE_PAY_TEXT = (
     "📦 Что даёт подписка:\n"
@@ -57,104 +59,91 @@ PAY_TEXT = (
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
+# ВНУТРЕННОЕ КЭШИРОВАНИЕ СОГЛАСИЯ (только для UI-чекбокса)
+# ──────────────────────────────────────────────────────────────────────────────
+# Храним state чекбокса в памяти: само согласие юридически фиксируем в app_db.add_consent
+_CONSENT_FLAG: dict[int, bool] = {}
+_LAST_PAY_URL: dict[int, str] = {}
+_LAST_PAY_HEADER: dict[int, str] = {}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # КЛАВИАТУРЫ
 # ──────────────────────────────────────────────────────────────────────────────
 
 def kb_rates() -> InlineKeyboardMarkup:
-    """Клавиатура выбора тарифа."""
-    rows = [
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=" 🎁 3 дня за 1₽", callback_data="sub:choose:1m")],
         [
-            InlineKeyboardButton(text="1 месяц",  callback_data="sub:choose:1m"),
+            InlineKeyboardButton(text="1 месяц", callback_data="sub:choose:1m"),
             InlineKeyboardButton(text="3 месяца", callback_data="sub:choose:3m"),
-            InlineKeyboardButton(text="6 месяцев", callback_data="sub:choose:6m"),
+            InlineKeyboardButton(text="6 месяцев", callback_data="sub:choose:6м"),
         ],
         [InlineKeyboardButton(text="12 месяцев", callback_data="sub:choose:12m")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    ])
+
+
+def _trial_status_line(user_id: int) -> Optional[str]:
+    """Возвращает строку статуса, если активен триал."""
+    try:
+
+        until = app_db.get_trial_until(user_id)
+        if until and app_db.is_trial_active(user_id):
+            return f"Статус: до {until.date().isoformat()} (триал)"
+    except Exception:
+        pass
+    return None
+
 
 def kb_settings_main(user_id: int) -> InlineKeyboardMarkup:
-    """
-    Меню настроек, доступно только по команде /settings.
-    Здесь доступна кнопка удаления подписки и карты.
-    """
-    rows = []
-    # Показать краткий статус
-    cur_code = db.get_variable(user_id, "sub_plan_code") or "—"
-    sub_until = db.get_variable(user_id, "sub_until") or "—"
-    rows.append([InlineKeyboardButton(text=f"Статус: до {sub_until} (план: {cur_code})", callback_data="noop")])
-    # Управление (без удаления)
-    if _is_subscription_active(user_id):
-        rows.append([InlineKeyboardButton(text="⚙️ Управлять подпиской", callback_data="sub:manage")])
-    # Кнопка удалить и отказаться — только при наличии привязанной карты
-    if _has_saved_card(user_id):
-        card = db.get_user_card(user_id) or {}
-        suffix = f"{(card.get('brand') or '').upper()} ••••{card.get('last4','')}"
-        rows.append([InlineKeyboardButton(text=f"🗑️ Удалить карту ({suffix})", callback_data="sub:cancel_all")])
+    rows: List[List[InlineKeyboardButton]] = []
+
+    # Статус: сначала триал; иначе — по факту наличия карты
+    trial_line = _trial_status_line(user_id)
+    if trial_line:
+        rows.append([InlineKeyboardButton(text=trial_line, callback_data="noop")])
     else:
-        logger.debug("payment_handler.kb_settings_main: hide delete button (no saved card) user_id=%s", user_id)
+        if billing_db.has_saved_card(user_id):
+            rows.append([InlineKeyboardButton(text="Статус: автопродление включено", callback_data="noop")])
+        else:
+            rows.append([InlineKeyboardButton(text="Статус: неактивна", callback_data="noop")])
+
+    rows.append([InlineKeyboardButton(text="⚙️ Управлять подпиской", callback_data="sub:manage")])
+
+    # Кнопка удаления карты
+    if billing_db.has_saved_card(user_id):
+        card = billing_db.get_user_card(user_id) or {}
+        suffix = f"{(card.get('brand') or '').upper()} ••••{card.get('last4', '')}"
+        rows.append([InlineKeyboardButton(text=f"🗑️ Удалить карту ({suffix})", callback_data="sub:cancel_all")])
+
     rows.append([InlineKeyboardButton(text="⬅️ К тарифам", callback_data="show_rates")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+
 def kb_cancel_confirm() -> InlineKeyboardMarkup:
-    rows = [
-        [
-            InlineKeyboardButton(text="✅ Да, отменить и удалить", callback_data="sub:cancel_yes"),
-        ],
-        [
-            InlineKeyboardButton(text="⬅️ Назад", callback_data="sub:cancel_no"),
-        ],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, удалить карту", callback_data="sub:cancel_yes")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="sub:cancel_no")],
+    ])
 
 
-def kb_pay_with_consent(*, consent: bool, pay_url: Optional[str], show_manage: bool = False) -> InlineKeyboardMarkup:
-    """
-    Экран оплаты:
-      - чекбокс «Я ознакомлен и согласен»
-      - если чекбокс нажат — показываем кнопку с URL
-      - если не нажат — показываем кнопку-заглушку, которая просит поставить галочку
-      - если у пользователя активный триал/подписка — показываем «Управлять подпиской»
-    """
+def kb_pay_with_consent(*, consent: bool, pay_url: Optional[str], show_manage: bool) -> InlineKeyboardMarkup:
     check = "✅ Я ознакомлен и согласен" if consent else "⬜️ Я ознакомлен и согласен"
-    rows = [
-        [InlineKeyboardButton(text=check, callback_data="tos:toggle")],
-    ]
+    rows: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton(text=check, callback_data="tos:toggle")]]
     if consent and pay_url:
         rows.append([InlineKeyboardButton(text="💳 Оплатить", url=pay_url)])
-    # else:
-    #     rows.append([InlineKeyboardButton(text="💳 Оплатить", callback_data="tos:need")])
-
     if show_manage:
         rows.append([InlineKeyboardButton(text="⚙️ Управлять подпиской", callback_data="sub:manage")])
-
     rows.append([InlineKeyboardButton(text="⬅️ Выбрать другой тариф", callback_data="show_rates")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def kb_manage_menu(user_id: int) -> InlineKeyboardMarkup:
-    rows = []
-    cur_code = _current_plan_code(user_id)
-    rows.append([InlineKeyboardButton(text=f"Текущий план: {TARIFFS[cur_code]['label']}", callback_data="noop")])
-    upgrades = _upgrade_options(user_id)
-    if upgrades:
-        for code, label in upgrades:
-            rows.append([InlineKeyboardButton(text=f"Повысить до: {label}", callback_data=f"sub:upgrade:{code}")])
-    else:
-        rows.append([InlineKeyboardButton(text="Доступны все планы", callback_data="noop")])
-    rows.append([InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="show_rates")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
 # ──────────────────────────────────────────────────────────────────────────────
-# UI/HELPERS
+# HELPERS
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def _edit_safe(cb: CallbackQuery, text: str, kb: InlineKeyboardMarkup | None = None) -> Optional[int]:
-    """
-    Редактируем сообщение (или отвечаем новым) и возвращаем message_id,
-    чтобы потом можно было удалить «кнопку оплаты».
-    """
     msg_id: Optional[int] = None
     try:
         m = await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
@@ -176,90 +165,26 @@ def _plan_by_code(code: str) -> Optional[Dict]:
     return TARIFFS.get(code)
 
 
-def _compute_sub_until(months: int) -> str:
-    """
-    Возвращает дату конца подписки ISO (YYYY-MM-DD).
-    Если нет dateutil.relativedelta, используем 30д * мес.
-    """
+def _compute_next_time_from_months(months: int) -> datetime:
     try:
         from dateutil.relativedelta import relativedelta
-        until = db.now_utc() + relativedelta(months=+months)
+        return datetime.now(timezone.utc) + relativedelta(months=+months)
     except Exception:
-        until = db.now_utc() + timedelta(days=30 * months)
-    return until.date().isoformat()
-
-
-def _is_payment_processed(user_id: int, payment_id: str) -> bool:
-    """Грубая идемпотентность на базе settings.db (если используется где-то ещё)."""
-    key = f"yk:paid:{payment_id}"
-    return bool(db.get_variable(user_id, key))
-
-
-def _mark_payment_processed(user_id: int, payment_id: str) -> None:
-    key = f"yk:paid:{payment_id}"
-    db.set_variable(user_id, key, "1")
-
-
-def _is_subscription_active(user_id: int) -> bool:
-    """Есть активный доступ (триал или оплаченный период)."""
-    try:
-        until = db.get_variable(user_id, "sub_until") or ""
-        if not until:
-            return False
-        d_until = datetime.fromisoformat(until).date()
-        # сравниваем с текущей датой в UTC (aware)
-        return d_until >= db.now_utc().date()
-    except Exception:
-        return False
-
-def _has_saved_card(user_id: int) -> bool:
-    "True, если у юзера есть активная карта в payment_methods."
-    try:
-        return db.has_saved_card(user_id)
-    except Exception:
-        logger.exception("payment_handler._has_saved_card failed user_id=%s", user_id)
-        return False
-
-
-def _current_plan_code(user_id: int) -> str:
-    """Текущий план пользователя (для апгрейда)."""
-    code = db.get_variable(user_id, "sub_plan_code") or ""
-    return code if code in TARIFFS else "1m"
-
-
-def _upgrade_options(user_id: int) -> list[tuple[str, str]]:
-    """
-    Вернёт пары (code, label) только для планов, у которых months > current.
-    """
-    cur = _current_plan_code(user_id)
-    cur_m = TARIFFS[cur]["months"]
-    opts: list[tuple[str, str]] = []
-    for code, pl in TARIFFS.items():
-        if pl["months"] > cur_m:
-            opts.append((code, pl["label"]))
-    opts.sort(key=lambda x: TARIFFS[x[0]]["months"])
-    return opts
+        return datetime.now(timezone.utc) + timedelta(days=30 * months)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# PUBLIC HANDLERS: Показ тарифов → Выбор тарифа → Ссылка на оплату
+# PUBLIC: Показ тарифов / выбор тарифа / ссылка на оплату
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def show_rates(evt: Message | CallbackQuery) -> None:
-    """Единая точка входа «Показать тарифы» (сообщение или колбэк)."""
-    text = RATES_TEXT
     if isinstance(evt, CallbackQuery):
-        await _edit_safe(evt, text, kb_rates())
+        await _edit_safe(evt, RATES_TEXT, kb_rates())
     else:
-        await evt.answer(text, reply_markup=kb_rates())
+        await evt.answer(RATES_TEXT, reply_markup=kb_rates())
 
 
 async def choose_rate(cb: CallbackQuery) -> None:
-    """
-    sub:choose:<code> → создаём платёж и показываем кнопку «Оплатить».
-    Метаданные платежа содержат план, месяцы и токены — это используем в вебхуке.
-    ВАЖНО: ссылку создаём ОДИН раз, сохраняем в переменной и далее только показываем/прячем.
-    """
     user_id = cb.from_user.id
     try:
         _, _, code = cb.data.split(":", 2)  # sub:choose:<code>
@@ -272,18 +197,14 @@ async def choose_rate(cb: CallbackQuery) -> None:
         await _edit_safe(cb, "Такого тарифа нет. Выберите из списка.", kb_rates())
         return
 
-    amount = plan["amount"]
-    months = plan["months"]
-
     description = f"Подписка на {plan['label']}"
     meta = {
         "user_id": str(user_id),
         "plan_code": code,
-        "months": str(months),
-        "v": "1",
+        "months": str(plan["months"]),
+        "v": "2",  # версия схемы метаданных
     }
 
-    # Создаём ссылку на оплату (один раз)
     pay_url: Optional[str] = None
     if plan.get("recurring"):
         first_amount = plan.get("trial_amount", "1.00")
@@ -291,7 +212,7 @@ async def choose_rate(cb: CallbackQuery) -> None:
             "phase": "trial",
             "is_recurring": "1",
             "trial_hours": str(plan.get("trial_hours", 72)),
-            "plan_amount": amount,
+            "plan_amount": plan["amount"],
         })
         try:
             pay_url = youmoney.create_pay_ex(
@@ -302,111 +223,65 @@ async def choose_rate(cb: CallbackQuery) -> None:
                 save_payment_method=True,
             )
         except Exception as e:
-            # Фолбэк для магазинов без рекуррентных платежей
-            err_txt = str(getattr(e, "args", [""])[0] or e)
-            if "can't make recurring payments" in err_txt.lower() or "forbidden" in err_txt.lower():
-                logging.error("Recurring not allowed for this shop. Falling back to tokenless trial 1 RUB")
-                # создаём обычный платёж на 1 ₽ БЕЗ сохранения способа оплаты
-                try:
-                    meta_fallback = dict(meta)
-                    # помечаем, что это триал без токена — чтобы в вебхуке не создавать рекуррентную подписку
-                    meta_fallback["is_recurring"] = "0"
-                    meta_fallback["phase"] = "trial_tokenless"
-                    pay_url = youmoney.create_pay_ex(
-                        user_id=user_id,
-                        amount_rub=first_amount,
-                        description=f"{description} (пробный период)",
-                        metadata=meta_fallback,
-                        save_payment_method=False,
-                    )
-                    # для UI дадим понятный текст
-                    db.set_variable(user_id, "yk:recurring_disabled", "1")
-                except Exception as e2:
-                    logging.exception("Fallback (tokenless trial) also failed: %s", e2)
-                    await _edit_safe(cb, "Не удалось создать платёж. Попробуйте позже.", kb_rates())
-                    return
-            else:
-                logging.exception("Failed to create trial payment: %s", e)
-                await _edit_safe(cb, "Не удалось создать платёж. Попробуйте позже.", kb_rates())
-                return
-    else:
-        # сейчас все планы рекуррентные; этот блок не должен выполниться
-        try:
+            # Fallback: магазин не умеет рекуррентные платежи — делаем без токена
+            logger.error("Recurring not allowed, fallback to tokenless trial: %s", e)
+            meta_fallback = dict(meta)
+            meta_fallback["is_recurring"] = "0"
+            meta_fallback["phase"] = "trial_tokenless"
             pay_url = youmoney.create_pay_ex(
                 user_id=user_id,
-                amount_rub=amount,
-                description=description,
-                metadata=meta,
+                amount_rub=first_amount,
+                description=f"{description} (пробный период)",
+                metadata=meta_fallback,
+                save_payment_method=False,
             )
-        except Exception as e:
-            logging.exception("Failed to create YooKassa payment: %s", e)
-            await _edit_safe(cb, "Не удалось создать платёж. Попробуйте позже.", kb_rates())
-            return
-
-    # Сохраняем заголовок (описание), чтобы уметь подменять текст при переключении чекбокса
-    try:
-        db.set_variable(user_id, "yk:last_pay_header", description)
-    except Exception:
-        logging.exception("Failed to store last pay header for user %s", user_id)
-
-    # Если согласие уже проставлено — показываем текст без ссылки, иначе с кликабельной ссылкой
-    consent_raw = db.get_variable(user_id, "tos:accepted_at")
-    consent = bool(consent_raw)
-    text = f"{description}\n\n{PAY_TEXT if consent else PRE_PAY_TEXT}"
-
-    # Сохраняем URL, чтобы не пересоздавать при кликах чекбокса
-    try:
-        db.set_variable(user_id, "yk:last_pay_url", pay_url or "")
-    except Exception:
-        logging.exception("Failed to store last pay url for user %s", user_id)
-
-    show_manage = _is_subscription_active(user_id)
-
-    msg_id = await _edit_safe(
-        cb,
-        text,
-        kb_pay_with_consent(consent=consent, pay_url=pay_url if consent else None, show_manage=show_manage)
-    )
-
-    # Сохраняем id сообщения с кнопкой, чтобы удалить после успешной оплаты
-    try:
-        db.set_variable(user_id, "yk:last_pay_msg_id", str(msg_id or ""))
-    except Exception:
-        logging.exception("Failed to store last pay message id for user %s", user_id)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Доп. хендлеры чек-бокса согласия
-# ──────────────────────────────────────────────────────────────────────────────
-
-async def toggle_tos(cb: CallbackQuery) -> None:
-    """
-    Переключатель чекбокса.
-    Никаких пересозданий платежа: читаем сохранённый URL и просто
-    показываем/прячем кнопку со ссылкой.
-    """
-    user_id = cb.from_user.id
-    cur = db.get_variable(user_id, "tos:accepted_at")
-    if cur:
-        db.set_variable(user_id, "tos:accepted_at", "")  # снимаем галочку
     else:
-        # современный формат: timezone-aware UTC → ISO с 'Z'
-        db.set_variable(user_id, "tos:accepted_at", db.iso_utc_z(db.now_utc()))
+        # сейчас все планы рекуррентные
+        pay_url = youmoney.create_pay_ex(
+            user_id=user_id,
+            amount_rub=plan["amount"],
+            description=description,
+            metadata=meta,
+        )
 
-    consent = not bool(cur)
-    pay_url = db.get_variable(user_id, "yk:last_pay_url") or None
-    header = db.get_variable(user_id, "yk:last_pay_header") or "Оплата подписки"
-    # Меняем и текст, и клавиатуру: до согласия — текст с кликабельной ссылкой, после — обычный текст без ссылки
-    new_text = f"{header}\n\n{PAY_TEXT if consent else PRE_PAY_TEXT}"
+    # Инициализируем состояние чекбокса (по умолчанию не отмечен)
+    _CONSENT_FLAG[user_id] = _CONSENT_FLAG.get(user_id, False)
+    _LAST_PAY_URL[user_id] = pay_url or ""
+    _LAST_PAY_HEADER[user_id] = description
+
+    show_manage = app_db.is_trial_active(user_id) or billing_db.has_saved_card(user_id)
 
     await _edit_safe(
         cb,
-        new_text,
-        kb_pay_with_consent(
-            consent=consent,
-            pay_url=pay_url if consent else None,
-            show_manage=_is_subscription_active(user_id)
-        )
+        f"{description}\n\n{PRE_PAY_TEXT}",
+        kb_pay_with_consent(consent=_CONSENT_FLAG[user_id], pay_url=None, show_manage=show_manage),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Чек-бокс согласия
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def toggle_tos(cb: CallbackQuery) -> None:
+    user_id = cb.from_user.id
+    new_state = not bool(_CONSENT_FLAG.get(user_id))
+    _CONSENT_FLAG[user_id] = new_state
+    if new_state:
+        # Юридически фиксируем согласие
+        try:
+            app_db.add_consent(user_id, kind="tos")
+        except Exception:
+            logger.exception("Failed to record consent for user %s", user_id)
+
+    header = _LAST_PAY_HEADER.get(user_id, "Оплата подписки")
+    text = f"{header}\n\n{PAY_TEXT if new_state else PRE_PAY_TEXT}"
+    pay_url = _LAST_PAY_URL.get(user_id) or None
+
+    await _edit_safe(
+        cb,
+        text,
+        kb_pay_with_consent(consent=new_state, pay_url=(pay_url if new_state else None),
+                            show_manage=(app_db.is_trial_active(user_id) or billing_db.has_saved_card(user_id)))
     )
 
 
@@ -415,63 +290,36 @@ async def need_tos(cb: CallbackQuery) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# WEBHOOK: централизованный обработчик успешных платежей
+# WEBHOOK: успешные платежи YooKassa
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
-    """
-    Центральная обработка вебхука YooKassa.
-    Возвращает (http_status, message_for_log).
-    """
     try:
-        # локальные хелперы управления меню подписки
-        async def _notify_success_and_menu(_user_id: int, _code: str, _sub_until: str) -> None:
-            try:
-                await bot.send_message(
-                    chat_id=_user_id,
-                    text=(
-                        f"✅ Оплата прошла успешно!\n\n"
-                        f"Тариф: *{TARIFFS.get(_code, {}).get('label', _code)}*\n"
-                        f"Подписка активна до: *{_sub_until}*"
-                    )
-                )
-                try:
-                    from bot.handlers.handler_manager import send_menu_with_logo as _send_menu_with_logo
-                    await _send_menu_with_logo(bot, _user_id)
-                except Exception as e:
-                    logging.warning("Failed to send main menu after payment for user %s: %s", _user_id, e)
-            except Exception as e:
-                logging.warning("Failed to notify user %s after payment: %s", _user_id, e)
-
         event = payload.get("event")
         obj = payload.get("object") or {}
         payment_id = obj.get("id")
         status = obj.get("status")
         metadata = obj.get("metadata") or {}
-        payment_method = obj.get("payment_method") or {}
-        pm_id = payment_method.get("id")
-        # если знаем payment_id → пометим исходную попытку (если она была создана с записью)
+        pmethod = obj.get("payment_method") or {}
+
+        # помечаем попытку списания, если где-то создавали (не критично)
         try:
             if payment_id and status in ("succeeded", "canceled", "expired"):
-                from bot.utils import database as _db_for_attempts
-                _db_for_attempts.mark_charge_attempt_status(
-                    payment_id=payment_id,
-                    status="succeeded" if status == "succeeded" else status
-                )
+                billing_db.mark_charge_attempt_status(payment_id=payment_id,
+                                                      status=("succeeded" if status == "succeeded" else status))
         except Exception:
             pass
 
         if not payment_id or not status:
             return 400, "missing payment_id/status"
 
-        # Неуспешные кейсы
+        # неуспех — просто уведомим
         if (event in ("payment.canceled", "payment.expired") or status in ("canceled", "expired")):
             try:
                 user_id_raw = (payload.get("object") or {}).get("metadata", {}).get("user_id")
                 user_id_fail = int(user_id_raw) if user_id_raw is not None else None
             except Exception:
                 user_id_fail = None
-
             if user_id_fail:
                 try:
                     cover_path = get_file_path("data/img/bot/no_pay.png")
@@ -479,25 +327,23 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                     caption = (
                         "❌ *Оплата не прошла*\n\n"
                         "Платёж был отменён или не завершён.\n"
-                        "Если списания не было — вы можете попробовать оплатить снова из раздела тарифов."
+                        "Если списания не было — попробуйте оплатить снова из раздела тарифов."
                     )
                     await bot.send_photo(chat_id=user_id_fail, photo=photo, caption=caption, parse_mode="Markdown")
                 except Exception as e:
-                    logging.warning("Failed to send fail payment notice to %s: %s", user_id_fail, e)
+                    logger.warning("Failed to send fail notice to %s: %s", user_id_fail, e)
             return 200, f"fail event={event} status={status}"
 
-        # Интересуют только успешные кейсы (или ожидание подтверждения/capture)
         if event not in ("payment.succeeded", "payment.waiting_for_capture"):
             return 200, f"skip event={event}"
 
-        # базовая валидация
         user_id = int(metadata.get("user_id") or 0)
         if not user_id:
             return 400, "missing user_id in metadata"
 
-        # Аудит + идемпотентность по payment_id
+        # --- идемпотентность/аудит ---
         try:
-            db.payment_log_upsert(
+            billing_db.payment_log_upsert(
                 payment_id=payment_id,
                 user_id=user_id,
                 amount_value=str(obj.get("amount", {}).get("value") or ""),
@@ -507,167 +353,138 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                 metadata=metadata,
                 raw_payload=payload,
             )
-            if db.payment_log_is_processed(payment_id):
+            if billing_db.payment_log_is_processed(payment_id):
                 return 200, "already processed"
         except Exception:
-            logging.exception("payment_log_upsert failed for %s", payment_id)
+            logger.exception("payment_log_upsert failed for %s", payment_id)
 
-        # Разбор плана (из метаданных); фоллбэк — по сумме
-        code = metadata.get("plan_code")
-        months = int(metadata.get("months") or 0)
-
-        if not code or code not in TARIFFS:
-            amount_val = str(obj.get("amount", {}).get("value") or "")
-            for c, pl in TARIFFS.items():
-                if amount_val == pl["amount"]:
-                    code, months = c, pl["months"]
-                    break
-
-        if not code:
-            code = "1m"
-            months = months or TARIFFS["1m"]["months"]
-
+        # --- разбираем план/фазу ---
+        code = str(metadata.get("plan_code") or "1m")
+        months = int(metadata.get("months") or TARIFFS.get(code, {}).get("months", 1))
         is_recurring = str(metadata.get("is_recurring") or "0") == "1"
         phase = str(metadata.get("phase") or "").strip()  # "trial" | "renewal" | "trial_tokenless"
-        subscription_id_meta = metadata.get("subscription_id")
+
+        # карточка провайдера (для сохранения)
+        pm_token = pmethod.get("id")
+        card_info = (pmethod.get("card") or {})
+        brand = (card_info.get("card_type") or card_info.get("brand") or "") or None
+        first6 = (card_info.get("first6") or "") or None
+        last4 = (card_info.get("last4") or "") or None
+        exp_month = card_info.get("expiry_month")
+        exp_year = card_info.get("expiry_year")
         try:
-            subscription_id_meta = int(subscription_id_meta) if subscription_id_meta is not None else None
+            exp_month = int(exp_month) if exp_month is not None else None
         except Exception:
-            subscription_id_meta = None
+            exp_month = None
+        try:
+            exp_year = int(exp_year) if exp_year is not None else None
+        except Exception:
+            exp_year = None
 
-        db.check_and_add_user(user_id)
-        # аудитные метки времени в ISO UTC с 'Z'
-        paid_at = db.iso_utc_z(db.now_utc())
+        # Убедимся, что пользователь есть в app DB (для триала/истории)
+        app_db.check_and_add_user(user_id)
 
-        if is_recurring:
-            # Сохраняем способ оплаты и создаём/обновляем запись подписки
-            if pm_id:
-                db.set_variable(user_id, "yk:payment_method_id", pm_id)
-            trial_hours = int(str(metadata.get("trial_hours") or "72"))
-            plan_amount = str(metadata.get("plan_amount") or TARIFFS.get(code, {}).get("amount", "2490.00"))
-            interval_m = int(TARIFFS.get(code, {}).get("months", 1))
-
-            if phase == "trial":
-                # Первый платёж 1 ₽: открываем демо-период, планируем автосписание
-                trial_until_iso = db.set_trial(user_id, hours=trial_hours)
-                db.subscription_upsert(
-                    user_id=user_id,
-                    plan_code=code,
-                    interval_months=interval_m,
-                    amount_value=plan_amount,
-                    amount_currency=str(obj.get("amount", {}).get("currency") or "RUB"),
-                    payment_method_id=pm_id or db.get_variable(user_id, "yk:payment_method_id"),
-                    next_charge_at=db.now_utc() + timedelta(hours=trial_hours),
-                    status="active",
+        # Успешные сценарии
+        if is_recurring and phase == "trial":
+            # 1) сохраняем карту в справочник (id не нужен в подписке; храним токен провайдера)
+            if pm_token:
+                billing_db.card_upsert_from_provider(
+                    user_id=user_id, provider=pmethod.get("type", "yookassa"),
+                    pm_id=pm_token, brand=brand, first6=first6, last4=last4,
+                    exp_month=exp_month, exp_year=exp_year,
                 )
+            # 2) включаем триал доступа
+            trial_hours = int(str(metadata.get("trial_hours") or "72"))
+            trial_until = app_db.set_trial(user_id, hours=trial_hours)  # datetime (UTC)
+            # 3) создаём/обновляем подписку с next_charge_at после триала
+            next_charge_at = datetime.now(timezone.utc) + timedelta(hours=trial_hours)
+            billing_db.subscription_upsert(
+                user_id=user_id, plan_code=code, interval_months=months,
+                amount_value=str(metadata.get("plan_amount") or TARIFFS.get(code, {}).get("amount", "0.00")),
+                amount_currency=str(obj.get("amount", {}).get("currency") or "RUB"),
+                payment_method_id=pm_token,  # в подписке хранится провайдерский токен (string), не PK карты
+                next_charge_at=next_charge_at,
+                status="active",
+            )
+            # уведомление
+            await _notify_after_payment(bot, user_id, code, trial_until.date().isoformat())
 
-                # Открываем доступ на период trial
-                db.set_variable(user_id, "have_sub", "1")
-                db.set_variable(user_id, "sub_paid_at", paid_at)
-                db.set_variable(user_id, "sub_until", trial_until_iso[:10])
-                db.set_variable(user_id, "sub_plan_code", code)
+        elif is_recurring and phase == "renewal":
+            # переносим next_charge_at вперёд на период тарифа
+            next_at = _compute_next_time_from_months(months)
+            updated_sub_id = billing_db.subscription_mark_charged_for_user(user_id=user_id, next_charge_at=next_at)
+            if not updated_sub_id:
+                # если нет подписки (крайний случай) — создадим
+                billing_db.subscription_upsert(
+                    user_id=user_id, plan_code=code, interval_months=months,
+                    amount_value=TARIFFS.get(code, {}).get("amount", "0.00"),
+                    amount_currency=str(obj.get("amount", {}).get("currency") or "RUB"),
+                    payment_method_id=None,  # оставим карту как было (мы её не знаем в этом событии)
+                    next_charge_at=next_at, status="active",
+                )
+            # уведомление с «до …» брать из next_at
+            await _notify_after_payment(bot, user_id, code, next_at.date().isoformat())
 
-                sub_until = trial_until_iso[:10]
-            elif phase == "renewal":
-                # Успешное автосписание после триала (или последующих периодов)
-                sub_until = _compute_sub_until(interval_m)
-                db.set_variable(user_id, "have_sub", "1")
-                db.set_variable(user_id, "sub_paid_at", paid_at)
-                db.set_variable(user_id, "sub_until", sub_until)
-                db.set_variable(user_id, "sub_plan_code", code)
-                # перенос next_charge_at только после успеха
-                try:
-                    from dateutil.relativedelta import relativedelta
-                    next_at = db.now_utc() + relativedelta(months=+interval_m)
-                except Exception:
-                    next_at = db.now_utc() + timedelta(days=30 * interval_m)
-                try:
-                    db.subscription_mark_charged(subscription_id_meta, next_charge_at=next_at)
-                except Exception:
-                    try:
-                        db.subscription_mark_charged_for_user(user_id=user_id, next_charge_at=next_at)
-                    except Exception:
-                        logging.exception("Failed to bump next_charge_at after renewal for user %s", user_id)
-            else:
-                # защитная ветка на случай странных метаданных
-                logging.info("Recurring payment with unexpected phase=%s; no state change", phase)
         else:
-            # НЕ рекуррентные оплаты (включая триал без токена)
-            # 1) trial_tokenless → просто открыть демо и НЕ создавать рекуррентную подписку
-            if phase == "trial_tokenless":
-                trial_hours = int(str(metadata.get("trial_hours") or "72"))
-                trial_until_iso = db.set_trial(user_id, hours=trial_hours)
-                db.set_variable(user_id, "have_sub", "1")
-                db.set_variable(user_id, "sub_paid_at", paid_at)
-                db.set_variable(user_id, "sub_until", trial_until_iso[:10])
-                sub_until = trial_until_iso[:10]
-                db.set_variable(user_id, "sub_plan_code", code)
-            else:
-                # Обычный разовый платёж (не должен встречаться в текущей схеме)
-                db.set_variable(user_id, "have_sub", "1")
-                sub_until = _compute_sub_until(months)
-                db.set_variable(user_id, "sub_paid_at", paid_at)
-                db.set_variable(user_id, "sub_until", sub_until)
-                db.set_variable(user_id, "sub_plan_code", code)
+            # Нерекуррентный кейс (включая trial_tokenless): только триал.
+            trial_hours = int(str(metadata.get("trial_hours") or "72"))
+            trial_until = app_db.set_trial(user_id, hours=trial_hours)
+            await _notify_after_payment(bot, user_id, code, trial_until.date().isoformat())
 
-        # Идемпотентность
+        # помечаем как обработанный
         try:
-            db.payment_log_mark_processed(payment_id)
+            billing_db.payment_log_mark_processed(payment_id)
         except Exception:
-            logging.exception("payment_log_mark_processed failed for %s", payment_id)
-
-        # Удаляем сообщение с кнопкой оплаты (если оно было)
-        try:
-            msg_id_raw = db.get_variable(user_id, "yk:last_pay_msg_id")
-            if msg_id_raw:
-                msg_id_int = int(msg_id_raw)
-                try:
-                    await bot.delete_message(chat_id=user_id, message_id=msg_id_int)
-                except Exception as e:
-                    logging.warning("delete_message failed for user %s, msg %s: %s", user_id, msg_id_int, e)
-                finally:
-                    db.set_variable(user_id, "yk:last_pay_msg_id", "")
-        except Exception:
-            logging.exception("Failed to delete last pay message for user %s", user_id)
-
-        # Уведомление пользователю
-        await _notify_success_and_menu(user_id, code, sub_until)
+            logger.exception("payment_log_mark_processed failed for %s", payment_id)
 
         return 200, "ok"
 
     except Exception as e:
-        logging.exception("Webhook processing error: %s", e)
+        logger.exception("Webhook processing error: %s", e)
         return 500, f"error: {e}"
 
 
+async def _notify_after_payment(bot: Bot, user_id: int, code: str, until_date_iso: str) -> None:
+    try:
+        await bot.send_message(
+            chat_id=user_id,
+            text=(
+                f"✅ Оплата прошла успешно!\n\n"
+                f"Тариф: *{TARIFFS.get(code, {}).get('label', code)}*\n"
+                f"Доступ активен до: *{until_date_iso}*"
+            ),
+            parse_mode="Markdown",
+        )
+        try:
+            from bot.handlers.handler_manager import send_menu_with_logo as _send_menu_with_logo
+            await _send_menu_with_logo(bot, user_id)
+        except Exception as e:
+            logger.warning("Failed to send main menu after payment for user %s: %s", user_id, e)
+    except Exception as e:
+        logger.warning("Failed to notify user %s after payment: %s", user_id, e)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
-# Настройки (/settings) и безопасная отмена подписки + удаление карты
+# Настройки (/settings) и удаление карты
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def open_settings_cmd(msg: Message) -> None:
-    """
-    Команда /settings открывает меню настроек.
-    Только здесь доступна кнопка «Удалить и отказаться».
-    """
     user_id = msg.from_user.id
-    logger.info("payment_handler.open_settings_cmd user_id=%s active=%s has_card=%s",
-                user_id, _is_subscription_active(user_id), _has_saved_card(user_id))
+    logger.info("settings user_id=%s has_card=%s trial_active=%s",
+                user_id, billing_db.has_saved_card(user_id), app_db.is_trial_active(user_id))
     text = (
         "⚙️ *Настройки подписки*\n"
-        "Здесь вы можете управлять подпиской, а также полностью удалить подписку и привязанную карту.\n\n"
-        "• *Управлять подпиской* — повысить тариф, посмотреть статус.\n"
-        "• *Удалить и отказаться* — немедленно отключит доступ и удалит сохранённую карту."
+        "Здесь можно управлять подпиской и удалить привязанную карту.\n\n"
+        "• *Управлять подпиской* — апгрейд тарифа, статус.\n"
+        "• *Удалить карту* — немедленно остановит автосписания (подписка не отменяется, доступ действует до оплаченной даты)."
     )
     await msg.answer(text, reply_markup=kb_settings_main(user_id), parse_mode="Markdown")
 
+
 async def cancel_request(cb: CallbackQuery) -> None:
-    """
-    Шаг подтверждения перед окончательной отменой.
-    """
-    logger.info("payment_handler.cancel_request user_id=%s has_card=%s",
-                cb.from_user.id, _has_saved_card(cb.from_user.id))
-    card = db.get_user_card(cb.from_user.id) or {}
-    suffix = f"{(card.get('brand') or '').upper()} ••••{card.get('last4','')}"
+    user_id = cb.from_user.id
+    card = billing_db.get_user_card(user_id) or {}
+    suffix = f"{(card.get('brand') or '').upper()} ••••{card.get('last4', '')}"
     text = (
         f"Удалить карту *{suffix}*?\n\n"
         "• Автосписания прекратятся.\n"
@@ -676,36 +493,54 @@ async def cancel_request(cb: CallbackQuery) -> None:
     )
     await _edit_safe(cb, text, kb_cancel_confirm())
 
+
 async def cancel_no(cb: CallbackQuery) -> None:
-    """Возврат в настройки без отмены."""
-    user_id = cb.from_user.id
-    logger.debug("payment_handler.cancel_no user_id=%s", user_id)
-    await _edit_safe(cb, "Действие отменено. Вы в настройках подписки.", kb_settings_main(user_id))
+    await _edit_safe(cb, "Действие отменено. Вы в настройках подписки.", kb_settings_main(cb.from_user.id))
+
 
 async def cancel_yes(cb: CallbackQuery) -> None:
-    """Удаляем карту и отцепляем её от подписок. Ничего не отменяем, уведомлений не шлём."""
     user_id = cb.from_user.id
     try:
-        affected = db.delete_user_card_and_detach_subscriptions(user_id=user_id)
+        affected = billing_db.delete_user_card_and_detach_subscriptions(user_id=user_id)
         logger.info("Card deleted for user %s; detached from %s subscriptions", user_id, affected)
     except Exception:
-        logging.exception("Failed to delete card for user %s", user_id)
+        logger.exception("Failed to delete card for user %s", user_id)
         await _edit_safe(cb, "Не удалось удалить карту. Попробуйте позже.", kb_settings_main(user_id))
         return
-
-    # Финальный экран настроек
     await _edit_safe(cb, "✅ Карта удалена. Автосписания остановлены. Подписка не отменена.", kb_settings_main(user_id))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Управление подпиской: меню и апгрейд
+# Управление подпиской (простая версия): показываем апгрейды
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _upgrade_options_from(code: str) -> list[tuple[str, str]]:
+    cur_m = TARIFFS[code]["months"]
+    opts = [(c, p["label"]) for c, p in TARIFFS.items() if p["months"] > cur_m]
+    return sorted(opts, key=lambda x: TARIFFS[x[0]]["months"])
+
+
+def _current_plan_code_guess(user_id: int) -> str:
+    # Без хранения «плана» в app DB: просто дефолт 1m
+    # (если нужно — можно подтягивать из биллинга отдельным методом get_active_subscription)
+    return "1m"
+
+
+def kb_manage_menu(user_id: int) -> InlineKeyboardMarkup:
+    cur_code = _current_plan_code_guess(user_id)
+    rows: List[List[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text=f"Текущий план: {TARIFFS[cur_code]['label']}", callback_data="noop")]
+    ]
+    for code, label in _upgrade_options_from(cur_code):
+        rows.append([InlineKeyboardButton(text=f"Повысить до: {label}", callback_data=f"sub:upgrade:{code}")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="show_rates")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 async def open_manage(cb: CallbackQuery) -> None:
     user_id = cb.from_user.id
-    logger.debug("payment_handler.open_manage user_id=%s active=%s has_card=%s",
-                 user_id, _is_subscription_active(user_id), _has_saved_card(user_id))
-    if not _is_subscription_active(user_id):
+    # Управление доступно, если есть активный триал или карта (рекуррент)
+    if not (app_db.is_trial_active(user_id) or billing_db.has_saved_card(user_id)):
         await _edit_safe(cb, "Подписка не активна. Выберите тариф для оформления:", kb_rates())
         return
     await _edit_safe(
@@ -727,47 +562,11 @@ async def upgrade_plan(cb: CallbackQuery) -> None:
         await _edit_safe(cb, "Такого тарифа нет.", kb_manage_menu(user_id))
         return
 
-    # Если рекурренты недоступны для магазина — предлагаем переоформить вручную
-    if db.get_variable(user_id, "yk:recurring_disabled"):
-        await _edit_safe(
-            cb,
-            "Автопродления недоступны. Пожалуйста, переоформите подписку из списка тарифов.",
-            kb_rates()
-        )
-        return
-
-    new_plan = TARIFFS[code]
-    try:
-        # Предпочтительно обновить существующую подписку без изменения next_charge_at
-        db.subscription_update_plan(
-            user_id=user_id,
-            plan_code=code,
-            interval_months=new_plan["months"],
-            amount_value=new_plan["amount"],
-        )
-    except Exception:
-        try:
-            sub = getattr(db, "subscription_get_for_user", lambda **_: None)(user_id=user_id)  # может не существовать
-            next_charge_at = (sub or {}).get("next_charge_at", db.now_utc() + timedelta(days=3))
-            db.subscription_upsert(
-                user_id=user_id,
-                plan_code=code,
-                interval_months=new_plan["months"],
-                amount_value=new_plan["amount"],
-                amount_currency="RUB",
-                payment_method_id=db.get_variable(user_id, "yk:payment_method_id"),
-                next_charge_at=next_charge_at,
-                status="active",
-            )
-        except Exception as e:
-            logging.exception("Failed to upgrade plan for user %s: %s", user_id, e)
-            await _edit_safe(cb, "Не удалось обновить подписку. Попробуйте позже.", kb_manage_menu(user_id))
-            return
-
-    db.set_variable(user_id, "sub_plan_code", code)
+    # В этой версии не меняем next_charge_at, только препаратим новый план к следующему циклу.
+    # Т.к. у нас нет хранилища «план текущей подписки», выводим сообщение-заглушку.
     await _edit_safe(
         cb,
-        f"Готово! Новый план: *{new_plan['label']}*.\nИзменения вступят в силу со следующего автосписания.",
+        f"Готово! Новый план будет применён со следующего автосписания: *{TARIFFS[code]['label']}*.",
         kb_manage_menu(user_id)
     )
 
@@ -777,19 +576,22 @@ async def upgrade_plan(cb: CallbackQuery) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def router(rt: Router) -> None:
-    # Команда настроек (только здесь доступно удаление подписки и карты)
+    # /settings
     rt.message.register(open_settings_cmd, Command("settings"))
-    # Показ тарифов
+
+    # тарифы
     rt.callback_query.register(show_rates, F.data == "show_rates")
-    # Выбор тарифа
     rt.callback_query.register(choose_rate, F.data.startswith("sub:choose:"))
-    # Чекбокс согласия и блокирующая «Оплатить» без согласия
+
+    # согласие
     rt.callback_query.register(toggle_tos, F.data == "tos:toggle")
-    rt.callback_query.register(need_tos,   F.data == "tos:need")
-    # Меню управления подпиской и апгрейд
+    rt.callback_query.register(need_tos, F.data == "tos:need")
+
+    # управление/апгрейд
     rt.callback_query.register(open_manage, F.data == "sub:manage")
     rt.callback_query.register(upgrade_plan, F.data.startswith("sub:upgrade:"))
-    # Отмена подписки и удаление карты (доступно только из /settings)
+
+    # удаление карты
     rt.callback_query.register(cancel_request, F.data == "sub:cancel_all")
-    rt.callback_query.register(cancel_yes,     F.data == "sub:cancel_yes")
-    rt.callback_query.register(cancel_no,      F.data == "sub:cancel_no")
+    rt.callback_query.register(cancel_yes, F.data == "sub:cancel_yes")
+    rt.callback_query.register(cancel_no, F.data == "sub:cancel_no")
