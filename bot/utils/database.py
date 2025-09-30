@@ -313,6 +313,17 @@ class AppRepository:
             return 0
         return max(0, int((until - now_utc()).total_seconds() // 3600))
 
+    def list_trial_active_user_ids(self, now: Optional[datetime] = None) -> list[int]:
+        """Все пользователи, у кого активен триал на момент now."""
+        now = to_aware_utc(now or now_utc())
+        with self._session() as s:
+            rows = (
+                s.query(Trial.user_id)
+                .filter(Trial.until_at > now)  # until_at может быть naive — SQL сравнение ок
+                .all()
+            )
+            return [uid for (uid,) in rows]
+
     # --- history ---
     def history_add(self, user_id: int, payload: dict, final_text: str) -> ReviewHistory:
         with self._session() as s, s.begin():
@@ -493,6 +504,9 @@ def is_trial_active(user_id: int) -> bool:
 
 def trial_remaining_hours(user_id: int) -> int:
     return _repo.trial_remaining_hours(user_id)
+
+def list_trial_active_user_ids(now: Optional[datetime] = None) -> list[int]:
+    return _repo.list_trial_active_user_ids(now)
 
 
 # History

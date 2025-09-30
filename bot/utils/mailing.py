@@ -7,13 +7,14 @@ from __future__ import annotations
 import logging
 from typing import Dict, Any, List
 from zoneinfo import ZoneInfo
-from datetime import datetime
+from datetime import datetime, timezone
 
 from aiogram import Bot
 from aiogram.types import InputMediaPhoto, InputMediaVideo
 
 import bot.utils.admin_db as adb
-import bot.utils.database as db
+import bot.utils.database as app_db
+import bot.utils.billing_db as billing_db
 
 MSK = ZoneInfo("Europe/Moscow")
 
@@ -110,6 +111,21 @@ async def broadcast(bot: Bot, mailing: Dict[str, Any], user_ids: List[int]) -> N
             print(f"[mailing] send error to {uid}: {e}")
 
 
+async def send_last_published_to_user(bot: Bot, user_id: int) -> None:
+    """
+    Находит и отправляет пользователю последнюю уже опубликованную рассылку
+    с датой publish_at <= сейчас. Ни в коем случае не «следующую».
+    """
+    now = datetime.now(timezone.utc)
+    m = adb.get_last_published_mailing(now)
+    if not m:
+        return
+    try:
+        await send_to_user(bot, user_id, m)
+    except Exception as e:
+        logging.warning("[mailing] failed to send last published to %s: %s", user_id, e)
+
+
 async def run_mailing_scheduler(bot: Bot) -> None:
     """
     Вызывать из внешнего планировщика (APScheduler/cron).
@@ -125,8 +141,12 @@ async def run_mailing_scheduler(bot: Bot) -> None:
     if not pending:
         return
 
-    user_ids = db.list_active_subscriber_ids(include_grace_days=0)
-    logging.info("[mailing] recipients(from variables)=%s", len(user_ids))
+    # Получатели = активный триал ИЛИ активная подписка (next_charge_at в будущем)
+    now = datetime.now(timezone.utc)
+    trial_ids = set(app_db.list_trial_active_user_ids(now))
+    paid_ids  = set(billing_db.list_active_subscription_user_ids(now))
+    user_ids = sorted(trial_ids | paid_ids)
+    logging.info("[mailing] recipients(trial=%s, paid=%s, total=%s)", len(trial_ids), len(paid_ids), len(user_ids))
 
     if not user_ids:
         for m in pending:

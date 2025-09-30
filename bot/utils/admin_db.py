@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 from typing import Optional, List, Tuple, Any, Dict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from dateutil.relativedelta import relativedelta
@@ -487,6 +487,9 @@ class AdminRepository:
 _repo = AdminRepository(SessionLocal)
 _repo.init_schema()
 
+def _session() -> Session:
+    return SessionLocal()
+
 
 def create_tables():
     _repo.init_schema()
@@ -626,3 +629,37 @@ def get_mailing_counts_map(start_iso: str, end_iso: str, only_pending: bool = Tr
     Обёртка для репозитория. Возвращает {'YYYY-MM-DD': count}.
     """
     return _repo.get_mailing_counts_map(start_iso, end_iso, only_pending)
+
+
+def get_last_published_mailing(before_dt: datetime) -> dict | None:
+    """
+    Возвращает ОДНУ запись рассылки, которая уже была отправлена:
+      mailing_on = 1 AND mailing_completed = 1 AND publish_at <= before_dt
+    Самую близкую к before_dt (максимальный publish_at).
+    Формат возвращаемого dict должен совпадать с форматом из get_pending_mailings().
+    """
+    # ВАЖНО: используем UTC-aware datetime, чтобы не ловить naive/aware-ошибки
+    if before_dt.tzinfo is None:
+        before_dt = before_dt.replace(tzinfo=timezone.utc)
+    else:
+        before_dt = before_dt.astimezone(timezone.utc)
+
+    with _session() as s:
+        row = (
+            s.query(Mailing)  # предполагаем, что модель называется Mailing
+             .filter(
+                 Mailing.mailing_on == 1,
+                 Mailing.mailing_completed == 1,
+                 Mailing.publish_at <= before_dt,
+             )
+             .order_by(Mailing.publish_at.desc())
+             .first()
+        )
+        if not row:
+            return None
+        return {
+            "id": row.id,
+            "content_type": row.content_type,
+            "caption": row.caption,
+            "payload": row.payload,   # dict: для media_group ожидается {"items":[...]}
+        }

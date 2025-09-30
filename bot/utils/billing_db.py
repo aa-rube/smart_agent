@@ -321,6 +321,29 @@ class BillingRepository:
             s.flush()
             return rec.id
 
+    def list_active_subscription_user_ids(self, now: Optional[datetime] = None) -> List[int]:
+        """
+        Все пользователи с активной подпиской, доступной на момент now:
+        status='active' и next_charge_at > now (т.е. оплаченный доступ ещё не истёк).
+        """
+        now = now or now_utc()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        else:
+            now = now.astimezone(timezone.utc)
+        with self._session() as s:
+            rows = (
+                s.query(Subscription.user_id)
+                 .filter(
+                    Subscription.status == "active",
+                    Subscription.next_charge_at != None,   # noqa: E711
+                    Subscription.next_charge_at > now,
+                 )
+                 .group_by(Subscription.user_id)
+                 .all()
+            )
+            return [uid for (uid,) in rows]
+
     # --- retries / attempts ---
     def record_charge_attempt(self, *, subscription_id: int, user_id: int, payment_id: Optional[str], status: str) -> int:
         with self._session() as s, s.begin():
@@ -521,3 +544,7 @@ def payment_log_is_processed(payment_id: str) -> bool:
 
 def payment_log_mark_processed(payment_id: str) -> None:
     _repo.payment_log_mark_processed(payment_id)
+
+# Recipients helper
+def list_active_subscription_user_ids(now: Optional[datetime] = None) -> List[int]:
+    return _repo.list_active_subscription_user_ids(now)

@@ -15,6 +15,7 @@ from bot.config import get_file_path
 from bot.utils import youmoney
 import bot.utils.database as app_db
 import bot.utils.billing_db as billing_db
+from bot.utils.mailing import send_last_published_to_user
 
 logger = logging.getLogger(__name__)
 
@@ -453,6 +454,12 @@ async def _notify_after_payment(bot: Bot, user_id: int, code: str, until_date_is
             await _send_menu_with_logo(bot, user_id)
         except Exception as e:
             logger.warning("Failed to send main menu after payment for user %s: %s", user_id, e)
+        # Финт ушами: сразу после активации кидаем пользователю ближайший
+        # уже отправленный пост (publish_at <= now). ВАЖНО: не следующий.
+        try:
+            await send_last_published_to_user(bot, user_id)
+        except Exception as e:
+            logger.warning("Failed to send last published mailing to %s: %s", user_id, e)
     except Exception as e:
         logger.warning("Failed to notify user %s after payment: %s", user_id, e)
 
