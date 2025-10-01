@@ -1,5 +1,5 @@
-#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\plans.py
-#Всегда пиши код без «поддержки старых версий». Если они есть в коде - удаляй.
+# smart_agent/bot/handlers/plans.py
+# Всегда пиши код без «поддержки старых версий». Если они есть в коде - удаляй.
 
 from __future__ import annotations
 
@@ -177,6 +177,7 @@ async def handle_plan_file(message: Message, state: FSMContext, bot: Bot):
     """
     Получаем файл/ссылку → конвертируем PDF (1 страница) в png → сохраняем → предлагаем стиль визуализации.
     """
+    # Чат-статус
     await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     user_id = message.from_user.id
     image_bytes: bytes | None = None
@@ -234,16 +235,48 @@ async def handle_plan_file(message: Message, state: FSMContext, bot: Bot):
 
 
 async def handle_visualization_style(callback: CallbackQuery, state: FSMContext):
+    """
+    Выбор «скетч/реализм» → показываем экран выбора интерьерного стиля как МЕДИЙНОЕ сообщение,
+    чтобы затем это же сообщение заменить на результат через edit_media.
+    """
     viz_style = "sketch" if callback.data == "viz_sketch" else "realistic"
     await state.update_data(visualization_style=viz_style)
-    await callback.message.edit_text(TEXT_GET_STYLE, reply_markup=kb_style_choices())
+
+    try:
+        media = InputMediaPhoto(
+            media=FSInputFile(get_file_path('img/bot/plan.png')),
+            caption=TEXT_GET_STYLE
+        )
+        await callback.message.edit_media(media=media, reply_markup=kb_style_choices())
+    except TelegramBadRequest:
+        # если сообщение было текстом и заменить нельзя — удаляем и отправляем новое фото
+        try:
+            await callback.message.delete()
+        except TelegramBadRequest:
+            pass
+        await callback.bot.send_photo(
+            chat_id=callback.message.chat.id,
+            photo=FSInputFile(get_file_path('img/bot/plan.png')),
+            caption=TEXT_GET_STYLE,
+            reply_markup=kb_style_choices(),
+        )
+
     await state.set_state(FloorPlanStates.waiting_for_style)
+    # важно: без popup-текста, чтобы не было всплывашки
     await callback.answer()
 
 
 async def handle_style_plan(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    """Финиш: собрали viz+style → генерируем картинку из плана."""
-    await callback.answer("Принято! Начинаю генерацию...")
+    """
+    Финиш: собрали viz+style → генерируем картинку из плана.
+    Логика:
+      - без pop-up;
+      - редактируем текущее сообщение на «⏳...»;
+      - показываем chat action;
+      - по готовности заменяем ЭТО ЖЕ сообщение на фото-результат (+кнопка «Загрузить другой план»).
+    """
+    # НЕ показываем pop-up
+    await callback.answer()
 
     user_id = callback.from_user.id
     data = await state.get_data()
@@ -263,12 +296,14 @@ async def handle_style_plan(callback: CallbackQuery, state: FSMContext, bot: Bot
         now = datetime.now(timezone.utc)
         reset_dt = datetime.fromtimestamp(reset_at, tz=timezone.utc)
         delta = reset_dt - now
-        # красивый текст ETA
         total_min = max(1, int(delta.total_seconds() // 60))
-        hours = total_min // 60
-        mins = total_min % 60
+        hours, mins = divmod(total_min, 60)
         eta_text = (f"{hours} ч. {mins} мин." if hours else f"{mins} мин.")
-        await _edit_text_or_caption(callback.message, f"⛔ Дневной лимит исчерпан.\nВы сможете запустить генерацию снова через ~{eta_text}.", kb=kb_back_to_tools())
+        await _edit_text_or_caption(
+            callback.message,
+            f"⛔ Дневной лимит исчерпан.\nВы сможете запустить генерацию снова через ~{eta_text}.",
+            kb=kb_back_to_tools()
+        )
         await state.clear()
         return
 
@@ -283,10 +318,16 @@ async def handle_style_plan(callback: CallbackQuery, state: FSMContext, bot: Bot
         interior_style=interior_style
     )
 
-    await _edit_text_or_caption(callback.message, "⏳ Генерирую визуализацию… Это может занять до 1–2 минут.")
+    # 1) «Часики» — редактируем текущее сообщение
+    await _edit_text_or_caption(
+        callback.message,
+        "⏳ Генерирую визуализацию… Это может занять до 1–2 минут.",
+        kb=None,
+    )
 
     success = False
     try:
+        # 2) чат-статус во время долгой операции
         coro = generate_floor_plan(floor_plan_path=plan_path, prompt=prompt)
         image_url = await run_long_operation_with_action(
             bot=bot,
@@ -295,33 +336,33 @@ async def handle_style_plan(callback: CallbackQuery, state: FSMContext, bot: Bot
             coro=coro
         )
 
+        # 3) по готовности — ЗАМЕНЯЕМ это же сообщение на фото-результат
         if image_url:
-            # Обновляем исходное сообщение - убираем клавиатуру и меняем текст
             try:
-                await callback.message.edit_text("✅ Генерация завершена. Результат ниже 👇", reply_markup=None)
+                media = InputMediaPhoto(media=image_url, caption=TEXT_FINAL)
+                await callback.message.edit_media(media=media, reply_markup=kb_result_back())
             except TelegramBadRequest:
-                # Если не получилось отредактировать (например, было фото), просто убираем клавиатуру
-                await callback.message.edit_reply_markup(reply_markup=None)
-            
-            # Отправляем результат в новом сообщении
-            await bot.send_photo(chat_id=user_id, photo=image_url, caption=TEXT_FINAL, reply_markup=kb_result_back())
+                # фоллбэк — отправим отдельным сообщением
+                await bot.send_photo(
+                    chat_id=user_id,
+                    photo=image_url,
+                    caption=TEXT_FINAL,
+                    reply_markup=kb_result_back(),
+                )
             success = True
         else:
             await _edit_text_or_caption(callback.message, SORRY_TRY_AGAIN, kb=kb_back_to_tools())
 
     finally:
         if not success and plan_path and os.path.exists(plan_path):
-            if safe_remove(plan_path):
-                print(f"Временный файл удален: {plan_path}")
-            else:
-                print(f"Не удалось удалить временный файл (занят): {plan_path}")
+            safe_remove(plan_path)
         await state.clear()
 
 
 async def handle_plan_back_to_upload(callback: CallbackQuery, state: FSMContext, bot: Bot):
     """
     Кнопка «Назад» с экрана результата:
-    1) убираем клавиатуру у сообщения, где нажали кнопку;
+    1) убираем клавиатуру у сообщения, где нажали кнопку (контент остаётся);
     2) отправляем новое сообщение с экраном «загрузите план»;
     3) переводим стейт в ожидание файла.
     """
