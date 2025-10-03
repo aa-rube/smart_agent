@@ -409,9 +409,9 @@ class BillingRepository:
             blocked_ids_failed6 = {
                 sub_id for (sub_id,) in
                 s.query(ChargeAttempt.subscription_id)
-                 .filter(ChargeAttempt.status.in_(("canceled", "expired")))
+                 .filter(ChargeAttempt.status.in_(('canceled', 'expired')))
                  .group_by(ChargeAttempt.subscription_id)
-                 .having(text("COUNT(*) >= 6"))
+                 .having(text('COUNT(*) >= 6'))
                  .all()
             }
 

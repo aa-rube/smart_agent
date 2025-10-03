@@ -5,7 +5,7 @@ from typing import Optional, Dict
 from yookassa.domain.exceptions.forbidden_error import ForbiddenError
 from yookassa import Configuration, Payment
 from bot.config import YOUMONEY_SHOP_ID, YOUMONEY_SECRET_KEY
-from bot.utils import database as db
+import bot.utils.billing_db as billing_db
 
 Configuration.account_id = YOUMONEY_SHOP_ID
 Configuration.secret_key = YOUMONEY_SECRET_KEY
@@ -77,7 +77,8 @@ def charge_saved_method(
       - phase=renewal
       - subscription_id (если передан)
 
-    ВАЖНО (политика ретраев обеспечивается на уровне billing_db.subscriptions_due):
+    ВАЖНО (политика ретраев обеспечивается на уровне billing_db.subscriptions_due,
+    а запись «created» — ТОЛЬКО в billing_db):
       - не более 2 автосписаний в сутки с минимальным интервалом 12 часов,
       - не более 6 НЕуспешных попыток (canceled/expired) за всё время по подписке.
     Запись о попытке создаётся сразу (status='created'); финальный статус
@@ -102,10 +103,10 @@ def charge_saved_method(
         "metadata": md,
     }
     payment = Payment.create(body, uuid.uuid4())
-    # зафиксируем попытку списания (даже если затем вебхук сообщит об отмене)
+    # зафиксируем попытку списания в ЕДИНОМ биллинговом репозитории
     try:
         if subscription_id is not None:
-            db.record_charge_attempt(
+            billing_db.record_charge_attempt(
                 subscription_id=subscription_id,
                 user_id=user_id,
                 payment_id=payment.id,

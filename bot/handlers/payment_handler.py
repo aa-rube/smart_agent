@@ -311,7 +311,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
         if not ok:
             return 200, f"duplicate/no-op status={status_lc}"
 
-        # помечаем попытку списания, если где-то создавали (не критично)
+        # помечаем попытку списания в billing_db (статусы created -> succeeded/canceled/expired)
         try:
             if payment_id and status in ("succeeded", "canceled", "expired"):
                 billing_db.mark_charge_attempt_status(payment_id=payment_id,
