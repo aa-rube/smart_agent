@@ -76,7 +76,12 @@ def charge_saved_method(
       - is_recurring=1
       - phase=renewal
       - subscription_id (если передан)
-    Также пишется запись о попытке списания в БД для ограничения ретраев.
+
+    ВАЖНО (политика ретраев обеспечивается на уровне billing_db.subscriptions_due):
+      - не более 2 автосписаний в сутки с минимальным интервалом 12 часов,
+      - не более 6 НЕуспешных попыток (canceled/expired) за всё время по подписке.
+    Запись о попытке создаётся сразу (status='created'); финальный статус
+    помечается по вебхуку (succeeded/canceled/expired).
     """
     md = {
         "user_id": str(user_id),

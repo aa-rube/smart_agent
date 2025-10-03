@@ -364,8 +364,12 @@ class BillingRepository:
         else:
             now = now.astimezone(timezone.utc)
 
-        short_cooldown = timedelta(minutes=30)
-        long_window = timedelta(hours=24)
+        # Новая политика ретраев автосписаний:
+        # 1) Не чаще 2-х попыток в сутки (окно 24h).
+        # 2) Минимальный интервал между попытками — 12 часов.
+        # 3) Максимум 6 НЕуспешных попыток за всё время (status IN ('canceled','expired')).
+        window_24h = timedelta(hours=24)
+        min_gap = timedelta(hours=12)
 
         with self._session() as s:
             q = (
@@ -380,29 +384,45 @@ class BillingRepository:
                 .limit(limit * 3)
             )
             subs = list(q)
-
-            since_long = now - long_window
-            blocked_ids_long = {
+            # Ограничение 2 попытки в сутки
+            since_24h = now - window_24h
+            blocked_ids_day2 = {
                 sub_id for (sub_id,) in
                 s.query(ChargeAttempt.subscription_id)
-                 .filter(ChargeAttempt.attempted_at >= since_long)
+                 .filter(ChargeAttempt.attempted_at >= since_24h)
                  .group_by(ChargeAttempt.subscription_id)
                  .having(text("COUNT(*) >= 2"))
                  .all()
             }
 
-            since_short = now - short_cooldown
-            blocked_ids_short = {
+            # Минимальный интервал 12 часов (любая последняя попытка, независимо от статуса)
+            since_12h = now - min_gap
+            blocked_ids_gap12h = {
                 sub_id for (sub_id,) in
                 s.query(ChargeAttempt.subscription_id)
-                 .filter(ChargeAttempt.attempted_at >= since_short)
+                 .filter(ChargeAttempt.attempted_at >= since_12h)
                  .group_by(ChargeAttempt.subscription_id)
+                 .all()
+            }
+
+            # Лимит 6 НЕуспешных попыток за всё время
+            blocked_ids_failed6 = {
+                sub_id for (sub_id,) in
+                s.query(ChargeAttempt.subscription_id)
+                 .filter(ChargeAttempt.status.in_(("canceled", "expired")))
+                 .group_by(ChargeAttempt.subscription_id)
+                 .having(text("COUNT(*) >= 6"))
                  .all()
             }
 
             items: List[Dict[str, Any]] = []
             for rec in subs:
-                if rec.id in blocked_ids_long or rec.id in blocked_ids_short:
+                # Пропускаем, если нарушает любой из лимитов
+                if (
+                    rec.id in blocked_ids_day2
+                    or rec.id in blocked_ids_gap12h
+                    or rec.id in blocked_ids_failed6
+                ):
                     continue
                 items.append({
                     "id": rec.id,
