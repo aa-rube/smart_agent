@@ -70,10 +70,20 @@ class Subscription(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")   # active|canceled
     next_charge_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     last_charge_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # новый слой защиты ретраев:
+    last_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # троттлинг уведомлений:
+    last_fail_notice_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     cancel_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+
+    __table_args__ = (
+        # быстрые выборки по дью и статусам
+        {'sqlite_autoincrement': True},
+    )
 
 
 class PaymentMethod(Base):
@@ -110,6 +120,10 @@ class ChargeAttempt(Base):
     payment_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # id платежа у провайдера
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="created")  # created|succeeded|canceled|expired
     attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    __table_args__ = (
+        # для быстрых окон по попыткам
+        {},
+    )
 
 
 class PaymentLog(Base):
@@ -136,6 +150,44 @@ class PaymentLog(Base):
 # =========================
 def init_schema() -> None:
     Base.metadata.create_all(bind=engine)
+    # Миграционно-безопасные добавления (Postgres/SQLite совместимые TRY)
+    with engine.begin() as conn:
+        # subscriptions: last_attempt_at, consecutive_failures, last_fail_notice_at
+        try:
+            conn.execute(text("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ"))
+        except Exception:
+            try:
+                conn.execute(text("ALTER TABLE subscriptions ADD COLUMN last_attempt_at TIMESTAMPTZ"))
+            except Exception:
+                pass
+        try:
+            conn.execute(text("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER NOT NULL DEFAULT 0"))
+        except Exception:
+            try:
+                conn.execute(text("ALTER TABLE subscriptions ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0"))
+            except Exception:
+                pass
+        try:
+            conn.execute(text("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS last_fail_notice_at TIMESTAMPTZ"))
+        except Exception:
+            try:
+                conn.execute(text("ALTER TABLE subscriptions ADD COLUMN last_fail_notice_at TIMESTAMPTZ"))
+            except Exception:
+                pass
+        # индексы на subscriptions
+        try:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_sub_status_next ON subscriptions (status, next_charge_at)"))
+        except Exception:
+            pass
+        try:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_sub_user_status ON subscriptions (user_id, status)"))
+        except Exception:
+            pass
+        # индекс на attempts: (subscription_id, attempted_at)
+        try:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_attempt_sub_time ON charge_attempts (subscription_id, attempted_at)"))
+        except Exception:
+            pass
 
 
 class BillingRepository:
@@ -144,6 +196,46 @@ class BillingRepository:
 
     def _session(self) -> Session:
         return self._session_factory()
+
+    def precharge_guard_and_attempt(self, *, subscription_id: int, now: datetime, user_id: int) -> Optional[int]:
+        """
+        В одной транзакции: перечитать подписку FOR UPDATE, проверить щиты,
+        записать ChargeAttempt(status='created'), обновить last_attempt_at.
+        Возвращает id попытки или None, если щит не пропустил.
+        """
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        with self._session() as s, s.begin():
+            rec: Subscription | None = s.query(Subscription).with_for_update().filter(Subscription.id == subscription_id).one_or_none()
+            if rec is None or rec.status != "active" or rec.payment_method_id is None:
+                return None
+            # щит: макс фейлов
+            if (rec.consecutive_failures or 0) >= 6:
+                return None
+            # щит: пауза 12ч
+            if rec.last_attempt_at is not None and (now - rec.last_attempt_at) < timedelta(hours=12):
+                return None
+            # щит: 2 попытки/24ч
+            since_24h = now - timedelta(hours=24)
+            cnt_24h = s.query(ChargeAttempt).filter(
+                ChargeAttempt.subscription_id == subscription_id,
+                ChargeAttempt.attempted_at >= since_24h
+            ).count()
+            if cnt_24h >= 2:
+                return None
+            # записываем попытку и след на подписке
+            attempt = ChargeAttempt(subscription_id=subscription_id, user_id=user_id, payment_id=None, status="created", attempted_at=now)
+            s.add(attempt)
+            rec.last_attempt_at = now
+            rec.updated_at = now
+            s.flush()
+            return attempt.id
+
+    def link_payment_to_attempt(self, *, attempt_id: int, payment_id: str) -> None:
+        with self._session() as s, s.begin():
+            rec = s.query(ChargeAttempt).filter(ChargeAttempt.id == attempt_id).one_or_none()
+            if rec:
+                rec.payment_id = payment_id
 
     # --- cards ---
     def has_saved_card(self, user_id: int) -> bool:
@@ -417,7 +509,14 @@ class BillingRepository:
 
             items: List[Dict[str, Any]] = []
             for rec in subs:
-                # Пропускаем, если нарушает любой из лимитов
+                # Быстрые проверки на самой подписке — второй щит
+                if rec.consecutive_failures is not None and rec.consecutive_failures >= 6:
+                    # skip: max failures reached (>=6)
+                    continue
+                if rec.last_attempt_at is not None and (now - rec.last_attempt_at) < min_gap:
+                    # skip: 12h gap not passed
+                    continue
+                # Safety-net по окнам попыток:
                 if (
                     rec.id in blocked_ids_day2
                     or rec.id in blocked_ids_gap12h
@@ -432,6 +531,8 @@ class BillingRepository:
                     "amount_value": rec.amount_value,
                     "amount_currency": rec.amount_currency,
                     "payment_method_id": rec.payment_method_id,
+                    "consecutive_failures": rec.consecutive_failures,
+                    "last_attempt_at": rec.last_attempt_at,
                 })
                 if len(items) >= limit:
                     break
@@ -548,6 +649,12 @@ def record_charge_attempt(*, subscription_id: int, user_id: int, payment_id: Opt
 
 def mark_charge_attempt_status(*, payment_id: str, status: str) -> None:
     _repo.mark_charge_attempt_status(payment_id=payment_id, status=status)
+
+def precharge_guard_and_attempt(*, subscription_id: int, now: datetime, user_id: int) -> Optional[int]:
+    return _repo.precharge_guard_and_attempt(subscription_id=subscription_id, now=now, user_id=user_id)
+
+def link_payment_to_attempt(*, attempt_id: int, payment_id: str) -> None:
+    return _repo.link_payment_to_attempt(attempt_id=attempt_id, payment_id=payment_id)
 
 # Webhooks / Log
 def payment_log_upsert(*, payment_id: str, user_id: Optional[int], amount_value: Optional[str],

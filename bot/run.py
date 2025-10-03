@@ -115,8 +115,16 @@ async def main():
                     amount = sub["amount_value"]
                     plan_code = sub["plan_code"]
 
-                    # Создаём платёж
+                    # Второй щит + атомарная фиксация попытки (created)
                     try:
+                        attempt_id = billing_db.precharge_guard_and_attempt(
+                            subscription_id=sub["id"],
+                            now=now_msk.astimezone(ZoneInfo("UTC")),
+                            user_id=user_id,
+                        )
+                        if not attempt_id:
+                            logging.info("Skip recurring: guard blocked (sub=%s, user=%s)", sub.get("id"), user_id)
+                            continue
                         pay_id = youmoney.charge_saved_method(
                             user_id=user_id,
                             payment_method_id=pm_id,
@@ -124,8 +132,10 @@ async def main():
                             description=f"Подписка {plan_code}",
                             metadata={"is_recurring": "1", "plan_code": plan_code},
                             subscription_id=sub.get("id"),
+                            record_attempt=False,
                         )
-                        logging.info("Recurring charge created: %s (user=%s)", pay_id, user_id)
+                        billing_db.link_payment_to_attempt(attempt_id=attempt_id, payment_id=pay_id)
+                        logging.info("Recurring charge created: %s (user=%s, sub=%s)", pay_id, user_id, sub.get("id"))
                     except Exception as e:
                         logging.exception("Failed to create recurring charge for user %s: %s", user_id, e)
                         continue

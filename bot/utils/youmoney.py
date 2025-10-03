@@ -68,6 +68,7 @@ def charge_saved_method(
     description: str,
     metadata: Optional[Dict[str, str]] = None,
     subscription_id: Optional[int] = None,
+    record_attempt: bool = True,
 ) -> str:
     """
     Создаёт повторное списание по сохранённой карте.
@@ -103,16 +104,16 @@ def charge_saved_method(
         "metadata": md,
     }
     payment = Payment.create(body, uuid.uuid4())
-    # зафиксируем попытку списания в ЕДИНОМ биллинговом репозитории
-    try:
-        if subscription_id is not None:
-            billing_db.record_charge_attempt(
-                subscription_id=subscription_id,
-                user_id=user_id,
-                payment_id=payment.id,
-                status="created",
-            )
-    except Exception:
-        # логируем молча — не должно ронять платеж
-        pass
+    # запись попытки теперь опциональна (по умолчанию True для обратной совместимости)
+    if record_attempt:
+        try:
+            if subscription_id is not None:
+                billing_db.record_charge_attempt(
+                    subscription_id=subscription_id,
+                    user_id=user_id,
+                    payment_id=payment.id,
+                    status="created",
+                )
+        except Exception:
+            pass
     return payment.id

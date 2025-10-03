@@ -107,6 +107,22 @@ def kb_settings_main(user_id: int) -> InlineKeyboardMarkup:
             rows.append([InlineKeyboardButton(text="Статус: автопродление включено", callback_data="noop")])
         else:
             rows.append([InlineKeyboardButton(text="Статус: неактивна", callback_data="noop")])
+    # Доп. строка: статус ретраев (если есть активная подписка)
+    try:
+        from bot.utils.billing_db import SessionLocal, Subscription
+        from sqlalchemy import func
+        with SessionLocal() as s:
+            rec = (
+                s.query(Subscription)
+                .filter(Subscription.user_id == user_id, Subscription.status == "active")
+                .order_by(Subscription.updated_at.desc())
+                .first()
+            )
+            if rec:
+                last_try = rec.last_attempt_at.astimezone(MSK).strftime("%Y-%m-%d %H:%M") if rec.last_attempt_at else "—"
+                rows.append([InlineKeyboardButton(text=f"Ретраи: {rec.consecutive_failures}/6, последняя попытка: {last_try}", callback_data="noop")])
+    except Exception:
+        pass
 
 
     # Кнопка удаления карты
@@ -324,18 +340,37 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             try:
                 user_id_raw = (payload.get("object") or {}).get("metadata", {}).get("user_id")
                 user_id_fail = int(user_id_raw) if user_id_raw is not None else None
+                sub_id_raw = (payload.get("object") or {}).get("metadata", {}).get("subscription_id")
+                sub_id = int(sub_id_raw) if sub_id_raw is not None else None
             except Exception:
-                user_id_fail = None
+                user_id_fail, sub_id = None, None
             if user_id_fail:
                 try:
-                    cover_path = get_file_path("data/img/bot/no_pay.png")
-                    photo = FSInputFile(cover_path)
-                    caption = (
-                        "❌ *Оплата не прошла*\n\n"
-                        "Платёж был отменён или не завершён.\n"
-                        "Если списания не было — попробуйте оплатить снова из раздела тарифов."
-                    )
-                    await bot.send_photo(chat_id=user_id_fail, photo=photo, caption=caption, parse_mode="Markdown")
+                    # троттлинг: не чаще 1 раза за 12ч
+                    can_notice = True
+                    if sub_id:
+                        from bot.utils.billing_db import SessionLocal, Subscription, now_utc
+                        from sqlalchemy import select
+                        with SessionLocal() as s, s.begin():
+                            rec = s.get(Subscription, sub_id)
+                            if rec:
+                                now = now_utc()
+                                if rec.last_fail_notice_at and (now - rec.last_fail_notice_at) < timedelta(hours=12):
+                                    can_notice = False
+                                # инкремент фейлов (не более 6)
+                                rec.consecutive_failures = min((rec.consecutive_failures or 0) + 1, 6)
+                                if can_notice:
+                                    rec.last_fail_notice_at = now
+                                rec.updated_at = now
+                    if can_notice:
+                        cover_path = get_file_path("data/img/bot/no_pay.png")
+                        photo = FSInputFile(cover_path)
+                        caption = (
+                            "❌ *Оплата не прошла*\n\n"
+                            "Платёж был отменён или не завершён.\n"
+                            "Если списания не было — попробуйте оплатить снова из раздела тарифов."
+                        )
+                        await bot.send_photo(chat_id=user_id_fail, photo=photo, caption=caption, parse_mode="Markdown")
                 except Exception as e:
                     logger.warning("Failed to send fail notice to %s: %s", user_id_fail, e)
             return 200, f"fail event={event} status={status}"
@@ -429,6 +464,21 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                 )
             # уведомление с «до …» брать из next_at
             await _notify_after_payment(bot, user_id, code, next_at.date().isoformat())
+            # сброс счётчиков фейлов, обновление last_charge_at выполнено в repo; здесь — обнуление fail-серии на подписке
+            try:
+                from bot.utils.billing_db import SessionLocal, Subscription, now_utc
+                with SessionLocal() as s, s.begin():
+                    rec = (
+                        s.query(Subscription)
+                        .filter(Subscription.user_id == user_id, Subscription.status == "active")
+                        .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
+                        .first()
+                    )
+                    if rec:
+                        rec.consecutive_failures = 0
+                        rec.updated_at = now_utc()
+            except Exception:
+                pass
 
         else:
             # Не рекуррентный кейс (включая trial_tokenless): только триал.
