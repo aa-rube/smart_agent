@@ -135,6 +135,28 @@ async def send_last_published_to_user(bot: Bot, user_id: int) -> None:
         logging.warning("[mailing] failed to send last published to %s: %s", user_id, e)
 
 
+async def send_last_3_published_to_user(bot: Bot, user_id: int) -> None:
+    """
+    Находит и отправляет пользователю ДО 3-х последних уже опубликованных рассылок
+    (publish_at <= сейчас, mailing_on=1, mailing_completed=1).
+    Каждый пост отдельным сообщением. Если постов нет — шлём уведомление.
+    """
+    now = datetime.now(timezone.utc)
+    items = adb.get_last_3_published_mailings(now)
+    if not items:
+        try:
+            await bot.send_message(user_id, "Пока нет доступных постов")
+        except Exception as e:
+            logging.warning("[mailing] failed to notify about empty posts to %s: %s", user_id, e)
+        return
+
+    for m in items:
+        try:
+            await send_to_user(bot, user_id, m)
+        except Exception as e:
+            logging.warning("[mailing] failed to send published id=%s to %s: %s", m.get("id"), user_id, e)
+
+
 async def run_mailing_scheduler(bot: Bot) -> None:
     """
     Вызывать из внешнего планировщика (APScheduler/cron).

@@ -26,7 +26,7 @@ from bot.utils.subscribe_partner_manager import ensure_partner_subs
 from bot.handlers.payment_handler import show_rates as show_rates_handler
 import bot.utils.database as app_db
 import bot.utils.billing_db as billing_db
-from bot.utils.mailing import send_last_published_to_user
+from bot.utils.mailing import send_last_3_published_to_user
 from aiogram.types import User as TgUser
 
 
@@ -331,18 +331,18 @@ async def smm_content(callback: CallbackQuery) -> None:
         except Exception as e:
             logging.warning("Failed to delete triggering message for %s: %s", user_id, e)
 
-        # 2) отправляем последний уже опубликованный пост
+        # 2) отправляем 3 последних уже опубликованных поста (или меньше, если их меньше трёх)
         try:
-            await send_last_published_to_user(callback.bot, user_id)
+            await send_last_3_published_to_user(callback.bot, user_id)
         except Exception as e:
-            logging.warning("Failed to send last published mailing to %s: %s", user_id, e)
+            logging.warning("Failed to send last 3 published mailings to %s: %s", user_id, e)
 
         # 3) короткое сообщение с кнопкой «Назад»
         try:
             await callback.bot.send_message(
                 chat_id=user_id,
-                text="Что бы вернуться в галвное меню нажмите Назад",
-                reply_markup=back_kb()
+                text="Чтобы вернуться в главное меню, нажмите «Назад».",
+                reply_markup=back_kb(),
             )
         except Exception as e:
             logging.warning("Failed to send back prompt to %s: %s", user_id, e)

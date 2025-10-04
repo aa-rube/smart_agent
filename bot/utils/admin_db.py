@@ -631,6 +631,39 @@ def get_mailing_counts_map(start_iso: str, end_iso: str, only_pending: bool = Tr
     return _repo.get_mailing_counts_map(start_iso, end_iso, only_pending)
 
 
+def get_last_3_published_mailings(before_dt: datetime) -> List[dict]:
+    """
+    Возвращает до ТРЁХ последних уже опубликованных постов:
+    mailing_on = 1 AND mailing_completed = 1 AND publish_at <= before_dt
+    Отсортированы по publish_at DESC, лимит 3.
+    """
+    # Приводим момент времени к МСК и формату 'YYYY-MM-DD HH:MM' (в БД publish_at — строка)
+    if before_dt.tzinfo is None:
+        before_dt = before_dt.replace(tzinfo=timezone.utc)
+    msk_iso = before_dt.astimezone(MSK).strftime("%Y-%m-%d %H:%M")
+
+    with _session() as s:
+        rows = (
+            s.query(Mailing)
+             .filter(Mailing.mailing_on == 1)
+             .filter(Mailing.mailing_completed == 1)
+             .filter(Mailing.publish_at <= msk_iso)
+             .order_by(Mailing.publish_at.desc())
+             .limit(3)
+             .all()
+        )
+        out: List[dict] = []
+        for r in rows:
+            out.append({
+                "id": r.id,
+                "publish_at": r.publish_at,
+                "content_type": r.content_type,
+                "caption": r.caption,
+                "payload": _json_load(r.payload),
+            })
+        return out
+
+
 def get_last_published_mailing(before_dt: datetime) -> dict | None:
     """
     Возвращает ОДНУ запись рассылки, которая уже была отправлена:
@@ -661,5 +694,5 @@ def get_last_published_mailing(before_dt: datetime) -> dict | None:
             "id": row.id,
             "content_type": row.content_type,
             "caption": row.caption,
-            "payload": row.payload,   # dict: для media_group ожидается {"items":[...]}
+            "payload": _json_load(row.payload),   # dict: для media_group ожидается {"items":[...]}
         }
