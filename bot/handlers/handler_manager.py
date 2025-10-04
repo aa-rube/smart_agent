@@ -394,9 +394,8 @@ def router(rt: Router) -> None:
     rt.message.register(sub_cmd,  Command("sub"))
     rt.message.register(help_cmd, Command("support"))
     
-    # Универсальный обработчик неизвестных команд (должен быть последним).
-    # Command() без параметров недопустим в aiogram — используем фильтр по тексту.
-    rt.message.register(unknown_command, F.text.startswith("/"))
+    # Универсальный обработчик неизвестных команд (должен быть последним)
+    rt.message.register(unknown_command, Command())
 
     # callbacks
     rt.callback_query.register(ai_tools, F.data == "nav.ai_tools")

@@ -25,6 +25,14 @@ MSK = ZoneInfo("Europe/Moscow")
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
+def to_aware_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """
+    MySQL DATETIME часто «naive». Приводим к aware-UTC для корректной арифметики.
+    """
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
 
 # =========================
 #     ORM Base & Engine
@@ -206,8 +214,9 @@ class BillingRepository:
             # щит: макс фейлов
             if (rec.consecutive_failures or 0) >= 6:
                 return None
-            # щит: пауза 12ч
-            if rec.last_attempt_at is not None and (now - rec.last_attempt_at) < timedelta(hours=12):
+            # щит: пауза 12ч (last_attempt_at может быть naive → нормализуем)
+            last_attempt_aware = to_aware_utc(rec.last_attempt_at)
+            if last_attempt_aware is not None and (now - last_attempt_aware) < timedelta(hours=12):
                 return None
             # щит: 2 попытки/24ч
             since_24h = now - timedelta(hours=24)
@@ -467,9 +476,10 @@ class BillingRepository:
                     Subscription.payment_method_id != None,                  # noqa: E711
                 )
                 .order_by(Subscription.next_charge_at.asc())
+                .limit(limit * 3)
             )
-            # Некоторые драйверы/диалекты не принимают bind-параметры для LIMIT.
-            # Пробуем с LIMIT, при ошибке выполняем без LIMIT и режем в питоне.
+            subs = list(q)
+            # Некоторым диалектам не нравится параметризация LIMIT — подстрахуемся.
             try:
                 subs = list(q.limit(int(limit * 3)))
             except Exception:
@@ -511,7 +521,9 @@ class BillingRepository:
                 if rec.consecutive_failures is not None and rec.consecutive_failures >= 6:
                     # skip: max failures reached (>=6)
                     continue
-                if rec.last_attempt_at is not None and (now - rec.last_attempt_at) < min_gap:
+                # last_attempt_at может быть naive → привести к aware UTC
+                last_attempt_aware = to_aware_utc(rec.last_attempt_at)
+                if last_attempt_aware is not None and (now - last_attempt_aware) < min_gap:
                     # skip: 12h gap not passed
                     continue
                 # Safety-net по окнам попыток:
