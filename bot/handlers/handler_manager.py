@@ -11,6 +11,7 @@ from aiogram import Router, F, Bot
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, Command
+from aiogram.filters.command import CommandObject
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -378,6 +379,11 @@ async def help_cmd(message: Message) -> None:
     await message.answer(HELP, reply_markup=help_kb())
     app_db.event_add(user_id=user_id, text="MAIN_HELP")
 
+async def unknown_command(message: Message) -> None:
+    """Универсальный обработчик неизвестных команд"""
+    await init_user(message)
+    await message.answer("❓ Неизвестная команда. Используйте /start для перехода в главное меню.")
+
 from .clicklog_mw import CallbackClickLogger, MessageLogger
 def router(rt: Router) -> None:
     # messages
@@ -388,6 +394,9 @@ def router(rt: Router) -> None:
     rt.message.register(first_msg, Command("main"))
     rt.message.register(sub_cmd,  Command("sub"))
     rt.message.register(help_cmd, Command("support"))
+    
+    # Универсальный обработчик неизвестных команд (должен быть последним)
+    rt.message.register(unknown_command, Command())
 
     # callbacks
     rt.callback_query.register(ai_tools, F.data == "nav.ai_tools")
