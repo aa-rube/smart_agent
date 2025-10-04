@@ -17,6 +17,9 @@ from . import (
 from .clicklog_mw import CallbackClickLogger, MessageLogger
 
 
+# Порядок роутеров оставляем как есть:
+# subscribe_partner_manager подключается после handler_manager,
+# что позволяет переопределить обработку partners.check
 def register_routers(rt: Router):
     # Глобально вешаем миддлвары логирования для ВСЕХ хендлеров:
     # - TEXT/COMMAND сообщений
@@ -33,8 +36,8 @@ def register_routers(rt: Router):
     # Приоритет 3: Команды платежей
     payment_handler.router(rt)
 
-    # Приоритет 4: Остальные обработчики (только callback и text с фильтрами состояний)
-    # Проверка подписки (кнопка «✅ Проверить подписку»)
+    # Приоритет 4: Остальные обработчики
+    # Проверка подписки (кнопка «✅ Проверить подписку») - partners.check
     subscribe_partner_manager.router(rt)
     description_playbook.router(rt)
     feedback_playbook.router(rt)

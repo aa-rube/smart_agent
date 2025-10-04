@@ -71,6 +71,8 @@ smm_description = ('''
 
 HELP = "🆘 Нажмите на кнопку, чтобы обратиться в поддержку 👇"
 
+get_subscribe = 'Похоже, ещё не на все каналы подписаны 🤏'
+
 # =============================================================================
 # Клавиатуры
 # =============================================================================
@@ -297,10 +299,9 @@ async def ai_tools(callback: CallbackQuery) -> None:
 
 async def check_subscribe_retry(callback: CallbackQuery, bot: Bot) -> None:
     await init_user(callback)
-    user_id = callback.from_user.id
 
     if not await ensure_partner_subs(bot, callback, retry_callback_data="start_retry", columns=2):
-        await callback.answer("Похоже, ещё не на все каналы подписаны 🤏", show_alert=True)
+        await callback.answer(get_subscribe, show_alert=True)
         return
 
     await _replace_with_menu_with_logo(callback)
@@ -382,9 +383,11 @@ def router(rt: Router) -> None:
     rt.message.register(first_msg, Command("main"))
     rt.message.register(sub_cmd,  Command("sub"))
     rt.message.register(help_cmd, Command("support"))
-    
+
 
     # callbacks
     rt.callback_query.register(ai_tools, F.data == "nav.ai_tools")
     rt.callback_query.register(check_subscribe_retry, F.data == "start_retry")
     rt.callback_query.register(smm_content, F.data == "smm_content")
+    
+    # Обработка partners.check теперь полностью в subscribe_partner_manager

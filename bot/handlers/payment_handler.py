@@ -19,6 +19,9 @@ import bot.utils.billing_db as billing_db
 from bot.utils.mailing import send_last_published_to_user
 from bot.utils.redis_repo import yookassa_dedup, invalidate_payment_ok_cache
 
+# Добавляем импорт для использования в subscribe_partner_manager
+from bot.handlers.subscribe_partner_manager import PARTNER_CHECK_CB
+
 logger = logging.getLogger(__name__)
 
 # Локальная константа времени МСК для форматирования дат в UI
