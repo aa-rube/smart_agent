@@ -12,7 +12,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Хост/порт локального API
 EXECUTOR_HOST = os.getenv("EXECUTOR_HOST", "127.0.0.1")
-EXECUTOR_PORT = int(os.getenv("EXECUTOR_PORT", "5001"))
+EXECUTOR_PORT = int(os.getenv("EXECUTOR_PORT"))
 
 # --- Конфиг моделей из окружения ---
 # Формат REF: "owner/model:version_hash"
