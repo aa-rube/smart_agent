@@ -668,22 +668,22 @@ def get_last_published_mailing(before_dt: datetime) -> dict | None:
     """
     Возвращает ОДНУ запись рассылки, которая уже была отправлена:
       mailing_on = 1 AND mailing_completed = 1 AND publish_at <= before_dt
-    Самую близкую к before_dt (максимальный publish_at).
-    Формат возвращаемого dict должен совпадать с форматом из get_pending_mailings().
+    Самую «свежую» к before_dt (максимальный publish_at).
+    ВАЖНО: publish_at хранится в БД как строка 'YYYY-MM-DD HH:MM' в МСК — сравниваем строки.
     """
-    # ВАЖНО: используем UTC-aware datetime, чтобы не ловить naive/aware-ошибки
+    # Приводим момент времени к МСК и формату 'YYYY-MM-DD HH:MM', чтобы сравнение строк было корректным
     if before_dt.tzinfo is None:
         before_dt = before_dt.replace(tzinfo=timezone.utc)
-    else:
-        before_dt = before_dt.astimezone(timezone.utc)
-
+    
+    msk_iso = before_dt.astimezone(MSK).strftime("%Y-%m-%d %H:%M")
+    
     with _session() as s:
         row = (
-            s.query(Mailing)  # предполагаем, что модель называется Mailing
+            s.query(Mailing)
              .filter(
                  Mailing.mailing_on == 1,
                  Mailing.mailing_completed == 1,
-                 Mailing.publish_at <= before_dt,
+                 Mailing.publish_at <= msk_iso,
              )
              .order_by(Mailing.publish_at.desc())
              .first()
@@ -694,5 +694,5 @@ def get_last_published_mailing(before_dt: datetime) -> dict | None:
             "id": row.id,
             "content_type": row.content_type,
             "caption": row.caption,
-            "payload": _json_load(row.payload),   # dict: для media_group ожидается {"items":[...]}
+            "payload": _json_load(row.payload),  # dict: для media_group ожидается {"items":[...]}
         }
