@@ -20,7 +20,7 @@ from aiogram.types import (
 )
 
 from bot.config import get_file_path
-from bot.handlers.subscribe_partner_manager import ensure_partner_subs
+from bot.handlers.subscribe_partner_manager import ensure_partner_subs, PARTNER_CHECK_CB
 from bot.handlers.payment_handler import show_rates as show_rates_handler
 import bot.utils.database as app_db
 import bot.utils.billing_db as billing_db
@@ -272,7 +272,7 @@ async def _edit_or_replace_with_photo_cb(
 async def first_msg(message: Message, bot: Bot) -> None:
     await init_user(message)
     user_id = message.from_user.id
-    if not await ensure_partner_subs(bot, message, retry_callback_data="start_retry", columns=2):
+    if not await ensure_partner_subs(bot, message, retry_callback_data=PARTNER_CHECK_CB, columns=2):
         return
     # главный экран: фото + caption в одном сообщении
     await send_menu_with_logo(bot, user_id)
@@ -300,7 +300,7 @@ async def ai_tools(callback: CallbackQuery) -> None:
 async def check_subscribe_retry(callback: CallbackQuery, bot: Bot) -> None:
     await init_user(callback)
 
-    if not await ensure_partner_subs(bot, callback, retry_callback_data="start_retry", columns=2):
+    if not await ensure_partner_subs(bot, callback, retry_callback_data=PARTNER_CHECK_CB, columns=2):
         await callback.answer(get_subscribe, show_alert=True)
         return
 
