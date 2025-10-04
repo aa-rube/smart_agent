@@ -1,5 +1,4 @@
 # C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\summary_playbook.py
-#Всегда пиши код без «поддержки старых версий». Если они есть в коде - удаляй.
 
 import os
 from typing import List, Optional, Dict

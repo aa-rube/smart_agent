@@ -311,14 +311,13 @@ async def smm_content(callback: CallbackQuery) -> None:
     await init_user(callback)
     user_id = callback.from_user.id
 
-    # Проверяем доступ: активный триал ИЛИ активная подписка на текущий момент
-    has_access = False
+    # Короткая проверка доступа: активный триал ИЛИ есть привязанная (не удалённая) карта
+    # (без сложных выборок и дат, «1 раз — да/нет»)
     try:
-        now = datetime.now(timezone.utc)
-        active_paid_ids = set(billing_db.list_active_subscription_user_ids(now))
-        has_access = app_db.is_trial_active(user_id) or (user_id in active_paid_ids)
+        has_access = app_db.is_trial_active(user_id) or billing_db.has_saved_card(user_id)
     except Exception as e:
         logging.warning("Access check failed for %s: %s", user_id, e)
+        has_access = False
 
     if has_access:
         # ── ПРОСЬБА: «либо-либо» → шлём пост вместо экрана SMM ──
