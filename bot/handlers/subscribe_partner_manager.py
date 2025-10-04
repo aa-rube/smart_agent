@@ -12,6 +12,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram import Router, F
 
 from bot.config import PARTNER_CHANNELS
+from bot.handlers.payment_handler import build_trial_offer
 
 
 # статусы, трактуемые как "подписан"
@@ -218,9 +219,10 @@ async def partner_check_cb(callback: CallbackQuery, bot: Bot) -> None:
         columns=1,
     )
     if ok:
-        # Ничего не ломаем: даём короткий тост, далее внешний сценарий может
-        # запустить активацию триала/следующий шаг
-        await callback.answer("Подписка подтверждена ✅")
+        # Подписка подтверждена — сразу предлагаем оффер «3 дня за 1 ₽»
+        await callback.answer("Подписка подтверждена ✅", show_alert=False)
+        text, kb = build_trial_offer(callback.from_user.id)
+        await _edit_text_or_caption(callback.message, text, kb)
 
 
 def router(rt: Router) -> None:
