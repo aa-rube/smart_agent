@@ -190,17 +190,22 @@ async def run_mailing_scheduler(bot: Bot) -> None:
     Шлёт подписчикам и помечает как выполненные.
     """
     pending = adb.get_pending_mailings()
-    logging.info("[mailing] %s pending at %s MSK", len(pending), datetime.now(MSK).strftime("%Y-%m-%d %H:%M:%S"))
+    logging.info(
+        "[mailing] pending=%s at %s MSK",
+        len(pending),
+        datetime.now(MSK).strftime("%Y-%m-%d %H:%M:%S"),
+    )
 
     if not pending:
         return
 
     # Получатели = активный триал ИЛИ активная подписка (next_charge_at в будущем)
-    now = datetime.now(timezone.utc)
-    trial_ids = set(app_db.list_trial_active_user_ids(now))
-    paid_ids  = set(billing_db.list_active_subscription_user_ids(now))
-    user_ids = sorted(trial_ids | paid_ids)
-    logging.info("[mailing] recipients(trial=%s, paid=%s, total=%s)", len(trial_ids), len(paid_ids), len(user_ids))
+    now_utc = datetime.now(timezone.utc)
+    user_ids = _collect_recipients(now_utc)
+    logging.info(
+        "[mailing] recipients total=%s",
+        len(user_ids),
+    )
 
     if not user_ids:
         for m in pending:
@@ -212,3 +217,27 @@ async def run_mailing_scheduler(bot: Bot) -> None:
         await broadcast(bot, m, user_ids)
         adb.mark_mailing_completed(m["id"])
         logging.info("[mailing] completed id=%s", m["id"])
+
+
+def _collect_recipients(now_utc: datetime) -> List[int]:
+    """
+    Возвращает отсортированный список user_id, которые должны получить рассылку «на сейчас»:
+    пользователи с активным триалом ИЛИ с активной подпиской.
+    Вход: now_utc — aware datetime в UTC.
+    """
+    try:
+        trial_ids = set(app_db.list_trial_active_user_ids(now_utc))
+    except Exception:
+        logging.exception("[mailing] list_trial_active_user_ids failed")
+        trial_ids = set()
+    try:
+        paid_ids = set(billing_db.list_active_subscription_user_ids(now_utc))
+    except Exception:
+        logging.exception("[mailing] list_active_subscription_user_ids failed")
+        paid_ids = set()
+    all_ids = sorted(trial_ids | paid_ids)
+    # подробный лог только при наличии получателей (чтобы не засорять)
+    if all_ids:
+        logging.info("[mailing] recipients breakdown: trial=%s, paid=%s, total=%s",
+                     len(trial_ids), len(paid_ids), len(all_ids))
+    return all_ids

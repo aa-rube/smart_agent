@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import create_engine, String, Integer, Text, func
+from sqlalchemy import create_engine, String, Integer, Text, func, DateTime as _DT, Boolean as _Bool
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session
 
 MSK = ZoneInfo("Europe/Moscow")
@@ -73,6 +73,17 @@ class NotificationMessage(Base):
 
     days_before: Mapped[int] = mapped_column(Integer, primary_key=True)
     message: Mapped[str] = mapped_column(Text)  # текст уведомления может быть длинным
+
+
+class MailingEvent(Base):
+    __tablename__ = "mailing_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mailing_post_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    date: Mapped[str] = mapped_column(String(19), nullable=False)  # 'YYYY-MM-DD HH:MM:SS' (храним строкой для единообразия)
+    user_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    user_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    success: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # 0/1
 
 
 # =========================
@@ -482,6 +493,22 @@ class AdminRepository:
             )
         return [r[0] for r in rows]
 
+    def add_mailing_event(self, *, mailing_post_id: int, at_dt: datetime, user_id: int,
+                          user_name: Optional[str], success: bool) -> None:
+        """Лёгкая телеметрия отправок: одна строка на одну попытку отправки."""
+        # форматируем под наш общий стиль строковых дат (МСК)
+        if at_dt.tzinfo is None:
+            at_dt = at_dt.replace(tzinfo=timezone.utc)
+        msk_str = at_dt.astimezone(MSK).strftime("%Y-%m-%d %H:%M:%S")
+        with self._s() as s, s.begin():
+            s.add(MailingEvent(
+                mailing_post_id=mailing_post_id,
+                date=msk_str,
+                user_id=int(user_id),
+                user_name=user_name or None,
+                success=1 if success else 0,
+            ))
+
 
 # Глобальный репозиторий + совместимые функции
 _repo = AdminRepository(SessionLocal)
@@ -689,3 +716,9 @@ def get_last_published_mailing(before_dt: datetime) -> dict | None:
             "caption": row.caption,
             "payload": _json_load(row.payload),  # dict: для media_group ожидается {"items":[...]}
         }
+
+
+def add_mailing_event(*, mailing_post_id: int, at_dt: datetime, user_id: int,
+                      user_name: Optional[str], success: bool) -> None:
+    _repo.add_mailing_event(mailing_post_id=mailing_post_id, at_dt=at_dt,
+                            user_id=user_id, user_name=user_name, success=success)

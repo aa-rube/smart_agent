@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Dict, Optional, Tuple, List
 
 from aiogram import Router, F, Bot
@@ -19,6 +20,9 @@ from bot.utils.mailing import send_last_published_to_user
 from bot.utils.redis_repo import yookassa_dedup
 
 logger = logging.getLogger(__name__)
+
+# Локальная константа времени МСК для форматирования дат в UI
+MSK = ZoneInfo("Europe/Moscow")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ТАРИФЫ
@@ -67,6 +71,20 @@ _LAST_PAY_HEADER: dict[int, str] = {}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# TIME HELPERS
+# ──────────────────────────────────────────────────────────────────────────────
+def _to_msk_str(dt: Optional[datetime]) -> str:
+    """Возвращает dt в МСК 'YYYY-MM-DD HH:MM'. Если dt None — '—'.
+    Если dt naive — считаем, что это UTC.
+    """
+    if not dt:
+        return "—"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(MSK).strftime("%Y-%m-%d %H:%M")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # КЛАВИАТУРЫ
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -103,14 +121,20 @@ def kb_settings_main(user_id: int) -> InlineKeyboardMarkup:
     if trial_line:
         rows.append([InlineKeyboardButton(text=trial_line, callback_data="noop")])
     else:
-        if billing_db.has_saved_card(user_id):
-            rows.append([InlineKeyboardButton(text="Статус: автопродление включено", callback_data="noop")])
-        else:
-            rows.append([InlineKeyboardButton(text="Статус: неактивна", callback_data="noop")])
+        has_card = False
+        try:
+            has_card = billing_db.has_saved_card(user_id)
+        except Exception:
+            has_card = False
+        rows.append([
+            InlineKeyboardButton(
+                text=("Статус: автопродление включено" if has_card else "Статус: неактивна"),
+                callback_data="noop"
+            )
+        ])
     # Доп. строка: статус ретраев (если есть активная подписка)
     try:
         from bot.utils.billing_db import SessionLocal, Subscription
-        from sqlalchemy import func
         with SessionLocal() as s:
             rec = (
                 s.query(Subscription)
@@ -119,14 +143,18 @@ def kb_settings_main(user_id: int) -> InlineKeyboardMarkup:
                 .first()
             )
             if rec:
-                last_try = rec.last_attempt_at.astimezone(MSK).strftime("%Y-%m-%d %H:%M") if rec.last_attempt_at else "—"
-                rows.append([InlineKeyboardButton(text=f"Ретраи: {rec.consecutive_failures}/6, последняя попытка: {last_try}", callback_data="noop")])
+                last_try = _to_msk_str(rec.last_attempt_at)
+                fails = int(rec.consecutive_failures or 0)
+                rows.append([InlineKeyboardButton(
+                    text=f"Ретраи: {fails}/6, последняя попытка: {last_try}",
+                    callback_data="noop"
+                )])
     except Exception:
         pass
 
 
     # Кнопка удаления карты
-    if billing_db.has_saved_card(user_id):
+    if (lambda _uid: (billing_db.has_saved_card(_uid) if hasattr(billing_db, 'has_saved_card') else False))(user_id):
         card = billing_db.get_user_card(user_id) or {}
         suffix = f"{(card.get('brand') or '').upper()} ••••{card.get('last4', '')}"
         rows.append([InlineKeyboardButton(text=f"🗑️ Удалить карту ({suffix})", callback_data="sub:cancel_all")])

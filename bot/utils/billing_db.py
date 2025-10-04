@@ -7,7 +7,8 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
     create_engine, text, inspect,
-    String, Integer, BigInteger, ForeignKey, DateTime, Text
+    String, Integer, BigInteger, ForeignKey, DateTime, Text,
+    or_, and_, exists, select
 )
 from sqlalchemy.orm import (
     DeclarativeBase, Mapped, mapped_column, relationship,
@@ -15,6 +16,7 @@ from sqlalchemy.orm import (
 )
 
 from bot.config import DB_URL  # <— общий DSN для биллинга
+from bot.utils.redis_repo import _redis as _redis_client  # используем уже настроенный Redis из проекта
 import json
 
 MSK = ZoneInfo("Europe/Moscow")
@@ -239,6 +241,85 @@ class BillingRepository:
             rec = s.query(ChargeAttempt).filter(ChargeAttempt.id == attempt_id).one_or_none()
             if rec:
                 rec.payment_id = payment_id
+
+    def list_mailing_eligible_users(self, now: Optional[datetime] = None) -> List[int]:
+        """
+        Пользователи с ПРИВЯЗАННОЙ картой и активной подпиской, у которой не исчерпан лимит фейлов:
+          - subscriptions.status == 'active'
+          - subscriptions.payment_method_id IS NOT NULL  (токен провайдера известен)
+          - subscriptions.consecutive_failures < 6       (или NULL трактуем как 0)
+          - существует PaymentMethod(user_id) с deleted_at IS NULL
+        next_charge_at НЕ проверяем — такие пользователи должны получать контент,
+        даже если платёж просрочен и идут ретраи.
+        """
+        with self._session() as s:
+            sub_q = (
+                s.query(Subscription.user_id)
+                 .filter(
+                     Subscription.status == "active",
+                     Subscription.payment_method_id.isnot(None),
+                     or_(Subscription.consecutive_failures.is_(None), Subscription.consecutive_failures < 6),
+                 )
+                 .group_by(Subscription.user_id)
+                 .subquery()
+            )
+            rows = (
+                s.query(PaymentMethod.user_id)
+                 .filter(
+                     PaymentMethod.deleted_at.is_(None),
+                     PaymentMethod.user_id.in_(select(sub_q.c.user_id)),
+                 )
+                 .group_by(PaymentMethod.user_id)
+                 .all()
+            )
+            return [uid for (uid,) in rows]
+
+    def is_user_payment_ok(self, user_id: int) -> bool:
+        """
+        Быстрая проверка «можно ли слать рассылку» пользователю ИЗ ПЛАТЁЖНОЙ ПЛОСКОСТИ:
+          - есть привязанная карта (не удалена)
+          - есть активная подписка со связанным payment_method_id
+          - consecutive_failures < 6
+        Результат кэшируется в Redis на 3 часа (ключ: payment_ok:{user_id}).
+        """
+        key = f"payment_ok:{user_id}"
+        try:
+            cached = _redis_client and _redis_client.sync_get(key)  # redis>=5: есть sync_* методы у клиента
+        except Exception:
+            cached = None
+
+        if cached is not None:
+            return str(cached) == "1"
+
+        with self._session() as s:
+            has_card = (
+                s.query(PaymentMethod.id)
+                 .filter(PaymentMethod.user_id == user_id, PaymentMethod.deleted_at.is_(None))
+                 .first()
+                is not None
+            )
+            if not has_card:
+                ok = False
+            else:
+                ok = (
+                    s.query(Subscription.id)
+                     .filter(
+                         Subscription.user_id == user_id,
+                         Subscription.status == "active",
+                         Subscription.payment_method_id.isnot(None),
+                         or_(Subscription.consecutive_failures.is_(None), Subscription.consecutive_failures < 6),
+                     )
+                     .first()
+                    is not None
+                )
+
+        # кэш 3 часа
+        try:
+            if _redis_client:
+                _redis_client.sync_setex(key, 10800, "1" if ok else "0")
+        except Exception:
+            pass
+        return ok
 
     # --- cards ---
     def has_saved_card(self, user_id: int) -> bool:
@@ -685,3 +766,9 @@ def payment_log_mark_processed(payment_id: str) -> None:
 # Recipients helper
 def list_active_subscription_user_ids(now: Optional[datetime] = None) -> List[int]:
     return _repo.list_active_subscription_user_ids(now)
+
+def list_mailing_eligible_users(now: Optional[datetime] = None) -> List[int]:
+    return _repo.list_mailing_eligible_users(now)
+
+def is_user_payment_ok(user_id: int) -> bool:
+    return _repo.is_user_payment_ok(user_id)
