@@ -11,10 +11,11 @@ from . import (
     description_playbook,
     feedback_playbook,
     summary_playbook,
-    payment_handler
+    payment_handler,
 )
 
 from .clicklog_mw import CallbackClickLogger, MessageLogger
+
 
 def register_routers(rt: Router):
     # Глобально вешаем миддлвары логирования для ВСЕХ хендлеров:
@@ -25,13 +26,13 @@ def register_routers(rt: Router):
 
     # Приоритет 1: Админские команды
     admin.router(rt)
-    
+
     # Приоритет 2: Основные команды + универсальный обработчик команд
     handler_manager.router(rt)
-    
+
     # Приоритет 3: Команды платежей
     payment_handler.router(rt)
-    
+
     # Приоритет 4: Остальные обработчики (только callback и text с фильтрами состояний)
     # Проверка подписки (кнопка «✅ Проверить подписку»)
     subscribe_partner_manager.router(rt)
