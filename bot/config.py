@@ -1,4 +1,4 @@
-#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\config.py
+# C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\config.py
 import os
 from pathlib import Path
 
@@ -9,12 +9,11 @@ load_dotenv()
 
 EXECUTOR_CALLBACK_TOKEN = os.getenv("EXECUTOR_CALLBACK_TOKEN")
 
-
 # === Директории ===
-CURRENT_FILE = Path(__file__).resolve()         # .../smart_agent/bot/config.py
-BOT_DIR      = CURRENT_FILE.parent              # .../smart_agent/bot
-PROJECT_DIR  = CURRENT_FILE.parents[1]          # .../smart_agent
-WORKSPACE    = PROJECT_DIR.parent               # .../super_bot
+CURRENT_FILE = Path(__file__).resolve()  # .../smart_agent/bot/config.py
+BOT_DIR = CURRENT_FILE.parent  # .../smart_agent/bot
+PROJECT_DIR = CURRENT_FILE.parents[1]  # .../smart_agent
+WORKSPACE = PROJECT_DIR.parent  # .../super_bot
 
 # Целевая папка для БД — соседняя к smart_agent: .../super_bot/smart_agent_bd
 DEFAULT_DB_DIR = WORKSPACE / f"{PROJECT_DIR.name}_bd"
@@ -27,7 +26,6 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_DIR = Path(os.getenv("DB_DIR", str(DEFAULT_DB_DIR))).resolve()
 DB_DIR.mkdir(parents=True, exist_ok=True)
 
-
 # === MySQL Database ===
 MYSQL_HOST = os.getenv("MYSQL_HOST", "null")
 MYSQL_PORT = os.getenv("MYSQL_PORT", "0")
@@ -38,9 +36,9 @@ MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "null")
 MYSQL_ADMIN_DB = os.getenv("MYSQL_ADMIN_DB", "null")
 ADMIN_DB_URL = f"mysql+pymysql://{MYSQL_USER}:{quote_plus(MYSQL_PASSWORD)}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_ADMIN_DB}"
 
-
 # === Токен бота ===
 TOKEN = os.getenv("TOKEN")
+
 
 # === Telegram IDs ===
 
@@ -55,23 +53,22 @@ def _parse_int_list(s: str) -> list[int]:
         ids.append(int(token))
     return ids
 
-ADMIN_IDS           = _parse_int_list(os.getenv("ADMIN_IDS") or os.getenv("ADMIN_ID", ""))
-ADMIN_GROUP_ID      = int(os.getenv("ADMIN_GROUP_ID", "0"))
-CONTENT_CHANNEL_ID  = int(os.getenv("CONTENT_CHANNEL_ID", "0"))
-CONTENT_GROUP_ID    = int(os.getenv("CONTENT_GROUP_ID", "0"))
-# Дополнительные настройки
-PARTNER_CHANNELS=[{"chat_id":"-1002969803274","url":"https://t.me/setrealtora","label":"Сеть Риэлтора"}]
 
+ADMIN_IDS = _parse_int_list(os.getenv("ADMIN_IDS") or os.getenv("ADMIN_ID", ""))
+CONTENT_GROUP_ID = int(os.getenv("CONTENT_GROUP_ID", "0"))
+
+# Дополнительные настройки
+PARTNER_CHANNEL = int(os.getenv("PARTNER_CHANNELS", "0"))
+PARTNER_URL = int(os.getenv("PARTNER_URL", "0"))
+PARTNER_CHANNELS = [{"chat_id": PARTNER_CHANNEL, "url": PARTNER_URL, "label": "Сеть Риэлтора"}]
 
 # --- Новые конфиги для callback от executor ---
 BOT_PUBLIC_BASE_URL = os.getenv("BOT_CALLBACK_BASE_URL", "").rstrip("/")
 EXECUTOR_BASE_URL = os.getenv("EXECUTOR_BASE_URL")
 
-
 # Основная база данных
 MYSQL_DB = os.getenv("MYSQL_DB", "null")
 DB_URL = f"mysql+pymysql://{MYSQL_USER}:{quote_plus(MYSQL_PASSWORD)}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}"
-
 
 YOUMONEY_SHOP_ID = os.getenv("YOUMONEY_SHOP_ID")
 YOUMONEY_SECRET_KEY = os.getenv("YOUMONEY_SECRET_KEY")
@@ -79,7 +76,6 @@ YOUMONEY_PORT = int(os.getenv("YOUMONEY_PORT"))
 
 
 def get_file_path(relative_path: str) -> str:
-
     if not relative_path:
         raise ValueError("relative_path must be a non-empty string")
 
