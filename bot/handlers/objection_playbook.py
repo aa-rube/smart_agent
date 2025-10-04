@@ -363,6 +363,7 @@ async def handle_question(message: Message, state: FSMContext, bot: Bot):
 
         parts = _split_for_telegram(text)
 
+        # Ответ от исполнителя содержит HTML-разметку — рендерим в HTML
         # 3) редактируем НОВОЕ сообщение результатом
         try:
             await bot.edit_message_text(
@@ -370,15 +371,15 @@ async def handle_question(message: Message, state: FSMContext, bot: Bot):
                 message_id=new_anchor_id,
                 text=parts[0],
                 reply_markup=kb_retry(),
-                parse_mode=None
+                parse_mode="HTML"
             )
         except TelegramBadRequest:
             # если нельзя редактировать — шлём новым сообщением
-            await message.answer(parts[0], reply_markup=kb_retry(), parse_mode=None)
+            await message.answer(parts[0], reply_markup=kb_retry(), parse_mode="HTML")
 
         # 4) хвост длинного ответа — отдельными сообщениями
         for p in parts[1:]:
-            await message.answer(p, parse_mode=None)
+            await message.answer(p, parse_mode="HTML")
 
     except Exception:
         # ошибка — показываем retry в ТЕКУЩЕМ новом сообщении
@@ -388,10 +389,10 @@ async def handle_question(message: Message, state: FSMContext, bot: Bot):
                 message_id=new_anchor_id,
                 text=ERROR_TEXT,
                 reply_markup=kb_retry(),
-                parse_mode=None
+                parse_mode="HTML"
             )
         except TelegramBadRequest:
-            await message.answer(ERROR_TEXT, reply_markup=kb_retry(), parse_mode=None)
+            await message.answer(ERROR_TEXT, reply_markup=kb_retry(), parse_mode="HTML")
 
     finally:
         # остаёмся ждать следующего текста
