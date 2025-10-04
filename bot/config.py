@@ -59,7 +59,7 @@ CONTENT_GROUP_ID = int(os.getenv("CONTENT_GROUP_ID", "0"))
 
 # Дополнительные настройки
 PARTNER_CHANNEL = int(os.getenv("PARTNER_CHANNEL", "0"))
-PARTNER_URL = int(os.getenv("PARTNER_URL", "http://t.me"))
+PARTNER_URL = os.getenv("PARTNER_URL", "http://t.me")
 PARTNER_CHANNELS = [{"chat_id": PARTNER_CHANNEL, "url": PARTNER_URL, "label": "Сеть Риэлтора"}]
 
 # --- Новые конфиги для callback от executor ---
