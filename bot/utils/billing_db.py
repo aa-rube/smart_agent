@@ -201,6 +201,46 @@ class BillingRepository:
     def _session(self) -> Session:
         return self._session_factory()
 
+    # ──────────────────────────────────────────────────────────────────────
+    # Trial starts (по факту — момент первой привязки карты)
+    # ──────────────────────────────────────────────────────────────────────
+    def get_trial_started_at(self, user_id: int) -> Optional[datetime]:
+        """
+        Возвращает UTC-время первой привязки карты (created_at первой не-удалённой записи).
+        Это считается стартом триала.
+        """
+        with self._session() as s:
+            rec = (
+                s.query(PaymentMethod.created_at)
+                 .filter(PaymentMethod.user_id == user_id, PaymentMethod.deleted_at.is_(None))
+                 .order_by(PaymentMethod.created_at.asc())
+                 .first()
+            )
+            if not rec:
+                return None
+            dt: datetime = rec[0]
+            return to_aware_utc(dt)
+
+    def list_trial_started_map(self, user_ids: List[int]) -> Dict[int, datetime]:
+        """
+        Для пачки пользователей возвращает {user_id: trial_started_at_utc}.
+        Берём МИНИМАЛЬНЫЙ created_at по не-удалённым картам.
+        """
+        if not user_ids:
+            return {}
+        with self._session() as s:
+            rows = (
+                s.query(PaymentMethod.user_id, PaymentMethod.created_at)
+                 .filter(PaymentMethod.user_id.in_(user_ids), PaymentMethod.deleted_at.is_(None))
+                 .order_by(PaymentMethod.user_id.asc(), PaymentMethod.created_at.asc())
+                 .all()
+            )
+            out: Dict[int, datetime] = {}
+            for uid, created_at in rows:
+                if uid not in out:
+                    out[uid] = to_aware_utc(created_at)
+            return out
+
     def precharge_guard_and_attempt(self, *, subscription_id: int, now: datetime, user_id: int) -> Optional[int]:
         """
         В одной транзакции: перечитать подписку FOR UPDATE, проверить щиты,
@@ -772,3 +812,10 @@ def list_mailing_eligible_users(now: Optional[datetime] = None) -> List[int]:
 
 def is_user_payment_ok(user_id: int) -> bool:
     return _repo.is_user_payment_ok(user_id)
+
+# Trial helpers
+def get_trial_started_at(user_id: int) -> Optional[datetime]:
+    return _repo.get_trial_started_at(user_id)
+
+def list_trial_started_map(user_ids: List[int]) -> Dict[int, datetime]:
+    return _repo.list_trial_started_map(user_ids)

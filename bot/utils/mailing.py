@@ -17,6 +17,7 @@ from sqlalchemy import text as _sa_text
 import bot.utils.admin_db as adb
 import bot.utils.database as app_db
 import bot.utils.billing_db as billing_db
+from bot.utils.redis_repo import _redis as _redis_client, set_nx_with_ttl
 
 
 MSK = ZoneInfo("Europe/Moscow")
@@ -241,3 +242,85 @@ def _collect_recipients(now_utc: datetime) -> List[int]:
         logging.info("[mailing] recipients breakdown: trial=%s, paid=%s, total=%s",
                      len(trial_ids), len(paid_ids), len(all_ids))
     return all_ids
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Trial Engagement D2/D3 (пуши по триалу на 2-й и 3-й день)
+# ──────────────────────────────────────────────────────────────────────────────
+_D2_KEY_FMT = "trial_pushing:{uid}:1"  # Пуш на 24ч
+_D3_KEY_FMT = "trial_pushing:{uid}:2"  # Пуш на 48ч
+_DAYS_TTL_SEC = 14 * 24 * 3600
+
+_TEXT_D2 = "Создай описание объекта за 1 минуту."
+_TEXT_D3 = "Бот делает из убитой хрущевки шедевр! Ты уже пробовал?"
+
+
+async def run_trial_engagement_scheduler(bot: Bot) -> None:
+    """
+    Планировщик пушей «Вовлечение во время триала»:
+      • День 2 → пуш: _TEXT_D2
+      • День 3 → пуш: _TEXT_D3
+
+    Логика анти-спама: ставим маркеры в Redis на 14 дней:
+      trial_pushing:{user_id}:1 — отправлен D2
+      trial_pushing:{user_id}:2 — отправлен D3
+    """
+    now = datetime.now(timezone.utc)
+
+    # Базовый пул – «активные клиенты»: кто в принципе может получать рассылки (карта/подписка ок).
+    try:
+        user_ids = billing_db.list_mailing_eligible_users(now)
+    except Exception:
+        logging.exception("[trial_engagement] list_mailing_eligible_users failed")
+        user_ids = []
+
+    if not user_ids:
+        logging.info("[trial_engagement] no eligible users at %s", now.isoformat())
+        return
+
+    # Время старта триала по первой привязке карты
+    try:
+        started_map = billing_db.list_trial_started_map(user_ids)
+    except Exception:
+        logging.exception("[trial_engagement] list_trial_started_map failed")
+        return
+
+    sent_d2 = 0  # 24h
+    sent_d3 = 0  # 48h
+
+    for uid, started_at in started_map.items():
+        if not started_at:
+            continue
+        hours = (now - started_at).total_seconds() / 3600.0
+
+        # 24 часа (и не отправляли ранее)
+        if hours >= 24:
+            key = _D2_KEY_FMT.format(uid=uid)
+            try:
+                need_send = await set_nx_with_ttl(key, "1", _DAYS_TTL_SEC)
+            except Exception:
+                logging.exception("[trial_engagement] redis setnx 24h failed for %s", uid)
+                need_send = False
+            if need_send:
+                try:
+                    await bot.send_message(uid, _TEXT_D2)
+                    sent_d2 += 1
+                except Exception as e:
+                    logging.warning("[trial_engagement] send 24h to %s failed: %s", uid, e)
+
+        # 48 часов (и не отправляли ранее)
+        if hours >= 48:
+            key = _D3_KEY_FMT.format(uid=uid)
+            try:
+                need_send = await set_nx_with_ttl(key, "1", _DAYS_TTL_SEC)
+            except Exception:
+                logging.exception("[trial_engagement] redis setnx 48h failed for %s", uid)
+                need_send = False
+            if need_send:
+                try:
+                    await bot.send_message(uid, _TEXT_D3, disable_web_page_preview=True)
+                    sent_d3 += 1
+                except Exception as e:
+                    logging.warning("[trial_engagement] send 48h to %s failed: %s", uid, e)
+
+    logging.info("[trial_engagement] done: sent_24h=%s, sent_48h=%s, eligible=%s", sent_d2, sent_d3, len(user_ids))

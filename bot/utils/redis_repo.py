@@ -39,6 +39,19 @@ def _now_ts() -> int:
     return int(time.time())
 
 
+async def set_nx_with_ttl(key: str, value: str = "1", ttl_sec: int = 14 * 24 * 3600) -> bool:
+    """
+    Устанавливает ключ, только если он ещё не существует (NX) + TTL.
+    Возвращает True, если ключ был создан, и False — если уже существовал.
+    """
+    try:
+        # redis>=5 asyncio API: set(..., ex=seconds, nx=True) → True/False
+        return bool(await _redis.set(key, value, ex=ttl_sec, nx=True))
+    except Exception as e:
+        LOG.warning("set_nx_with_ttl(%s) failed: %s", key, e)
+        return False
+
+
 async def invalidate_payment_ok_cache(user_id: int) -> None:
     """
     Сбрасывает кэш платёжной пригодности пользователя.
