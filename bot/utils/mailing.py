@@ -157,9 +157,9 @@ async def send_last_published_to_user(bot: Bot, user_id: int) -> None:
 
 async def send_last_3_published_to_user(bot: Bot, user_id: int) -> bool:
     """
-    Отправляет пользователю последние 3 ФАКТИЧЕСКИ опубликованных поста
-    через единый источник правды — admin_db.
-    Никаких прямых SQL и «поддержки старых версий».
+    Отправляет пользователю последние 3 поста, у которых publish_at <= now (МСК),
+    строго от самого свежего к более ранним; затем — ОДНО сообщение с кнопкой «Назад».
+    Маркеры (mailing_on / mailing_completed) игнорируются.
     """
     now = datetime.now(timezone.utc)
     try:

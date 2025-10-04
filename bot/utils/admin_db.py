@@ -633,8 +633,8 @@ def get_mailing_counts_map(start_iso: str, end_iso: str, only_pending: bool = Tr
 
 def get_last_3_published_mailings(before_dt: datetime) -> List[dict]:
     """
-    Возвращает до ТРЁХ последних уже опубликованных постов:
-    mailing_on = 1 AND mailing_completed = 1 AND publish_at <= before_dt
+    Возвращает до ТРЁХ последних постов с publish_at <= before_dt (МСК).
+    Маркеры (mailing_on / mailing_completed) НЕ учитываем.
     Отсортированы по publish_at DESC, лимит 3.
     """
     # Приводим момент времени к МСК и формату 'YYYY-MM-DD HH:MM' (в БД publish_at — строка)
@@ -645,9 +645,7 @@ def get_last_3_published_mailings(before_dt: datetime) -> List[dict]:
     with _session() as s:
         rows = (
             s.query(Mailing)
-             .filter(Mailing.mailing_on == 1)
-             .filter(Mailing.mailing_completed == 1)
-             .filter(Mailing.publish_at <= msk_iso)
+             .filter(Mailing.publish_at <= msk_iso)      # только прошедшие по времени
              .order_by(Mailing.publish_at.desc())
              .limit(3)
              .all()
@@ -666,10 +664,9 @@ def get_last_3_published_mailings(before_dt: datetime) -> List[dict]:
 
 def get_last_published_mailing(before_dt: datetime) -> dict | None:
     """
-    Возвращает ОДНУ запись рассылки, которая уже была отправлена:
-      mailing_on = 1 AND mailing_completed = 1 AND publish_at <= before_dt
-    Самую «свежую» к before_dt (максимальный publish_at).
-    ВАЖНО: publish_at хранится в БД как строка 'YYYY-MM-DD HH:MM' в МСК — сравниваем строки.
+    Возвращает ОДНУ запись с publish_at <= before_dt (МСК) — самую «свежую» по времени.
+    Маркеры (mailing_on / mailing_completed) НЕ учитываем.
+    ВАЖНО: publish_at хранится строкой 'YYYY-MM-DD HH:MM' в МСК — сравнение по строке.
     """
     # Приводим момент времени к МСК и формату 'YYYY-MM-DD HH:MM', чтобы сравнение строк было корректным
     if before_dt.tzinfo is None:
@@ -680,11 +677,7 @@ def get_last_published_mailing(before_dt: datetime) -> dict | None:
     with _session() as s:
         row = (
             s.query(Mailing)
-             .filter(
-                 Mailing.mailing_on == 1,
-                 Mailing.mailing_completed == 1,
-                 Mailing.publish_at <= msk_iso,
-             )
+             .filter(Mailing.publish_at <= msk_iso)       # только прошедшие по времени
              .order_by(Mailing.publish_at.desc())
              .first()
         )
