@@ -400,12 +400,8 @@ async def handle_question(message: Message, state: FSMContext, bot: Bot):
 # ============================================================================
 # Маршруты
 # ============================================================================
-from .clicklog_mw import CallbackClickLogger, MessageLogger
 
 def router(rt: Router) -> None:
-    # messages
-    rt.message.outer_middleware(MessageLogger())
-    rt.callback_query.outer_middleware(CallbackClickLogger())
 
     # вход в раздел
     rt.callback_query.register(objection_home, F.data == "nav.objection_start")

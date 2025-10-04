@@ -541,13 +541,7 @@ async def open_history_item(callback: CallbackQuery):
     await callback.answer()
 
 # ============= Маршруты =============
-from .clicklog_mw import CallbackClickLogger, MessageLogger
-
 def router(rt: Router) -> None:
-    # messages
-    rt.message.outer_middleware(MessageLogger())
-    rt.callback_query.outer_middleware(CallbackClickLogger())
-
     # вход по требованию
     rt.callback_query.register(summary_home, F.data == "nav.summary_home")
 

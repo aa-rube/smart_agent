@@ -377,11 +377,7 @@ async def help_cmd(message: Message) -> None:
     await message.answer(HELP, reply_markup=help_kb())
     app_db.event_add(user_id=user_id, text="MAIN_HELP")
 
-from .clicklog_mw import CallbackClickLogger, MessageLogger
 def router(rt: Router) -> None:
-    # messages
-    rt.message.outer_middleware(MessageLogger())
-    rt.callback_query.outer_middleware(CallbackClickLogger())
 
     rt.message.register(first_msg, CommandStart())
     rt.message.register(first_msg, Command("main"))

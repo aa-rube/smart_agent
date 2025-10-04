@@ -2,6 +2,7 @@
 from aiogram import Router
 from . import (
     handler_manager,
+    # подключаем миддлвары логирования
     design,
     plans,
     admin,
@@ -12,7 +13,15 @@ from . import (
     payment_handler
 )
 
+from .clicklog_mw import CallbackClickLogger, MessageLogger
+
 def register_routers(rt: Router):
+    # Глобально вешаем миддлвары логирования для ВСЕХ хендлеров:
+    # - TEXT/COMMAND сообщений
+    rt.message.outer_middleware(MessageLogger())
+    # - CallbackQuery
+    rt.callback_query.outer_middleware(CallbackClickLogger())
+
     # Приоритет 1: Админские команды
     admin.router(rt)
     

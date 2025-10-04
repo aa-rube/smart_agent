@@ -1080,13 +1080,8 @@ async def delete_mailing(callback: CallbackQuery):
 # =============================================================================
 # РОУТЕР
 # =============================================================================
-from .clicklog_mw import CallbackClickLogger, MessageLogger
 
 def router(rt: Router) -> None:
-    # messages
-    rt.message.outer_middleware(MessageLogger())
-    rt.callback_query.outer_middleware(CallbackClickLogger())
-
     # Вход только командой; дальше — кнопками
     rt.message.register(admin_menu, Command("admin_menu"))
     rt.callback_query.register(admin_home, F.data == "admin.home")

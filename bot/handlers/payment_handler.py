@@ -174,7 +174,7 @@ def kb_pay_with_consent(*, consent: bool, pay_url: Optional[str]) -> InlineKeybo
     check = "✅ Я ознакомлен и согласен" if consent else "⬜️ Я ознакомлен и согласен"
     rows: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton(text=check, callback_data="tos:toggle")]]
     if consent and pay_url:
-        rows.append([InlineKeyboardButton(text="💳 Оплатить", url=pay_url)])
+        rows.append([InlineKeyboardButton(text="Оформить подписку", url=pay_url)])
 
     rows.append([InlineKeyboardButton(text="⬅️ Выбрать другой тариф", callback_data="show_rates")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -665,12 +665,7 @@ async def upgrade_plan(cb: CallbackQuery) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 # ROUTER
 # ──────────────────────────────────────────────────────────────────────────────
-from .clicklog_mw import CallbackClickLogger, MessageLogger
-
 def router(rt: Router) -> None:
-    # messages
-    rt.message.outer_middleware(MessageLogger())
-    rt.callback_query.outer_middleware(CallbackClickLogger())
 
     # /settings
     rt.message.register(open_settings_cmd, Command("settings"))
