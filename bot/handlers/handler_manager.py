@@ -11,7 +11,6 @@ from aiogram import Router, F, Bot
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, Command
-from aiogram.filters.command import CommandObject
 from aiogram.types import (
     Message,
     CallbackQuery,
@@ -396,7 +395,7 @@ def router(rt: Router) -> None:
     rt.message.register(help_cmd, Command("support"))
     
     # Универсальный обработчик неизвестных команд (должен быть последним).
-    # Command() без параметров в aiogram недопустим — используем фильтр по тексту.
+    # Command() без параметров недопустим в aiogram — используем фильтр по тексту.
     rt.message.register(unknown_command, F.text.startswith("/"))
 
     # callbacks

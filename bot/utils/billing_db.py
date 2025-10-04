@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
-    create_engine, text,
+    create_engine, text, inspect,
     String, Integer, BigInteger, ForeignKey, DateTime, Text
 )
 from sqlalchemy.orm import (
@@ -150,44 +150,38 @@ class PaymentLog(Base):
 # =========================
 def init_schema() -> None:
     Base.metadata.create_all(bind=engine)
-    # Миграционно-безопасные добавления (Postgres/SQLite совместимые TRY)
+    # Нормализованная миграция: проверяем через Inspector и добавляем отсутствующие поля/индексы.
     with engine.begin() as conn:
-        # subscriptions: last_attempt_at, consecutive_failures, last_fail_notice_at
-        try:
-            conn.execute(text("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ"))
-        except Exception:
-            try:
-                conn.execute(text("ALTER TABLE subscriptions ADD COLUMN last_attempt_at TIMESTAMPTZ"))
-            except Exception:
-                pass
-        try:
-            conn.execute(text("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER NOT NULL DEFAULT 0"))
-        except Exception:
-            try:
-                conn.execute(text("ALTER TABLE subscriptions ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0"))
-            except Exception:
-                pass
-        try:
-            conn.execute(text("ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS last_fail_notice_at TIMESTAMPTZ"))
-        except Exception:
-            try:
-                conn.execute(text("ALTER TABLE subscriptions ADD COLUMN last_fail_notice_at TIMESTAMPTZ"))
-            except Exception:
-                pass
-        # индексы на subscriptions
-        try:
-            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_sub_status_next ON subscriptions (status, next_charge_at)"))
-        except Exception:
-            pass
-        try:
-            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_sub_user_status ON subscriptions (user_id, status)"))
-        except Exception:
-            pass
-        # индекс на attempts: (subscription_id, attempted_at)
-        try:
-            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_attempt_sub_time ON charge_attempts (subscription_id, attempted_at)"))
-        except Exception:
-            pass
+        insp = inspect(conn)
+
+        # ---- subscriptions: колонки ----
+        subs_cols = {c["name"] for c in insp.get_columns("subscriptions")}
+        dialect = conn.dialect.name  # 'mysql' | 'postgresql' | 'sqlite' | ...
+
+        # Подбираем типы колонок для разных СУБД (без TIMESTAMPTZ для MySQL/SQLite)
+        dt_type = "TIMESTAMPTZ" if dialect in ("postgresql",) else "DATETIME"
+        int_type = "INTEGER"
+
+        if "last_attempt_at" not in subs_cols:
+            conn.exec_driver_sql(f"ALTER TABLE subscriptions ADD COLUMN last_attempt_at {dt_type} NULL")
+        if "consecutive_failures" not in subs_cols:
+            # MySQL требует DEFAULT прямо в ADD COLUMN
+            default_expr = "DEFAULT 0" if dialect in ("mysql",) else "DEFAULT 0"
+            conn.exec_driver_sql(f"ALTER TABLE subscriptions ADD COLUMN consecutive_failures {int_type} NOT NULL {default_expr}")
+        if "last_fail_notice_at" not in subs_cols:
+            conn.exec_driver_sql(f"ALTER TABLE subscriptions ADD COLUMN last_fail_notice_at {dt_type} NULL")
+
+        # ---- subscriptions: индексы ----
+        subs_indexes = {ix["name"] for ix in insp.get_indexes("subscriptions")}
+        if "idx_sub_status_next" not in subs_indexes:
+            conn.exec_driver_sql("CREATE INDEX idx_sub_status_next ON subscriptions (status, next_charge_at)")
+        if "idx_sub_user_status" not in subs_indexes:
+            conn.exec_driver_sql("CREATE INDEX idx_sub_user_status ON subscriptions (user_id, status)")
+
+        # ---- charge_attempts: индексы ----
+        attempts_indexes = {ix["name"] for ix in insp.get_indexes("charge_attempts")}
+        if "idx_attempt_sub_time" not in attempts_indexes:
+            conn.exec_driver_sql("CREATE INDEX idx_attempt_sub_time ON charge_attempts (subscription_id, attempted_at)")
 
 
 class BillingRepository:
