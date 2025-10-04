@@ -473,9 +473,13 @@ class BillingRepository:
                     Subscription.payment_method_id != None,                  # noqa: E711
                 )
                 .order_by(Subscription.next_charge_at.asc())
-                .limit(limit * 3)
             )
-            subs = list(q)
+            # Некоторые драйверы/диалекты не принимают bind-параметры для LIMIT.
+            # Пробуем с LIMIT, при ошибке выполняем без LIMIT и режем в питоне.
+            try:
+                subs = list(q.limit(int(limit * 3)))
+            except Exception:
+                subs = list(q)
             # Ограничение 2 попытки в сутки
             since_24h = now - window_24h
             blocked_ids_day2 = {
