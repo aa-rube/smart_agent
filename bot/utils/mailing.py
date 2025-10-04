@@ -12,6 +12,7 @@ from html import escape as _html_escape
 
 from aiogram import Bot
 from aiogram.types import InputMediaPhoto, InputMediaVideo
+from sqlalchemy import text as _sa_text
 
 import bot.utils.admin_db as adb
 import bot.utils.database as app_db
@@ -156,27 +157,72 @@ async def send_last_published_to_user(bot: Bot, user_id: int) -> None:
 
 async def send_last_3_published_to_user(bot: Bot, user_id: int) -> bool:
     """
-    Отправляет пользователю последние 3 реально опубликованных поста:
-    берём из Mailings записи с mailing_completed=1, сортируем по publish_at DESC.
-    Параметр mailing_on здесь игнорируем — он про планировщик, а не «пример для пользователя».
+    Отправляет пользователю последние 3 фактически опубликованных поста:
+    Mailings.mailing_completed = 1, сортировка по publish_at DESC.
+    Пытаемся аккуратно работать с тем, что есть в bot.utils.database:
+    1) SessionLocal (ORM сессия)
+    2) engine (Core connect)
+    3) fallback на старую list_available_mailings + фильтрацию
     """
+    rows = []
+    # --- Вариант 1: через ORM-сессию, если есть SessionLocal
     try:
-        # Прямой безопасный запрос через app_db (SQLAlchemy/Core или pymysql — не важно, берём факт публикации)
-        conn = app_db.get_conn()  # должен вернуть sync connection; если у вас async — используйте соответствующий вызов
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, content_type, caption, payload
-                FROM Mailings
-                WHERE mailing_completed = 1
-                ORDER BY publish_at DESC
-                LIMIT 3
-                """
-            )
-            rows = cur.fetchall()
+        SessionLocal = getattr(app_db, "SessionLocal", None)
+        if SessionLocal is not None:
+            with SessionLocal() as s:
+                res = s.execute(
+                    _sa_text(
+                        "SELECT id, content_type, caption, payload "
+                        "FROM Mailings "
+                        "WHERE mailing_completed = 1 "
+                        "ORDER BY publish_at DESC "
+                        "LIMIT 3"
+                    )
+                )
+                rows = [dict(r._mapping) for r in res]  # r._mapping для совместимости с SQLAlchemy 2.x
     except Exception as e:
-        logging.exception("Failed to fetch last published mailings: %s", e)
+        logging.exception("Failed to fetch last published mailings via SessionLocal: %s", e)
         rows = []
+
+    # --- Вариант 2: через engine, если нет SessionLocal или он не сработал
+    if not rows:
+        try:
+            engine = getattr(app_db, "engine", None)
+            if engine is not None:
+                with engine.begin() as conn:
+                    res = conn.execute(
+                        _sa_text(
+                            "SELECT id, content_type, caption, payload "
+                            "FROM Mailings "
+                            "WHERE mailing_completed = 1 "
+                            "ORDER BY publish_at DESC "
+                            "LIMIT 3"
+                        )
+                    )
+                    rows = [dict(r._mapping) for r in res]
+        except Exception as e:
+            logging.exception("Failed to fetch last published mailings via engine: %s", e)
+            rows = []
+
+    # --- Fallback: используем прежний источник и фильтруем только опубликованные
+    if not rows:
+        try:
+            raw = app_db.list_available_mailings(limit=10)  # берём чуть больше и отфильтруем
+            rows = []
+            for r in raw:
+                # r может быть dict/Row/obj — аккуратно извлекаем поля
+                get = (lambda k: (r.get(k) if isinstance(r, dict) else getattr(r, k, None)))
+                if str(get("mailing_completed")) == "1":
+                    rows.append({
+                        "id": get("id"),
+                        "content_type": get("content_type"),
+                        "caption": get("caption"),
+                        "payload": get("payload"),
+                    })
+            rows = sorted(rows, key=lambda x: x.get("id", 0), reverse=True)[:3]
+        except Exception as e:
+            logging.exception("Fallback to list_available_mailings failed: %s", e)
+            rows = []
 
     if not rows:
         await bot.send_message(user_id, "Пока нет доступных постов")
@@ -185,10 +231,12 @@ async def send_last_3_published_to_user(bot: Bot, user_id: int) -> bool:
     sent_any = False
     for r in rows:
         try:
-            await _send_mailing(bot, user_id, r)
+            rec = r if isinstance(r, dict) else dict(r)
+            await _send_mailing(bot, user_id, rec)
             sent_any = True
         except Exception:
-            logging.exception("Failed to send mailing id=%s to user=%s", r.get("id") if isinstance(r, dict) else None, user_id)
+            rid = (r.get("id") if isinstance(r, dict) else getattr(r, "id", None))
+            logging.exception("Failed to send mailing id=%s to user=%s", rid, user_id)
 
     return sent_any
 
