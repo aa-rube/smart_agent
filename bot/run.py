@@ -62,7 +62,6 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", YOUMONEY_PORT)
     await site.start()
-    logging.info("Webhook server started on http://0.0.0.0:" + YOUMONEY_PORT)
 
     #UTC+3
     msk = ZoneInfo("Europe/Moscow")
