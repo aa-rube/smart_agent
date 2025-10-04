@@ -11,7 +11,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiohttp import web
 
 from bot import setup
-from bot.config import TOKEN
+from bot.config import *
 import bot.utils.database as db
 import bot.utils.billing_db as billing_db
 from bot.utils.mailing import run_mailing_scheduler
@@ -60,9 +60,9 @@ async def main():
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 8000)
+    site = web.TCPSite(runner, "0.0.0.0", YOUMONEY_PORT)
     await site.start()
-    logging.info("Webhook server started on http://0.0.0.0:8000")
+    logging.info("Webhook server started on http://0.0.0.0:" + YOUMONEY_PORT)
 
     #UTC+3
     msk = ZoneInfo("Europe/Moscow")

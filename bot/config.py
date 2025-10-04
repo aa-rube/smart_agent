@@ -75,7 +75,7 @@ DB_URL = f"mysql+pymysql://{MYSQL_USER}:{quote_plus(MYSQL_PASSWORD)}@{MYSQL_HOST
 
 YOUMONEY_SHOP_ID = os.getenv("YOUMONEY_SHOP_ID")
 YOUMONEY_SECRET_KEY = os.getenv("YOUMONEY_SECRET_KEY")
-
+YOUMONEY_PORT = int(os.getenv("YOUMONEY_PORT"))
 
 
 def get_file_path(relative_path: str) -> str:
