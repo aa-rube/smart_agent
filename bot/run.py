@@ -3,6 +3,7 @@ import asyncio
 import logging
 import signal
 from contextlib import suppress
+import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -152,7 +153,7 @@ async def main():
 
     # ---Жёсткий стоп по сигналу---
     def _hard_stop(signum, frame):
-        # максимально быстрый stop: ставим флаг и отменяем ВСЕ задачи event-loop
+        # максимально быстрый stop для systemd: отменяем таски и мгновенно выходим
         logging.warning(f"Получен сигнал {signum}, выполняю немедленную остановку...")
         try:
             shutdown_event.set()
@@ -162,6 +163,12 @@ async def main():
                     task.cancel()
         except Exception:
             pass
+        try:
+            logging.shutdown()
+        except Exception:
+            pass
+        # Жёсткий выход без ожидания сборки/cleanup — гарантирует моментальный рестарт
+        os._exit(0)
 
     signal.signal(signal.SIGTERM, _hard_stop)
     signal.signal(signal.SIGINT, _hard_stop)
@@ -171,7 +178,8 @@ async def main():
         # Запускаем задачи как отдельные таски, чтобы их можно было отменить мгновенно
         billing_task = asyncio.create_task(billing_loop(), name="billing_loop")
         mailing_task = asyncio.create_task(mailing_loop(), name="mailing_loop")
-        polling_task = asyncio.create_task(dp.start_polling(bot), name="polling")
+        # Важно: отключаем встроенную обработку сигналов, чтобы не было «грейсфул» задержек
+        polling_task = asyncio.create_task(dp.start_polling(bot, handle_signals=False), name="polling")
 
         # ждём, пока любая из задач завершится с исключением или по отмене
         done, pending = await asyncio.wait(

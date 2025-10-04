@@ -59,7 +59,7 @@ ADMIN_IDS           = _parse_int_list(os.getenv("ADMIN_IDS") or os.getenv("ADMIN
 ADMIN_GROUP_ID      = int(os.getenv("ADMIN_GROUP_ID", "0"))
 CONTENT_CHANNEL_ID  = int(os.getenv("CONTENT_CHANNEL_ID", "0"))
 CONTENT_GROUP_ID    = int(os.getenv("CONTENT_GROUP_ID", "0"))
-# Дополнительные настройки (если нужны)
+# Дополнительные настройки
 PARTNER_CHANNELS=[{"chat_id":"-1002969803274","url":"https://t.me/setrealtora","label":"Сеть Риэлтора"}]
 
 

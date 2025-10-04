@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Union, Optional
-from datetime import datetime, timezone
 
 from aiogram import Router, F, Bot
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -21,7 +20,7 @@ from aiogram.types import (
 )
 
 from bot.config import get_file_path
-from bot.utils.subscribe_partner_manager import ensure_partner_subs
+from bot.handlers.subscribe_partner_manager import ensure_partner_subs
 from bot.handlers.payment_handler import show_rates as show_rates_handler
 import bot.utils.database as app_db
 import bot.utils.billing_db as billing_db

@@ -9,6 +9,7 @@ from typing import List, Dict, Union, Optional
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramAPIError
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram import Router, F
 
 from bot.config import PARTNER_CHANNELS
 
@@ -18,10 +19,17 @@ OK_STATUSES = {"creator", "administrator", "member"}
 
 
 you_have_to_subscribe = ('''
-🔔 Если хочешь бесплатно протестировать все наши инструменты, подпишись на наше сообщество
-
-После подписки нажми «✅ Проверить».
+👋 Привет! Это «Инструменты Риэлтора». Подпишись на наш канал, там тоже много полезного!
 ''')
+
+# Текст, на который переключаемся при повторной проверке (редактирование по msg_id)
+you_have_to_subscribe_retry = (
+    "📢 Один шаг до старта, подпишись  👉 t.me/setrealtora и нажми кнопку ниже.\n\n"
+    " • Кнопка: ✅ Проверить подписку"
+)
+
+# Единый колбэк для проверки подписок по кнопке
+PARTNER_CHECK_CB = "partners.check"
 
 
 def build_missing_subscribe_keyboard(
@@ -29,6 +37,7 @@ def build_missing_subscribe_keyboard(
         sub_map: Dict[int, bool],
         *,
         retry_callback_data: Optional[str] = None,
+        retry_button_text: str = "✅ Проверить подписку",
         columns: int = 1,
 ) -> InlineKeyboardMarkup:
     """
@@ -61,7 +70,7 @@ def build_missing_subscribe_keyboard(
         rows.append(line)
 
     if retry_callback_data:
-        rows.append([InlineKeyboardButton(text="✅ Проверить", callback_data=retry_callback_data)])
+        rows.append([InlineKeyboardButton(text=retry_button_text, callback_data=retry_callback_data)])
         # rows.append([InlineKeyboardButton(text="❗️ Не подписываться", callback_data="skip_subscribe")])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -175,15 +184,48 @@ async def ensure_partner_subs(
         items,
         sub_map,
         retry_callback_data=retry_callback_data,
+        retry_button_text="✅ Проверить подписку",
         columns=columns,
     )
 
     if isinstance(event, CallbackQuery) and reply_msg:
         # для callback — обновляем текущее сообщение
-        await _edit_text_or_caption(reply_msg, you_have_to_subscribe, kb)
+        # При повторной проверке меняем текст по msg_id на «второй» вариант
+        await _edit_text_or_caption(reply_msg, you_have_to_subscribe_retry, kb)
         await event.answer()  # закрыть "часики"
     else:
         # для обычного Message — отправляем новое (как и раньше)
         await reply_msg.answer(you_have_to_subscribe, reply_markup=kb)
 
     return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Новый публичный колбэк-хендлер «Проверить подписку»
+# Оставляем старый ensure_partner_subs для первого показа из /start (Message),
+# этот — для повторных проверок по кнопке (CallbackQuery).
+# ─────────────────────────────────────────────────────────────────────────────
+async def partner_check_cb(callback: CallbackQuery, bot: Bot) -> None:
+    """
+    Повторная проверка подписки по кнопке. Редактирует текущее сообщение:
+      • если не подписан — показывает второй текст и кнопку «✅ Проверить подписку»
+      • если подписан — просто подтверждает (дальнейшие шаги — в вызывающем сценарии)
+    """
+    ok = await ensure_partner_subs(
+        bot=bot,
+        event=callback,
+        retry_callback_data=PARTNER_CHECK_CB,
+        columns=1,
+    )
+    if ok:
+        # Ничего не ломаем: даём короткий тост, далее внешний сценарий может
+        # запустить активацию триала/следующий шаг
+        await callback.answer("Подписка подтверждена ✅")
+
+
+def router(rt: Router) -> None:
+    """
+    Роутер только для кнопки повторной проверки подписки.
+    Первый показ выполняется там, где вызывают ensure_partner_subs(...) из /start.
+    """
+    rt.callback_query.register(partner_check_cb, F.data == PARTNER_CHECK_CB)

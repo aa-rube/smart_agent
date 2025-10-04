@@ -6,6 +6,7 @@ from . import (
     design,
     plans,
     admin,
+    subscribe_partner_manager,
     objection_playbook,
     description_playbook,
     feedback_playbook,
@@ -32,6 +33,8 @@ def register_routers(rt: Router):
     payment_handler.router(rt)
     
     # Приоритет 4: Остальные обработчики (только callback и text с фильтрами состояний)
+    # Проверка подписки (кнопка «✅ Проверить подписку»)
+    subscribe_partner_manager.router(rt)
     description_playbook.router(rt)
     feedback_playbook.router(rt)
     design.router(rt)
