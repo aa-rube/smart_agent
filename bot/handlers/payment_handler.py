@@ -17,7 +17,7 @@ from bot.utils import youmoney
 import bot.utils.database as app_db
 import bot.utils.billing_db as billing_db
 from bot.utils.mailing import send_last_published_to_user
-from bot.utils.redis_repo import yookassa_dedup
+from bot.utils.redis_repo import yookassa_dedup, invalidate_payment_ok_cache
 
 logger = logging.getLogger(__name__)
 
@@ -373,6 +373,11 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             except Exception:
                 user_id_fail, sub_id = None, None
             if user_id_fail:
+                # ⚡ сбрасываем кэш «payment_ok» при любом финальном фейле
+                try:
+                    await invalidate_payment_ok_cache(user_id_fail)
+                except Exception:
+                    logger.warning("invalidate_payment_ok_cache failed (fail branch) for user %s", user_id_fail)
                 try:
                     # троттлинг: не чаще 1 раза за 12ч
                     can_notice = True
@@ -409,6 +414,12 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
         user_id = int(metadata.get("user_id") or 0)
         if not user_id:
             return 400, "missing user_id in metadata"
+
+        # ⚡ на всякий случай инвалидируем кэш при успешном финальном событии
+        try:
+            await invalidate_payment_ok_cache(user_id)
+        except Exception:
+            logger.warning("invalidate_payment_ok_cache failed (success branch) for user %s", user_id)
 
         # --- аудит в БД (на случай рестартов/отладка) ---
         try:

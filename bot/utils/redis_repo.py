@@ -39,6 +39,22 @@ def _now_ts() -> int:
     return int(time.time())
 
 
+async def invalidate_payment_ok_cache(user_id: int) -> None:
+    """
+    Сбрасывает кэш платёжной пригодности пользователя.
+    Основной ключ:    payment_ok:{user_id}
+    На всякий случай: {prefix}:payment_ok:{user_id} (если где-то использовали с префиксом).
+    """
+    try:
+        # без префикса (как в ТЗ)
+        await _redis.delete(f"payment_ok:{user_id}")
+        # с префиксом (на случай использования общего префикса приложения)
+        pref = os.getenv("REDIS_PREFIX", "sa")
+        await _redis.delete(f"{pref}:payment_ok:{user_id}")
+    except Exception as e:
+        LOG.warning("invalidate_payment_ok_cache failed for user %s: %s", user_id, e)
+
+
 class FeedbackRedisRepo:
     """
     Мини-репозиторий для хранения статуса и промежуточных данных флоу отзывов.
