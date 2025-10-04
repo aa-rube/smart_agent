@@ -329,7 +329,7 @@ async def smm_content(callback: CallbackQuery) -> None:
         except Exception as e:
             logging.warning("Failed to delete triggering message for %s: %s", user_id, e)
 
-        # 2) отправляем 3 последних уже опубликованных поста (или меньше, если их меньше трёх)
+        # 2) отправляем 3 последних уже опубликованных поста (по факту публикации, без учёта mailing_on)
         try:
             await send_last_3_published_to_user(callback.bot, user_id)
         except Exception as e:

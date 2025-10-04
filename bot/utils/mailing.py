@@ -55,6 +55,25 @@ def _build_media_group(items: List[Dict[str, str]], caption: str | None) -> List
     return result
 
 
+async def _send_mailing(bot: Bot, user_id: int, r) -> None:
+    """
+    Отправляет один пост пользователю из результата запроса к БД.
+    r может быть dict или tuple в зависимости от способа получения данных.
+    """
+    if isinstance(r, dict):
+        mailing = r
+    else:
+        # Если r - это tuple из fetchall(), преобразуем в dict
+        mailing = {
+            "id": r[0],
+            "content_type": r[1],
+            "caption": r[2],
+            "payload": r[3] if isinstance(r[3], dict) else {}
+        }
+    
+    await send_to_user(bot, user_id, mailing)
+
+
 async def send_to_user(bot: Bot, user_id: int, mailing: Dict[str, Any]) -> None:
     """
     Отправляет ОДНУ публикацию ОДНОМУ пользователю, согласно структуре записи из БД.
@@ -135,26 +154,43 @@ async def send_last_published_to_user(bot: Bot, user_id: int) -> None:
         logging.warning("[mailing] failed to send last published to %s: %s", user_id, e)
 
 
-async def send_last_3_published_to_user(bot: Bot, user_id: int) -> None:
+async def send_last_3_published_to_user(bot: Bot, user_id: int) -> bool:
     """
-    Находит и отправляет пользователю ДО 3-х последних уже опубликованных рассылок
-    (publish_at <= сейчас, mailing_on=1, mailing_completed=1).
-    Каждый пост отдельным сообщением. Если постов нет — шлём уведомление.
+    Отправляет пользователю последние 3 реально опубликованных поста:
+    берём из Mailings записи с mailing_completed=1, сортируем по publish_at DESC.
+    Параметр mailing_on здесь игнорируем — он про планировщик, а не «пример для пользователя».
     """
-    now = datetime.now(timezone.utc)
-    items = adb.get_last_3_published_mailings(now)
-    if not items:
-        try:
-            await bot.send_message(user_id, "Пока нет доступных постов")
-        except Exception as e:
-            logging.warning("[mailing] failed to notify about empty posts to %s: %s", user_id, e)
-        return
+    try:
+        # Прямой безопасный запрос через app_db (SQLAlchemy/Core или pymysql — не важно, берём факт публикации)
+        conn = app_db.get_conn()  # должен вернуть sync connection; если у вас async — используйте соответствующий вызов
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, content_type, caption, payload
+                FROM Mailings
+                WHERE mailing_completed = 1
+                ORDER BY publish_at DESC
+                LIMIT 3
+                """
+            )
+            rows = cur.fetchall()
+    except Exception as e:
+        logging.exception("Failed to fetch last published mailings: %s", e)
+        rows = []
 
-    for m in items:
+    if not rows:
+        await bot.send_message(user_id, "Пока нет доступных постов")
+        return False
+
+    sent_any = False
+    for r in rows:
         try:
-            await send_to_user(bot, user_id, m)
-        except Exception as e:
-            logging.warning("[mailing] failed to send published id=%s to %s: %s", m.get("id"), user_id, e)
+            await _send_mailing(bot, user_id, r)
+            sent_any = True
+        except Exception:
+            logging.exception("Failed to send mailing id=%s to user=%s", r.get("id") if isinstance(r, dict) else None, user_id)
+
+    return sent_any
 
 
 async def run_mailing_scheduler(bot: Bot) -> None:
