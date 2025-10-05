@@ -12,8 +12,6 @@ import executor.apps.design_generate as design_module
 import executor.apps.description as description_module
 
 api = Blueprint("api", __name__, url_prefix="/api/v1")
-
-_config_issues = validate_config()
 LOG = logging.getLogger(__name__)
 
 
@@ -24,25 +22,17 @@ def description_generate():
 
 @api.post("/design/generate")
 def design_generate():
-    if _config_issues:
-        return jsonify({"error": "config", "detail": "; ".join(_config_issues)}), 500
-
     return design_module.design_generate(request)
 
 
 @api.post("/plan/generate")
 def plan_generate():
-    if _config_issues:
-        return jsonify({"error": "config", "detail": "; ".join(_config_issues)}), 500
     return plan_module.plan_generate(request)
 
 
 
 @api.post("/objection/generate")
 def objection_generate():
-    if _config_issues:
-        return jsonify({"error": "config", "detail": "; ".join(_config_issues)}), 500
-
     data = request.get_json(silent=True) or {}
     question = (data.get("question") or request.form.get("question") or "").strip()
     if not question:
@@ -84,8 +74,6 @@ def review_generate():
         num_variants # 1..5 (по умолчанию 3)
       }
     """
-    if _config_issues:
-        return jsonify({"error": "config", "detail": "; ".join(_config_issues)}), 500
 
     data = request.get_json(silent=True) or {}
     debug_flag = request.args.get("debug") == "1"
@@ -144,8 +132,6 @@ def review_mutate():
         context:   { те же поля, что и в generate }  # опционально, для контекста
       }
     """
-    if _config_issues:
-        return jsonify({"error": "config", "detail": "; ".join(_config_issues)}), 500
 
     data = request.get_json(silent=True) or {}
     base_text = (data.get("base_text") or "").strip()
@@ -192,8 +178,6 @@ def summary_analyze():
     Возвращает:
       { "summary": "...", "strengths": [...], "mistakes": [...], "decisions": [...] }
     """
-    if _config_issues:
-        return jsonify({"error": "config", "detail": "; ".join(_config_issues)}), 500
 
     if not request.is_json:
         return jsonify({"error": "bad_request", "detail": "JSON body required"}), 400

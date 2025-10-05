@@ -4,57 +4,53 @@ from __future__ import annotations
 """
 Self-contained module for the /plan/generate endpoint.
 
-- Не зависит от внешних конфигов
-- Все константы, клиенты, билдеры и обработчики находятся здесь
+- Не зависит от внешних конфигов проекта (кроме ENV)
+- Все константы, HTTP-клиент, билдеры и обработчики находятся здесь
 - Контроллер должен только делегировать: return plan_module.plan_generate(request)
+
+Задача:
+- Принять картинку и сгенерированный промпт
+- Отправить в Banano (Gemini 2.5 Flash Image) без SDK — прямой HTTP
+- Вернуть результат обработки (картинка(и) и опционально текст)
+- Ключ берём из запроса, если нет — из ENV/конфига
 """
 
-import io
 import os
+import json
+import base64
 import hashlib
 import logging
-from typing import Any, Dict, Optional, List
-import re
+from executor.config import *
+from typing import Any, Dict, Optional, List, Tuple
 
 from flask import jsonify, Request
-import replicate
-from replicate.exceptions import ReplicateError, ModelError
-
-__all__ = ["plan_generate", "build_plan_prompt"]
-
-LOG = logging.getLogger(__name__)
-
-class ParamFallbackError(Exception):
-    """Поднимается, когда исчерпаны все варианты image_param."""
-    def __init__(self, message: str, attempted: List[str], last: Optional[Exception] = None):
-        super().__init__(message)
-        self.attempted = attempted
-        self.last = last
 
 # =========================
 #   Model / Runtime config
 # =========================
 
-# Реплицируем практику: если токен в окружении, убедимся, что SDK его увидит
-if os.getenv("REPLICATE_API_TOKEN") and not os.environ.get("REPLICATE_API_TOKEN"):
-    os.environ["REPLICATE_API_TOKEN"] = os.getenv("REPLICATE_API_TOKEN") or ""
+LOG = logging.getLogger(__name__)
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
-# Модель планировок (env-overridable с безопасным дефолтом)
-# По умолчанию ориентируемся на openai/gpt-image-1 у Replicate-обёрток.
-MODEL_REF = os.getenv("MODEL_FLOOR_PLAN_REF", "openai/gpt-image-1")
 
-# Какое имя поля ожидает модель для изображения.
-# Для gpt-image-1 чаще всего — "input_images".
-MODEL_IMAGE_PARAM = os.getenv("MODEL_FLOOR_PLAN_IMAGE_PARAM", "input_images")
+# Публичный REST endpoint Google (можно прокинуть свой прокси)
+BANANO_ENDPOINT = os.getenv("BANANO_ENDPOINT", "https://generativelanguage.googleapis.com/v1beta")
 
-# Нужно ли прокидывать OPENAI_API_KEY в input (для openai/* это обычно обязательно).
-MODEL_NEEDS_OPENAI_KEY = os.getenv("MODEL_FLOOR_PLAN_NEEDS_OPENAI_KEY", "1") == "1"
+# Модель для генерации изображений
+BANANO_MODEL = os.getenv("BANANO_MODEL", "gemini-2.5-flash-image")
 
-# =========================
-#        Prompt blocks
-# =========================
+# По умолчанию — только изображение в ответе (без текстовых частей)
+BANANO_IMAGES_ONLY = os.getenv("BANANO_IMAGES_ONLY", "1") == "1"
+
+# Необязательное соотношение сторон по умолчанию: "", "1:1", "16:9", "9:16", ...
+BANANO_ASPECT_RATIO = os.getenv("BANANO_ASPECT_RATIO", "")
+
+__all__ = ["plan_generate", "build_plan_prompt"]
+
+
+# ======================
+#      Prompt blocks
+# ======================
 
 FLOOR_PLAN_BASE_INSTRUCTIONS = """
 🧠 INSTRUCTION FOR AI: Generation of a 2D/3D real estate floor plan based on an image.
@@ -79,18 +75,18 @@ Create a visually appealing, accurate, and sellable property layout based on the
 - If the layout that was uploaded to you does not show a balcony, then you do not need to include it in the final image. This is very, very important!
 - All doors in the images you create must look like doors!!! No semicircular doors are allowed!!! If you see a semicircular door on the diagram, you must show it as a regular door in the image; it must not be open! This is very important!!! If you show it, no one will buy the apartment, we will have to close our business, and my child will be left without food.
 - You are strictly prohibited from showing the dimensions along the axes and the axes themselves. You can only show the areas inside the room itself. There should be no numbers outside the room!!! This is very important!!! If you show them, no one will buy our apartment, we will have to close our business, and my child will be left without food.
-- You must have exactly the same number of rooms as in the diagram uploaded by the user. This is very important!!! If you show them, no one will buy the apartment, we will have to close our business, and my child will be left without food.
-- Generate a clean vector-style floor plan with flat fills and crisp lines. 
-- Absolutely no text: no letters, numbers, symbols, words, logos, watermarks, labels, signage, captions, legends, scales, north arrows, room names, dimensions, level marks. 
-If the source image contains text, completely remove it and replace with a uniform background/texture matching the surroundings. 
-Only geometric shapes for walls, doors, windows, furniture — with zero markings. 
-If any character appears, re-generate or inpaint until there is no text at all. 
-No typography-like textures or patterns. 
+- You must have exactly the same number of rooms as in the diagram uploaded by the user. This is very important!!! If you show them, no one will buy the apartment, we will have to close our business, and my child will be left без еды.
+- Generate a clean vector-style floor plan with flat fills and crisp lines.
+- Absolutely no text: no letters, numbers, symbols, words, logos, watermarks, labels, signage, captions, legends, scales, north arrows, room names, dimensions, level marks.
+If the source image contains text, completely remove it and replace with a uniform background/texture matching the surroundings.
+Only geometric shapes for walls, doors, windows, furniture — with zero markings.
+If any character appears, re-generate or inpaint until there is no text at all.
+No typography-like textures or patterns.
 Output: a text-free floor plan.
 - All rooms must be fully displayed — no cropped parts are allowed. If they do not fit in the frame, zoom out, but show the entire layout.
 - All wall lines shown on the floor plan must be reproduced on the image in their exact locations and dimensions!!!
 - Add floor texture to the floor.
-- Add furniture and decorative elements (paintings, green plants, soft textiles, stylish lamps, elegant mirrors, and decorative items) — only in places where it does not affect the walls, doors, windows, and geometry of the room. The main thing: first, you must keep the walls exactly where they are, and only then can you arrange the furniture and interior. This is very important!!! If you show it, no one will buy the apartment, we will have to close our business, and my child will be left without food.
+- Add furniture and decorative elements (paintings, green plants, soft textiles, stylish lamps, elegant mirrors, and decorative items) — only in places where it does not affect the walls, doors, windows, and geometry of the room. The main thing: first, you must keep the walls exactly where they are, and only then can you arrange the furniture and interior.
 """.strip()
 
 FLOOR_PLAN_VISUALIZATION_SKETCH = """
@@ -123,139 +119,188 @@ The floor plan must be:
 The buyer should see the layout, fall in love with it, and want to buy this home from the realtor immediately. Imagine that your fate depends on this specific outcome.
 """.strip()
 
+
 # ======================
-#      Helper utils
+#          Utils
 # ======================
 
-def _is_param_mismatch_error(err: Exception) -> bool:
+def _read_api_key(req: Request) -> str:
     """
-    Эвристика: ошибка явно говорит о проблеме с входными полями/типами.
-    Даём шанс следующему image_param вместо немедленного raise.
+    Источник API-ключа (приоритет):
+      1) из запроса: form['api_key'] либо Authorization: Bearer/ X-API-Key / X-Banano-Key
+      2) из ENV (BANANO_API_KEY / GOOGLE_API_KEY / GEMINI_API_KEY)
     """
-    msg = f"{err}".lower()
-    patterns = [
-        r"unexpected keyword argument",            # Pythonic "image" не ожидается
-        r"unknown input|unknown field",            # Replicate: неизвестное поле
-        r"invalid input|invalid value",            # некорректный формат/тип
-        r"missing required.*(image|input)",        # не передан файл/поле
-        r"(image|input).*required",                # image обязателен
-        r"expected.*image|must be an image",       # ожидали картинку
-        r"cannot identify image file",             # плохой/непонятный файл
-        r"unsupported file type|content-type",     # неправильный формат
-        r"field.*not allowed",                     # лишнее поле
-        r"got list|got bytes|must be list",        # тип не совпал (list vs file)
-    ]
-    return any(re.search(p, msg) for p in patterns)
+    # multipart/form-data
+    try:
+        if hasattr(req, "form") and req.form and "api_key" in req.form:
+            v = (req.form.get("api_key") or "").strip()
+            if v:
+                return v
+    except Exception:
+        pass
+
+    # Authorization: Bearer <token>
+    auth = req.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth.split(" ", 1)[1].strip()
+
+    # X-API-Key / X-Banano-Key
+    for h in ("X-API-Key", "X-Banano-Key", "X-Api-Key", "X-BANANO-KEY"):
+        v = req.headers.get(h, "")
+        if v:
+            return v.strip()
+
+    # ENV fallback
+    return BANANO_API_KEY_FALLBACK
+
 
 def _image_meta(img_bytes: bytes) -> Dict[str, Any]:
-    """Минимальная мета для отладки — без внешних зависимостей."""
-    return {
-        "size_bytes": len(img_bytes),
-        "sha256": hashlib.sha256(img_bytes).hexdigest(),
-    }
+    """Простая мета для отладки."""
+    return {"size_bytes": len(img_bytes), "sha256": hashlib.sha256(img_bytes).hexdigest()}
 
-def _extract_url(output: Any) -> Optional[str]:
-    """Попытка вытащить URL результата из разных форматов ответа Replicate."""
-    try:
-        if isinstance(output, list):
-            for item in output:
-                if isinstance(item, str) and item.startswith("http"):
-                    return item
-            for item in output:
-                url = getattr(item, "url", None)
-                if isinstance(url, str) and url.startswith("http"):
-                    return url
-        url = getattr(output, "url", None)
-        if isinstance(url, str) and url.startswith("http"):
-            return url
-        if isinstance(output, dict):
-            if isinstance(output.get("url"), str) and output["url"].startswith("http"):
-                return output["url"]
-            res = output.get("output")
-            if isinstance(res, str) and res.startswith("http"):
-                return res
-            if isinstance(res, list):
-                for item in res:
-                    if isinstance(item, str) and item.startswith("http"):
-                        return item
-        return None
-    except Exception:
-        return None
 
-def _build_input_dict(
+def _detect_mime(b: bytes) -> str:
+    """Мини-сниффер по сигнатурам."""
+    if b.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if b[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if b[:4] == b"RIFF" and b[8:12] == b"WEBP":
+        return "image/webp"
+    return "application/octet-stream"
+
+
+def _to_data_url(img_bytes: bytes, mime: str = "image/png") -> str:
+    """Возвращаем data:URL, чтобы удобно отдавать через JSON."""
+    return f"data:{mime};base64,{base64.b64encode(img_bytes).decode('ascii')}"
+
+
+# ======================
+#    Banano HTTP client
+# ======================
+
+def _build_google_payload(
     *,
     prompt: str,
-    image_param: str,
-    img_bytes: bytes,
-    needs_openai_key: bool,
-    openai_api_key: Optional[str],
+    images: List[bytes],
+    aspect_ratio: Optional[str],
+    images_only: bool,
 ) -> Dict[str, Any]:
-    """Формируем input для replicate.run. Картинку подаём как BytesIO (с именем файла)."""
-    buf = io.BytesIO(img_bytes)
-    buf.name = "upload.png"
-    payload: Dict[str, Any] = {"prompt": prompt}
-    if needs_openai_key and openai_api_key:
-        payload["openai_api_key"] = openai_api_key
-    if image_param == "input_images":
-        payload["input_images"] = [buf]
-    else:
-        payload[image_param] = buf
+    """
+    Строим JSON под Google REST:
+    POST /models/{model}:generateContent?key=API_KEY
+    {
+      "contents":[{"role":"user","parts":[{"text":"..."},{"inlineData":{"mimeType":"...","data":"...b64..."}}]}],
+      "generationConfig":{"responseModalities":["IMAGE"],"imageConfig":{"aspectRatio":"16:9"}}
+    }
+    """
+    parts: List[Dict[str, Any]] = [{"text": prompt}]
+    for b in images:
+        parts.append({
+            "inlineData": {
+                "mimeType": _detect_mime(b),
+                "data": base64.b64encode(b).decode("ascii"),
+            }
+        })
+
+    payload: Dict[str, Any] = {"contents": [{"role": "user", "parts": parts}]}
+
+    gen_cfg: Dict[str, Any] = {}
+    if images_only:
+        gen_cfg["responseModalities"] = ["IMAGE"]
+    if aspect_ratio:
+        gen_cfg["imageConfig"] = {"aspectRatio": aspect_ratio}
+    if gen_cfg:
+        payload["generationConfig"] = gen_cfg
+
     return payload
 
-def _run_with_fallbacks(img_bytes: bytes, prompt: str) -> str:
-    """
-    Replicate.run с «настоящими» фолбэками:
-    пробуем MODEL_IMAGE_PARAM -> 'image' -> 'input_image' -> 'input_images'
-    и продолжаем на типичных ошибках соответствия входов.
-    """
-    order: List[str] = [MODEL_IMAGE_PARAM] + [p for p in ["image", "input_image", "input_images"] if p != MODEL_IMAGE_PARAM]
-    attempted: List[str] = []
-    last_err: Optional[Exception] = None
 
-    for param in order:
-        attempted.append(param)
-        try:
-            payload = _build_input_dict(
-                prompt=prompt,
-                image_param=param,
-                img_bytes=img_bytes,
-                needs_openai_key=MODEL_NEEDS_OPENAI_KEY,
-                openai_api_key=OPENAI_API_KEY,
-            )
-            LOG.info("Replicate.run (plan) model=%s try image_param=%s keys=%s", MODEL_REF, param, list(payload.keys()))
-            out = replicate.run(MODEL_REF, input=payload)
-            url = _extract_url(out)
-            if url:
-                if param != MODEL_IMAGE_PARAM:
-                    LOG.warning("Image param auto-switched: %s -> %s", MODEL_IMAGE_PARAM, param)
-                return url
-            last_err = RuntimeError("No URL in output")
-            LOG.warning("No URL in output for image_param=%s; trying next...", param)
-        except (ModelError, ReplicateError) as e:
-            last_err = e
-            # 1) Явная телеметрия (metrics.image_count == 0) → пробуем следующее поле
-            try:
-                pred = getattr(e, "prediction", None)
-                metrics = getattr(pred, "metrics", {}) if pred else {}
-                if (metrics or {}).get("image_count") == 0:
-                    LOG.warning("Replicate suspected image param mismatch for %s: %s", param, e)
-                    continue
-            except Exception:
-                pass
-            # 2) Эвристики по тексту ошибки → пробуем следующее поле
-            if _is_param_mismatch_error(e):
-                LOG.warning("Param/type mismatch for image_param=%s: %s; trying next...", param, e)
-                continue
-            # 3) Иное — выходим немедленно
-            LOG.error("Replicate error for image_param=%s (no fallback): %s", param, e)
-            raise
-        except Exception as e:
-            last_err = e
-            LOG.warning("Unhandled exception for image_param=%s: %s; trying next...", param, e)
-            continue
+def _http_post_json(url: str, params: Dict[str, str], body: Dict[str, Any], timeout: int = 90) -> Dict[str, Any]:
+    """
+    Минимальный HTTP POST с использованием стандартной библиотеки (без сторонних зависимостей).
+    Если в окружении установлен requests — можно раскомментировать альтернативу.
+    """
+    # --- Вариант на стандартной библиотеке ---
+    import urllib.request
+    import urllib.parse
 
-    # Все варианты исчерпаны — поднимаем информативную ошибку
-    raise ParamFallbackError("All image_param variants failed", attempted, last_err)
+    full_url = url
+    if params:
+        q = urllib.parse.urlencode(params)
+        full_url = f"{url}?{q}"
+
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        full_url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        resp_body = resp.read()
+        return json.loads(resp_body.decode("utf-8"))
+
+    # --- Вариант с requests (если предпочитаешь) ---
+    # import requests
+    # r = requests.post(url, params=params, json=body, timeout=timeout)
+    # r.raise_for_status()
+    # return r.json()
+
+
+def _parse_google_response(js: Dict[str, Any]) -> Tuple[List[Tuple[bytes, str]], Optional[str]]:
+    """
+    Возвращает ([(bytes, mime)], optional_text).
+    """
+    images: List[Tuple[bytes, str]] = []
+    text_out: Optional[str] = None
+    try:
+        cands = js.get("candidates") or []
+        if not cands:
+            return images, text_out
+        parts = ((cands[0] or {}).get("content") or {}).get("parts") or []
+        for p in parts:
+            if "inlineData" in p:
+                inline = p["inlineData"]
+                mime = (inline.get("mimeType") or "image/png").lower()
+                data_b64 = inline.get("data") or ""
+                if data_b64:
+                    images.append((base64.b64decode(data_b64), mime))
+            elif "text" in p and not text_out:
+                text_out = p["text"]
+    except Exception:
+        pass
+    return images, text_out
+
+
+def _banano_generate_image(
+    *,
+    api_key: str,
+    model: str,
+    endpoint: str,
+    prompt: str,
+    images: List[bytes],
+    aspect_ratio: Optional[str],
+    images_only: bool,
+    timeout: int = 90,
+) -> Dict[str, Any]:
+    """
+    Тонкий вызов REST: {endpoint}/models/{model}:generateContent?key=API_KEY
+    """
+    url = endpoint.rstrip("/") + f"/models/{model}:generateContent"
+    params = {"key": api_key}
+
+    payload = _build_google_payload(
+        prompt=prompt,
+        images=images,
+        aspect_ratio=aspect_ratio,
+        images_only=images_only,
+    )
+
+    resp_json = _http_post_json(url, params, payload, timeout=timeout)
+    out_images, out_text = _parse_google_response(resp_json)
+    return {"images": out_images, "text": out_text, "raw": resp_json}
+
 
 # =================
 #   Prompt builder
@@ -265,19 +310,18 @@ def build_plan_prompt(*, visualization_style: str, interior_style: str) -> str:
     """
     Собирает единый промпт для генерации планировки.
     visualization_style: 'sketch' | 'realistic' (любой иной — трактуем как 'realistic')
-    interior_style: произвольная строка (UI-перечень стилей может меняться)
+    interior_style: произвольная строка
     """
     vis = (visualization_style or "").strip().lower()
     vis_block = FLOOR_PLAN_VISUALIZATION_SKETCH if vis == "sketch" else FLOOR_PLAN_VISUALIZATION_REALISTIC
+    final_block = FLOOR_PLAN_FINAL_INSTRUCTIONS.format(
+        interior_style=(interior_style or "Modern").strip() or "Modern"
+    )
 
-    final_block = FLOOR_PLAN_FINAL_INSTRUCTIONS.format(interior_style=(interior_style or "Modern").strip() or "Modern")
-
-    # Склеиваем блоки с аккуратной нормализацией
     parts = [FLOOR_PLAN_BASE_INSTRUCTIONS, vis_block, final_block]
     prompt = "\n\n".join([p.strip() for p in parts if p and p.strip()])
-
-    # На всякий — подчистим возможные дабл-пробелы после конкатенации
     return "\n".join([line.rstrip() for line in prompt.splitlines() if line.strip()])
+
 
 # ==============
 #  HTTP handler
@@ -285,16 +329,17 @@ def build_plan_prompt(*, visualization_style: str, interior_style: str) -> str:
 
 def plan_generate(req: Request):
     """
-    Flask-совместимый обработчик планировок.
-    Ожидает multipart/form-data с полями:
+    Flask-совместимый обработчик.
+    Ожидает multipart/form-data:
       - image: file (обязательно)
-      - prompt: str (опционально) — готовая подсказка
-        ИЛИ (если prompt не передан)
-      - visualization_style: 'sketch' | 'realistic' (опционально; по умолчанию realistic)
-      - interior_style: str (обязательно при отсутствии prompt)
-
-    Query-параметр:
-      - ?debug=1 — вернёт prompt, meta и model_ref
+      - prompt: str (обязательно в рамках ТЗ; но если не передали — попробуем собрать из стилей)
+      - visualization_style: 'sketch' | 'realistic' (опц.; default=realistic)
+      - interior_style: str (опц.; используется, если prompt не передан)
+      - aspect_ratio: str (опц.; например '16:9')
+      - response: 'image' | 'image+text' (опц.; default=env BANANO_IMAGES_ONLY)
+      - api_key: str (опц.; приоритетный источник ключа)
+    Query:
+      - ?debug=1 — вернуть отладочные поля
     """
     try:
         files = getattr(req, "files", None)
@@ -305,16 +350,17 @@ def plan_generate(req: Request):
         debug_flag = (req.args.get("debug") == "1") if hasattr(req, "args") else False
         request_id = req.headers.get("X-Request-ID", "")
 
+        # 1) Изображение
         if "image" not in files:
             return jsonify({"error": "bad_request", "detail": "field 'image' is required"}), 400
-
         img_bytes = files["image"].read()
         if not img_bytes or len(img_bytes) < 64:
             return jsonify({"error": "bad_request", "detail": "image is empty or too small"}), 400
 
-        # Берём готовый prompt, либо собираем из стилей
+        # 2) Промпт
         prompt = (form.get("prompt") or "").strip()
         if not prompt:
+            # Допускаем автосборку (чтобы не падать, если фронт пока шлёт стили)
             visualization_style = (form.get("visualization_style") or "realistic").strip()
             interior_style = (form.get("interior_style") or "").strip()
             if not interior_style:
@@ -322,59 +368,64 @@ def plan_generate(req: Request):
                     "error": "bad_request",
                     "detail": "either 'prompt' or ('interior_style' [+ visualization_style]) is required",
                 }), 400
-            prompt = build_plan_prompt(visualization_style=visualization_style, interior_style=interior_style)
+            prompt = build_plan_prompt(
+                visualization_style=visualization_style,
+                interior_style=interior_style
+            )
 
-        meta = _image_meta(img_bytes)
+        # 3) Режим ответа и параметры
+        aspect_ratio = (form.get("aspect_ratio") or BANANO_ASPECT_RATIO or "").strip() or None
+        response_mode = (form.get("response") or ("image" if BANANO_IMAGES_ONLY else "image+text")).strip().lower()
+        images_only = response_mode == "image"
 
-        # Генерация изображения на Replicate (+ умный фолбэк имени поля)
-        LOG.info("plan_generate start req_id=%s model=%s", request_id, MODEL_REF)
-        url = _run_with_fallbacks(img_bytes, prompt)
+        # 4) Ключ
+        api_key = _read_api_key(req)
+        if not api_key:
+            return jsonify({"error": "auth_error", "detail": "API key is required (header or form, or ENV)"}), 401
 
-        body: Dict[str, Any] = {"url": url}
+        LOG.info("plan_generate (banano) start req_id=%s model=%s", request_id, BANANO_MODEL)
+
+        # 5) Вызов Banano/Gemini
+        nb_resp = _banano_generate_image(
+            api_key=api_key,
+            model=BANANO_MODEL,
+            endpoint=BANANO_ENDPOINT,
+            prompt=prompt,
+            images=[img_bytes],
+            aspect_ratio=aspect_ratio,
+            images_only=images_only,
+        )
+
+        # 6) Ответ
+        out_imgs = [_to_data_url(b, mime=m) for b, m in nb_resp.get("images", [])]
+        body: Dict[str, Any] = {
+            "ok": True,
+            "model": BANANO_MODEL,
+            "images": out_imgs,
+        }
+        if not images_only and nb_resp.get("text"):
+            body["text"] = nb_resp["text"]
+
         if debug_flag:
             body["debug"] = {
                 "prompt": prompt,
-                "image_meta": meta,
-                "model_ref": MODEL_REF,
+                "image_meta": _image_meta(img_bytes),
                 "request_id": request_id,
+                "aspect_ratio": aspect_ratio,
+                "response_mode": response_mode,
+                "endpoint": BANANO_ENDPOINT,
             }
+
         return jsonify(body), 200
 
-    except (ModelError, ReplicateError, ParamFallbackError, RuntimeError) as e:
-        payload: Dict[str, Any] = {"error": "replicate_error", "detail": str(e)}
-        try:
-            pred = getattr(e, "prediction", None)
-            payload.update({
-                "prediction_id": getattr(pred, "id", None),
-                "prediction_status": getattr(pred, "status", None),
-                "prediction_error": getattr(pred, "error", None),
-                "prediction_logs": getattr(pred, "logs", None),
-                "metrics": getattr(pred, "metrics", None),
-            })
-        except Exception:
-            pass
-        # Если это наш информативный фолбэк — добавим список попыток
-        if isinstance(e, ParamFallbackError):
-            payload["attempted_params"] = getattr(e, "attempted", None)
-        if debug_flag:
-            payload["debug"] = {
-                "prompt": locals().get("prompt", ""),
-                "image_meta": locals().get("meta", {}),
-                "model_ref": MODEL_REF,
-                "request_id": locals().get("request_id", ""),
-            }
-        return jsonify(payload), 502
-
     except Exception as e:
-        LOG.exception("Unhandled error in plan_generate")
+        LOG.exception("Unhandled error in plan_generate (banano)")
         body = {"error": "internal_error", "detail": str(e)}
         try:
             if (req.args.get("debug") == "1"):
                 body["debug"] = {
-                    "prompt": locals().get("prompt", ""),
-                    "image_meta": locals().get("meta", {}),
-                    "model_ref": MODEL_REF,
-                    "request_id": locals().get("request_id", ""),
+                    "endpoint": BANANO_ENDPOINT,
+                    "model": BANANO_MODEL,
                 }
         except Exception:
             pass
