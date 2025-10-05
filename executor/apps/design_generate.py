@@ -7,8 +7,7 @@ Self-contained module for the /design/generate endpoint.
 — Не тянет внешние конфиги (кроме ENV/ executor.config для фолбэка ключа)
 — Все константы, билдеры, обработчики и утилиты — внутри
 — Контроллер должен лишь делегировать сюда: design_generate(request)
-— Двухпроходная схема была: 1) черновик; 2) уточнение (истина + черновик + промпт)
-— ⚠️ Второй проход временно отключён (вызов закомментирован ниже).
+— Двухпроходная схема: 1) черновик; 2) уточнение (истина + черновик + промпт)
 """
 
 import json
@@ -17,6 +16,7 @@ import hashlib
 import logging
 import urllib.error
 from typing import Any, Dict, Optional, List, Tuple
+import os
 
 from flask import jsonify, Request
 from executor.config import *  # BANANO_API_KEY_FALLBACK и т.п.
@@ -73,20 +73,46 @@ STYLES_DETAIL: Dict[str, str] = {
     "🔥 Случайный выбор ИИ": "random_style",
 }
 
-# Дополнительный шаблон для 2-го прохода (укрепляет соблюдение геометрии)
-REFINE_INTERIOR_INSTRUCTIONS_EN = """
+REFINE_COMMON_EN = """
 REFINE PASS (Image-to-Image with two inputs):
-• Image #1 is the ground-truth shell. Treat all structural / engineering elements as immutable:
-  - load-bearing walls and columns;
-  - gas risers / pipes and water/plumbing lines;
-  - wet areas positions (kitchen, bathroom, toilet).
-• Image #2 is a draft for color, lighting, materials and movable furniture only.
-Hard constraints:
-- Do NOT move/resize/remove walls or partitions; preserve room sizes and proportions exactly.
+• Image #1 = ground-truth shell (immutable geometry & engineering).
+• Image #2 = draft (colors, lighting, materials, movable furniture).
+Hard constraints (apply always):
+- Preserve room sizes/proportions exactly; do NOT move/resize/remove walls or partitions.
 - Keep door/window openings at the same positions and dimensions.
-- Remove any text, numbers, labels and axis marks completely.
-- Apply finishes, décor and loose furniture only; no structural changes.
-Output: final photo-realistic interior image with geometry identical to Image #1.
+- Preserve engineering: load-bearing elements, gas risers/pipes, water/plumbing lines, and wet areas.
+- No text/numbers/labels/axis; remove any typography-like artifacts.
+""".strip()
+
+REFINE_ZERO_EXTRA_EN = """
+Mode: ZERO-DESIGN
+- You may fully redesign finishes and materials; wall coverings can be removed/changed.
+- Propose the best functional layout and furniture placement for the chosen style.
+- No structural changes; engineering stays intact.
+Output: photo-realistic image with geometry identical to Image #1.
+""".strip()
+
+REFINE_REDESIGN_EXTRA_EN = """
+Mode: REDESIGN (cosmetic refresh, no capital renovation)
+- Keep existing finishes for walls/ceiling/floor; minimal repaint allowed if necessary.
+- Replace loose furniture and cabinetry; update décor and textiles to the chosen style.
+- No structural changes; engineering stays intact.
+Output: photo-realistic image with geometry identical to Image #1.
+""".strip()
+
+# Режимные правила для 1-го прохода (усиление требований в base prompt)
+ZERO_DESIGN_RULES_EN = """
+ZERO-DESIGN MODE:
+- Remove/replace all existing wall coverings and finishes; treat walls as a clean base.
+- You may redesign finishes (walls/floor/ceiling), materials, palette; propose optimal furniture layout.
+- Keep structural and engineering intact (load-bearing, gas/water lines, wet areas).
+""".strip()
+
+REDESIGN_RULES_EN = """
+REDESIGN MODE (no capital renovation):
+- Preserve existing finishes; minimal repaint only if really needed.
+- Completely replace loose furniture and casework with better options for this room in the chosen style.
+- Do not move doors/windows/radiators/plumbing/gas lines; keep geometry/openings identical.
 """.strip()
 
 # ======================
@@ -252,15 +278,20 @@ def build_design_prompt(
     else:
         style_text = STYLES_DETAIL.get(style, "modern style")
 
-    if room_type and furniture is None:
+    # режим определяем строго по присутствию furniture (совпадает с твоими хендлерами)
+    is_zero = bool(room_type and (furniture is not None))
+
+    if room_type and not is_zero:
         room_text = ROOM_TYPE_PROMPTS.get(room_type, "room")
-        final_prompt = PROMPT_REDESIGN.format(base_prompt=base_prompt, room_type=room_text, style_text=style_text)
-    elif room_type and furniture is not None:
+        core = PROMPT_REDESIGN.format(base_prompt=base_prompt, room_type=room_text, style_text=style_text)
+        final_prompt = f"{core}. {REDESIGN_RULES_EN}"
+    elif room_type and is_zero:
         room_text = ROOM_TYPE_PROMPTS.get(room_type, "room")
         furniture_text = FURNITURE_PROMPTS.get(furniture, "")
-        final_prompt = PROMPT_ZERO_DESIGN.format(
+        core = PROMPT_ZERO_DESIGN.format(
             base_prompt=base_prompt, room_type=room_text, furniture_text=furniture_text, style_text=style_text
         )
+        final_prompt = f"{core}. {ZERO_DESIGN_RULES_EN}"
     else:
         final_prompt = f"{base_prompt}, {style_text}"
 
@@ -269,14 +300,15 @@ def build_design_prompt(
     return ", ".join(parts)
 
 
-def build_refine_prompt(*, base_prompt: str, extra: Optional[str] = None) -> str:
+def build_refine_prompt(*, base_prompt: str, is_zero: bool, extra: Optional[str] = None) -> str:
     """
-    Промпт для 2-го прохода (интерьер): фиксируем размеры помещений и инженерные конструкции.
+    Промпт для 2-го прохода: общий блок (геометрия/инженерия) + режимозависимая часть.
     """
     blocks: List[str] = []
     if base_prompt.strip():
-        blocks.append("Context from the initial prompt:\n" + base_prompt.strip())
-    blocks.append(REFINE_INTERIOR_INSTRUCTIONS_EN)
+        blocks.append("Context from pass #1:\n" + base_prompt.strip())
+    blocks.append(REFINE_COMMON_EN)
+    blocks.append(REFINE_ZERO_EXTRA_EN if is_zero else REFINE_REDESIGN_EXTRA_EN)
     if extra and extra.strip():
         blocks.append(extra.strip())
     return "\n\n".join(blocks)
@@ -327,6 +359,11 @@ def design_generate(req: Request):
                     "detail": "either 'prompt' or ('style' [+ room_type / furniture]) is required",
                 }), 400
             prompt = build_design_prompt(style=style, room_type=room_type, furniture=furniture)
+        else:
+            # если prompt пришёл готовый, всё равно определим режим для 2-го прохода
+            style = (form.get("style") or "").strip()
+            room_type = (form.get("room_type") or "").strip() or None
+            furniture = (form.get("furniture") or "").strip() or None
 
         # Параметры ответа
         aspect_ratio = (form.get("aspect_ratio") or BANANO_ASPECT_RATIO or "").strip() or None
@@ -334,6 +371,7 @@ def design_generate(req: Request):
         images_only = response_mode == "image"
         second_pass_flag = (form.get("second_pass") or "1").strip() != "0"
         refine_extra = (form.get("refine_prompt") or "").strip()
+        is_zero = bool(room_type and (furniture is not None))
 
         # Ключ
         api_key = _read_api_key(req)
@@ -354,27 +392,26 @@ def design_generate(req: Request):
             max_retries=2,
         )
 
-        # 2-й проход — (ОТКЛЮЧЕНО). Оставляем только результат первого прохода.
+        # 2-й проход — истина (исходник) + черновик, режимозависимые уточнения
         final_resp = p1
-        # --- SECOND PASS DISABLED ---
-        # if second_pass_flag and p1.get("images"):
-        #     try:
-        #         draft_bytes, _mime = p1["images"][0]
-        #         refine_prompt = build_refine_prompt(base_prompt=prompt, extra=refine_extra)
-        #         LOG.info("design_generate (banano) pass2 start req_id=%s", request_id)
-        #         final_resp = _banano_generate_image(
-        #             api_key=api_key,
-        #             model=BANANO_MODEL,
-        #             endpoint=BANANO_ENDPOINT,
-        #             prompt=refine_prompt,
-        #             images=[img_bytes, draft_bytes],
-        #             aspect_ratio=aspect_ratio,
-        #             images_only=True,
-        #             max_retries=2,
-        #         )
-        #     except Exception as _e:
-        #         LOG.warning("design_generate second pass skipped: %s", _e)
-        #         final_resp = p1
+        if second_pass_flag and p1.get("images"):
+            try:
+                draft_bytes, _mime = p1["images"][0]
+                refine_prompt = build_refine_prompt(base_prompt=prompt, is_zero=is_zero, extra=refine_extra)
+                LOG.info("design_generate (banano) pass2 start req_id=%s mode=%s", request_id, ("zero" if is_zero else "redesign"))
+                final_resp = _banano_generate_image(
+                    api_key=api_key,
+                    model=BANANO_MODEL,
+                    endpoint=BANANO_ENDPOINT,
+                    prompt=refine_prompt,
+                    images=[img_bytes, draft_bytes],
+                    aspect_ratio=aspect_ratio,
+                    images_only=True,   # во 2-м проходе нам нужна только финальная картинка
+                    max_retries=2,
+                )
+            except Exception as _e:
+                LOG.warning("design_generate second pass skipped: %s", _e)
+                final_resp = p1
 
         # Ответ
         out_imgs = [_to_data_url(b, mime=m) for b, m in final_resp.get("images", [])]
@@ -386,14 +423,15 @@ def design_generate(req: Request):
         if debug_flag:
             body["debug"] = {
                 "prompt_pass1": prompt,
-                "prompt_pass2": "",  # second pass disabled
+                "prompt_pass2": (build_refine_prompt(base_prompt=prompt, is_zero=is_zero, extra=refine_extra) if second_pass_flag else ""),
                 "image_meta": _image_meta(img_bytes),
                 "endpoint": BANANO_ENDPOINT,
                 "aspect_ratio": aspect_ratio,
                 "response_mode": response_mode,
-                "second_pass": False,  # forced off
+                "second_pass": bool(second_pass_flag),
+                "mode": ("zero" if is_zero else "redesign") if room_type else "generic",
                 "pass1_images_count": len(p1.get("images", [])),
-                "pass2_images_count": 0,
+                "pass2_images_count": len(final_resp.get("images", [])) if second_pass_flag else 0,
             }
         return jsonify(body), 200
 
