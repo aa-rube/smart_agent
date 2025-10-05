@@ -6,6 +6,7 @@ import os
 import fitz
 import aiohttp
 from typing import Optional
+import base64, re, uuid, tempfile
 
 from aiogram import Router, F, Bot
 from aiogram.types import (
@@ -23,6 +24,28 @@ from bot.utils.file_utils import safe_remove
 from bot.utils.redis_repo import quota_repo
 
 LOG = logging.getLogger(__name__)
+
+
+def _save_data_url_to_file(data_url: str, user_id: int) -> str:
+    """
+    data:image/png;base64,... -> сохраняем во временный файл и возвращаем путь.
+    """
+    m = re.match(r"^data:(?P<mime>[^;]+);base64,(?P<data>.+)$", data_url)
+    if not m:
+        raise ValueError("Unsupported data URL")
+    
+    mime = (m.group("mime") or "image/png").lower()
+    raw = base64.b64decode(m.group("data"))
+    ext = "png"
+    if mime.endswith(("jpeg", "jpg")):
+        ext = "jpg"
+    elif mime.endswith("webp"):
+        ext = "webp"
+    
+    tmp = tempfile.NamedTemporaryFile(prefix=f"fp_{user_id}_", suffix=f".{ext}", delete=False)
+    tmp.write(raw)
+    tmp.flush(); tmp.close()
+    return tmp.name
 
 
 # ===========================
@@ -339,18 +362,33 @@ async def handle_style_plan(callback: CallbackQuery, state: FSMContext, bot: Bot
 
         # 3) по готовности — ЗАМЕНЯЕМ это же сообщение на фото-результат
         if image_url:
-            try:
-                media = InputMediaPhoto(media=image_url, caption=TEXT_FINAL)
-                await callback.message.edit_media(media=media, reply_markup=kb_result_back())
-            except TelegramBadRequest:
-                # фоллбэк — отправим отдельным сообщением
-                await bot.send_photo(
-                    chat_id=user_id,
-                    photo=image_url,
-                    caption=TEXT_FINAL,
-                    reply_markup=kb_result_back(),
-                )
-            success = True
+            # Если пришёл data:URL — отправляем как файл, а не как URL
+            if image_url.startswith("data:"):
+                local_path = _save_data_url_to_file(image_url, user_id)
+                try:
+                    await _edit_or_replace_with_photo_file(
+                        bot=bot,
+                        msg=callback.message,
+                        file_path=local_path,
+                        caption=TEXT_FINAL,
+                        kb=kb_result_back(),
+                    )
+                finally:
+                    safe_remove(local_path)
+                success = True
+            else:
+                try:
+                    media = InputMediaPhoto(media=image_url, caption=TEXT_FINAL)
+                    await callback.message.edit_media(media=media, reply_markup=kb_result_back())
+                except TelegramBadRequest:
+                    # фоллбэк — отправим отдельным сообщением
+                    await bot.send_photo(
+                        chat_id=user_id,
+                        photo=image_url,
+                        caption=TEXT_FINAL,
+                        reply_markup=kb_result_back(),
+                    )
+                success = True
         else:
             await _edit_text_or_caption(callback.message, SORRY_TRY_AGAIN, kb=kb_back_to_tools())
 

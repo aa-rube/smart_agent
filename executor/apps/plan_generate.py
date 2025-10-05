@@ -437,12 +437,10 @@ def plan_generate(req: Request):
 
         # 6) Ответ
         out_imgs = [_to_data_url(b, mime=m) for b, m in nb_resp.get("images", [])]
-        body: Dict[str, Any] = {
-            "ok": True,
-            "model": BANANO_MODEL,
-            "images": out_imgs,
-            "url": out_imgs[0] if out_imgs else None,  # Для совместимости с ботом
-        }
+        body: Dict[str, Any] = {"ok": True, "model": BANANO_MODEL, "images": out_imgs}
+        # url публикуем только если это http(s), чтобы клиент не принимал data: как линк
+        if out_imgs and isinstance(out_imgs[0], str) and out_imgs[0].startswith(("http://", "https://")):
+            body["url"] = out_imgs[0]
         if not images_only and nb_resp.get("text"):
             body["text"] = nb_resp["text"]
 
