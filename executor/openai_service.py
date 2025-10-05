@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional, Dict, Any, List, Tuple
 import os, logging
 from openai import OpenAI
+import json, re
 
 from executor.config import OPENAI_API_KEY
 from executor.ai_config import OBJECTION_MODEL, FEEDBACK_MODEL, SUMMARY_MODEL, WHISPER_MODEL
@@ -81,7 +82,6 @@ def _send_with_fallback(payload: Dict[str, Any], default_model: str, allow_fallb
     raise last_err or RuntimeError("OpenAI request failed")
 
 # --- helpers for JSON response parsing (модель может вернуть ```json ... ``` и т.п.) ---
-import json, re
 def _extract_json_obj(s: str) -> dict:
     if not s:
         return {}
@@ -247,6 +247,7 @@ def summarize_from_input(input_obj: Dict[str, Any],
         "text_len": len(transcript_text or ""),
     }
     return result_dict, used_model, debug_meta
+
 
 # -------- NEW: SUMMARY --------
 def send_summary_analyze_request(

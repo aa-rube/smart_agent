@@ -6,7 +6,7 @@ from executor.config import *
 from executor.helpers import *
 
 from executor.openai_service import *
-from executor import replicate_service as svc
+import executor.apps.plan_generate as plan_module
 import executor.apps.design_generate as design_module
 
 import executor.apps.description as description_module
@@ -24,10 +24,6 @@ def description_generate():
 
 @api.post("/design/generate")
 def design_generate():
-    """
-    Делегирование в самостоятельный модуль executor.design_generate.
-    Модуль полностью обрабатывает multipart/form-data, валидацию, генерацию и ошибки.
-    """
     if _config_issues:
         return jsonify({"error": "config", "detail": "; ".join(_config_issues)}), 500
 
@@ -36,47 +32,10 @@ def design_generate():
 
 @api.post("/plan/generate")
 def plan_generate():
-    """Планировки: form-data { image:file, prompt:text } (с фолбэком имени поля изображения)."""
     if _config_issues:
         return jsonify({"error": "config", "detail": "; ".join(_config_issues)}), 500
+    return plan_module.plan_generate(request)
 
-    files = request.files
-    form = request.form
-    if "image" not in files or "prompt" not in form:
-        return jsonify({"error": "bad_request", "detail": "image and prompt are required"}), 400
-
-    img_bytes = files["image"].read()
-    prompt = form["prompt"]
-    meta = image_meta(img_bytes)
-    debug_flag = request.args.get("debug") == "1"
-
-    log_payload(
-        kind="plan-replicate",
-        model_ref=MODEL_FLOOR_PLAN_REF,
-        image_param=MODEL_FLOOR_PLAN_IMAGE_PARAM,
-        prompt=prompt,
-        img_meta=meta,
-        needs_openai_key=MODEL_FLOOR_PLAN_NEEDS_OPENAI_KEY,
-    )
-
-    try:
-        url = svc.run_floor_plan(img_bytes, prompt)
-        body = {"url": url}
-        if debug_flag:
-            body["debug"] = {"prompt": prompt, "image_meta": meta}
-        return jsonify(body), 200
-
-    except (ModelError, ReplicateError) as e:
-        body = {"error": "replicate_error", **serialize_prediction_error(e)}
-        if debug_flag:
-            body["debug"] = {"prompt": prompt, "image_meta": meta}
-        return jsonify(body), 502
-    except Exception as e:
-        LOG.exception("Unhandled error (plan)")
-        body = {"error": "internal_error", "detail": str(e)}
-        if debug_flag:
-            body["debug"] = {"prompt": prompt, "image_meta": meta}
-        return jsonify(body), 500
 
 
 @api.post("/objection/generate")

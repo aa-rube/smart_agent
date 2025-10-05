@@ -6,24 +6,6 @@ from executor.ai_config import *
 
 
 
-
-def create_floor_plan_prompt(visualization_style: str, interior_style: str) -> str:
-    base_instructions = FLOOR_PLAN_BASE_INSTRUCTIONS
-
-    if visualization_style == 'sketch':
-        visualization_block = FLOOR_PLAN_VISUALIZATION_SKETCH
-    else:
-        visualization_block = FLOOR_PLAN_VISUALIZATION_REALISTIC
-
-    # ⬇️ здесь была ошибка: блок с {interior_style} не форматировался
-    final_instructions = FLOOR_PLAN_FINAL_INSTRUCTIONS.format(
-        interior_style=interior_style
-    )
-
-    full_prompt = f"{base_instructions.strip()}\n\n{visualization_block.strip()}\n\n{final_instructions.strip()}"
-    return full_prompt
-
-
 #OPEN AI - ОТРАБОТКА ВОЗРАЖЕНИЙ КЛИЕНТОВ
 def build_objection_request(
     question: str,
