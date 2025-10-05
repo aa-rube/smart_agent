@@ -1,7 +1,9 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\design.py
 from __future__ import annotations
 
+import os
 import fitz
+import aiohttp
 from typing import Optional
 
 from aiogram import Router, F, Bot
@@ -18,7 +20,7 @@ import bot.utils.billing_db as billing_db          # биллинг: карты/
 from bot.config import *
 from bot.utils.database import is_trial_active, trial_remaining_hours
 from bot.states.states import RedesignStates, ZeroDesignStates
-from executor.apps.design_generate import build_design_prompt
+
 from bot.utils.image_processor import *
 from bot.utils.chat_actions import run_long_operation_with_action
 from bot.utils.file_utils import safe_remove
@@ -341,13 +343,11 @@ async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot:
     except Exception:
         style_choice = "Модерн"
 
-    # Переносим формирование промпта в executor (единая логика)
-    prompt = build_design_prompt(style=style_choice, room_type=room_type)
-
     await _edit_text_or_caption(callback.message, "⏳ Генерирую дизайн… Это может занять до 1–2 минут.")
 
     try:
-        coro = generate_design(image_path=image_path, prompt=prompt)
+        # Передаём структурные параметры; промпт собирается на стороне executor
+        coro = generate_design(image_path=image_path, style=style_choice, room_type=room_type)
         image_url = await run_long_operation_with_action(
             bot=bot,
             chat_id=user_id,
@@ -508,13 +508,16 @@ async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot
     except Exception:
         style_choice = "Модерн"
 
-    # Переносим формирование промпта в executor (единая логика)
-    prompt = build_design_prompt(style=style_choice, room_type=room_type, furniture=furniture_choice)
-
     await _edit_text_or_caption(callback.message, "⏳ Генерирую дизайн… Это может занять до 1–2 минут.")
 
     try:
-        coro = generate_design(image_path=image_path, prompt=prompt)
+        # Передаём структурные параметры; промпт собирается на стороне executor
+        coro = generate_design(
+            image_path=image_path,
+            style=style_choice,
+            room_type=room_type,
+            furniture=furniture_choice
+        )
         image_url = await run_long_operation_with_action(
             bot=bot,
             chat_id=user_id,
@@ -620,12 +623,35 @@ async def handle_zero_back_to_upload(callback: CallbackQuery, state: FSMContext,
 #########################################################################################################
 ################################## HTTP CLIENT: GENERATE FLOOR PLAN #####################################
 #########################################################################################################
-async def generate_design(image_path: str, prompt: str) -> str | None:
-    return await _post_image("/api/v1/design/generate", image_path, prompt)
+async def generate_design(
+    image_path: str,
+    *,
+    style: str,
+    room_type: str | None = None,
+    furniture: str | None = None,
+) -> str | None:
+    """
+    Клиент к executor: передаём исходное изображение и параметры,
+    из которых executor соберёт промпт.
+    """
+    return await _post_image(
+        "/api/v1/design/generate",
+        image_path=image_path,
+        style=style,
+        room_type=room_type,
+        furniture=furniture,
+    )
 
 
 
-async def _post_image(endpoint: str, image_path: str, prompt: str) -> str | None:
+async def _post_image(
+    endpoint: str,
+    *,
+    image_path: str,
+    style: str,
+    room_type: str | None = None,
+    furniture: str | None = None,
+) -> str | None:
     url = f"{EXECUTOR_BASE_URL.rstrip('/')}{endpoint}"
     try:
         # Читаем в память и закрываем файл сразу (на Windows это критично)
@@ -639,7 +665,12 @@ async def _post_image(endpoint: str, image_path: str, prompt: str) -> str | None
             filename=os.path.basename(image_path),
             content_type="image/png",
         )
-        form.add_field("prompt", prompt)
+        # Передаём структурные поля вместо готового промпта
+        form.add_field("style", style)
+        if room_type:
+            form.add_field("room_type", room_type)
+        if furniture:
+            form.add_field("furniture", furniture)
 
         async with aiohttp.ClientSession() as session:
             async with session.post(url, data=form, timeout=600) as resp:
