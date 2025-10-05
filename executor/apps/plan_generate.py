@@ -12,6 +12,7 @@ Self-contained module for the /plan/generate endpoint.
 - Принять картинку и сгенерированный промпт
 - Отправить в Banano (Gemini 2.5 Flash Image) без SDK — прямой HTTP
 - Вернуть результат обработки (картинка(и) и опционально текст)
+- Поддержать двухпроходную схему: 1) черновик; 2) уточнение c «картинка-истина + черновик + промпт»
 - Ключ берём из запроса, если нет — из ENV/конфига
 """
 
@@ -45,7 +46,7 @@ BANANO_IMAGES_ONLY = os.getenv("BANANO_IMAGES_ONLY", "1") == "1"
 # Необязательное соотношение сторон по умолчанию: "", "1:1", "16:9", "9:16", ...
 BANANO_ASPECT_RATIO = os.getenv("BANANO_ASPECT_RATIO", "")
 
-__all__ = ["plan_generate", "build_plan_prompt"]
+__all__ = ["plan_generate", "build_plan_prompt", "build_refine_prompt"]
 
 
 # ======================
@@ -118,6 +119,34 @@ The floor plan must be:
 - As cozy and desirable as possible for the buyer.
 The buyer should see the layout, fall in love with it, and want to buy this home from the realtor immediately. Imagine that your fate depends on this specific outcome.
 """.strip()
+
+REFINE_PASS_INSTRUCTIONS_EN = """
+REFINE PASS (Image-to-Image with two inputs):
+Use image #1 as the ground-truth geometry (walls, doors, windows). It is immutable.
+Use image #2 as a draft for colors/furniture/textures only.
+Hard rules:
+- Do NOT move, bend, resize or remove any walls/partitions from image #1.
+- Keep the room count identical to image #1. Keep all wet areas in the same places.
+- Remove ALL text, numbers, labels and axis marks completely.
+- Doors must be simple closed rectangles; no swing arcs or semicircles.
+- If any text appears, regenerate/clean until there is none.
+Output only the final cleaned image.
+""".strip()
+
+def build_refine_prompt(*, base_prompt: str, extra: Optional[str] = None) -> str:
+    """
+    Готовит промпт для 2-го прохода: поясняем роли изображений и жёсткие ограничения.
+    base_prompt — исходный промпт первого прохода (встраиваем как контекст).
+    extra — необязательное уточнение от клиента.
+    """
+    parts: List[str] = []
+    if base_prompt.strip():
+        parts.append("Context from the initial prompt:\n" + base_prompt.strip())
+    parts.append(REFINE_PASS_INSTRUCTIONS_EN)
+    if extra and extra.strip():
+        parts.append(extra.strip())
+    # компактная склейка
+    return "\n\n".join(parts)
 
 
 # ======================
@@ -375,6 +404,8 @@ def plan_generate(req: Request):
       - interior_style: str (опц.; используется, если prompt не передан)
       - aspect_ratio: str (опц.; например '16:9')
       - response: 'image' | 'image+text' (опц.; default=env BANANO_IMAGES_ONLY)
+      - second_pass: '0' | '1' (опц.; default='1') — запускать ли уточняющий 2-й проход
+      - refine_prompt: str (опц.) — добавка к промпту для 2-го прохода
       - api_key: str (опц.; приоритетный источник ключа)
     Query:
       - ?debug=1 — вернуть отладочные поля
@@ -415,6 +446,8 @@ def plan_generate(req: Request):
         aspect_ratio = (form.get("aspect_ratio") or BANANO_ASPECT_RATIO or "").strip() or None
         response_mode = (form.get("response") or ("image" if BANANO_IMAGES_ONLY else "image+text")).strip().lower()
         images_only = response_mode == "image"
+        second_pass_flag = (form.get("second_pass") or "1").strip() != "0"
+        refine_prompt_extra = (form.get("refine_prompt") or "").strip()
 
         # 4) Ключ
         api_key = _read_api_key(req)
@@ -423,7 +456,7 @@ def plan_generate(req: Request):
 
         LOG.info("plan_generate (banano) start req_id=%s model=%s", request_id, BANANO_MODEL)
 
-        # 5) Вызов Banano/Gemini
+        # 5) 1-й проход: черновик
         nb_resp = _banano_generate_image(
             api_key=api_key,
             model=BANANO_MODEL,
@@ -435,23 +468,48 @@ def plan_generate(req: Request):
             max_retries=2,  # Максимум 3 попытки всего
         )
 
-        # 6) Ответ
-        out_imgs = [_to_data_url(b, mime=m) for b, m in nb_resp.get("images", [])]
+        # 6) 2-й проход (опционально): картинка-истина + черновик
+        final_resp = nb_resp
+        if second_pass_flag and nb_resp.get("images"):
+            try:
+                draft_img_bytes, draft_mime = nb_resp["images"][0]  # берём первое изображение черновика
+                refine_prompt = build_refine_prompt(base_prompt=prompt, extra=refine_prompt_extra)
+                LOG.info("plan_generate (banano) second pass start req_id=%s model=%s", request_id, BANANO_MODEL)
+                final_resp = _banano_generate_image(
+                    api_key=api_key,
+                    model=BANANO_MODEL,
+                    endpoint=BANANO_ENDPOINT,
+                    prompt=refine_prompt,
+                    images=[img_bytes, draft_img_bytes],  # истина + черновик
+                    aspect_ratio=aspect_ratio,
+                    images_only=True,  # финал — только картинка
+                    max_retries=2,
+                )
+            except Exception as _e:
+                LOG.warning("Second pass skipped due to error: %s", _e)
+                final_resp = nb_resp
+
+        # 7) Ответ
+        out_imgs = [_to_data_url(b, mime=m) for b, m in final_resp.get("images", [])]
         body: Dict[str, Any] = {"ok": True, "model": BANANO_MODEL, "images": out_imgs}
         # url публикуем только если это http(s), чтобы клиент не принимал data: как линк
         if out_imgs and isinstance(out_imgs[0], str) and out_imgs[0].startswith(("http://", "https://")):
             body["url"] = out_imgs[0]
-        if not images_only and nb_resp.get("text"):
-            body["text"] = nb_resp["text"]
+        if not images_only and final_resp.get("text"):
+            body["text"] = final_resp["text"]
 
         if debug_flag:
             body["debug"] = {
-                "prompt": prompt,
+                "prompt_pass1": prompt,
+                "prompt_pass2": (build_refine_prompt(base_prompt=prompt, extra=refine_prompt_extra) if second_pass_flag else ""),
                 "image_meta": _image_meta(img_bytes),
                 "request_id": request_id,
                 "aspect_ratio": aspect_ratio,
                 "response_mode": response_mode,
                 "endpoint": BANANO_ENDPOINT,
+                "second_pass": bool(second_pass_flag),
+                "pass1_images_count": len(nb_resp.get("images", [])),
+                "pass2_images_count": len(final_resp.get("images", [])) if second_pass_flag else 0,
             }
 
         return jsonify(body), 200
