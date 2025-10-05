@@ -57,6 +57,8 @@ ERROR_WRONG_INPUT = "❌ Пожалуйста, отправь изображен
 ERROR_PDF_PAGES = "❌ В PDF должно быть не больше одной страницы."
 ERROR_LINK = "❌ Не удалось скачать изображение по ссылке. Нужна прямая ссылка на файл (jpg/png)."
 SORRY_TRY_AGAIN = "😔 Не удалось сгенерировать изображение. Попробуйте ещё раз."
+ERROR_RATE_LIMIT = "⏳ Превышен лимит запросов к Google API. Попробуйте через несколько минут."
+ERROR_API_UNAVAILABLE = "🚫 Сервис генерации временно недоступен. Попробуйте позже."
 
 
 # ===========================
@@ -409,7 +411,14 @@ async def generate_floor_plan(*, floor_plan_path: str, visualization_style: str,
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    return data.get("url") or ""
+                    # Проверяем разные форматы ответа
+                    url = data.get("url") or ""
+                    if not url and data.get("images"):
+                        # Если есть массив изображений, берем первое
+                        images = data.get("images", [])
+                        if images:
+                            url = images[0]
+                    return url
                 # 404 — пробуем фолбэк на старый путь
                 if resp.status != 404:
                     body_text = await resp.text()
@@ -432,7 +441,14 @@ async def generate_floor_plan(*, floor_plan_path: str, visualization_style: str,
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    return data.get("url") or ""
+                    # Проверяем разные форматы ответа
+                    url = data.get("url") or ""
+                    if not url and data.get("images"):
+                        # Если есть массив изображений, берем первое
+                        images = data.get("images", [])
+                        if images:
+                            url = images[0]
+                    return url
                 else:
                     body_text = await resp.text()
                     try:
@@ -445,7 +461,13 @@ async def generate_floor_plan(*, floor_plan_path: str, visualization_style: str,
                     )
                     return ""
     except Exception as e:
-        LOG.exception("Exception in generate_floor_plan [%s]: %s", req_id, e)
+        error_msg = str(e)
+        if "429" in error_msg or "Too Many Requests" in error_msg:
+            LOG.warning("Rate limit hit for generate_floor_plan [%s]: %s", req_id, e)
+        elif "401" in error_msg or "403" in error_msg:
+            LOG.error("Auth error in generate_floor_plan [%s]: %s", req_id, e)
+        else:
+            LOG.exception("Exception in generate_floor_plan [%s]: %s", req_id, e)
         return ""
 
 

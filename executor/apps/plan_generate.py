@@ -19,6 +19,7 @@ import json
 import base64
 import hashlib
 import logging
+import urllib.error
 from executor.config import *
 from typing import Any, Dict, Optional, List, Tuple
 
@@ -236,9 +237,24 @@ def _http_post_json(url: str, params: Dict[str, str], body: Dict[str, Any], time
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        resp_body = resp.read()
-        return json.loads(resp_body.decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp_body = resp.read()
+            return json.loads(resp_body.decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode('utf-8')
+        try:
+            error_json = json.loads(error_body)
+        except:
+            error_json = {"error": {"message": error_body}}
+        
+        # Преобразуем HTTP ошибку в исключение с деталями
+        if e.code == 429:
+            raise Exception(f"HTTP Error 429: Too Many Requests - {error_json.get('error', {}).get('message', 'Rate limit exceeded')}")
+        elif e.code >= 400:
+            raise Exception(f"HTTP Error {e.code}: {error_json.get('error', {}).get('message', 'API request failed')}")
+        else:
+            raise Exception(f"HTTP Error {e.code}: {error_body}")
 
     # --- Вариант с requests (если предпочитаешь) ---
     # import requests
@@ -282,10 +298,14 @@ def _banano_generate_image(
     aspect_ratio: Optional[str],
     images_only: bool,
     timeout: int = 90,
+    max_retries: int = 3,
 ) -> Dict[str, Any]:
     """
     Тонкий вызов REST: {endpoint}/models/{model}:generateContent?key=API_KEY
+    С retry логикой для rate limits
     """
+    import time
+    
     url = endpoint.rstrip("/") + f"/models/{model}:generateContent"
     params = {"key": api_key}
 
@@ -296,9 +316,28 @@ def _banano_generate_image(
         images_only=images_only,
     )
 
-    resp_json = _http_post_json(url, params, payload, timeout=timeout)
-    out_images, out_text = _parse_google_response(resp_json)
-    return {"images": out_images, "text": out_text, "raw": resp_json}
+    last_exception = None
+    for attempt in range(max_retries + 1):
+        try:
+            resp_json = _http_post_json(url, params, payload, timeout=timeout)
+            out_images, out_text = _parse_google_response(resp_json)
+            return {"images": out_images, "text": out_text, "raw": resp_json}
+        except Exception as e:
+            last_exception = e
+            error_msg = str(e)
+            
+            # Если rate limit и есть еще попытки - ждем и повторяем
+            if "429" in error_msg and attempt < max_retries:
+                wait_time = (2 ** attempt) * 5  # Экспоненциальная задержка: 5, 10, 20 сек
+                LOG.warning(f"Rate limit hit, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries + 1})")
+                time.sleep(wait_time)
+                continue
+            else:
+                # Не rate limit или кончились попытки
+                raise e
+    
+    # Если дошли сюда, значит все попытки исчерпаны
+    raise last_exception or Exception("All retry attempts failed")
 
 
 # =================
@@ -393,6 +432,7 @@ def plan_generate(req: Request):
             images=[img_bytes],
             aspect_ratio=aspect_ratio,
             images_only=images_only,
+            max_retries=2,  # Максимум 3 попытки всего
         )
 
         # 6) Ответ
@@ -401,6 +441,7 @@ def plan_generate(req: Request):
             "ok": True,
             "model": BANANO_MODEL,
             "images": out_imgs,
+            "url": out_imgs[0] if out_imgs else None,  # Для совместимости с ботом
         }
         if not images_only and nb_resp.get("text"):
             body["text"] = nb_resp["text"]
