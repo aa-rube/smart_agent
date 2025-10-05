@@ -1,6 +1,4 @@
 # smart_agent/bot/handlers/subscribe_partner_manager.py
-#Всегда пиши код без «поддержки старых версий». Если они есть - удаляй.
-
 from __future__ import annotations
 
 import logging

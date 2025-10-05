@@ -1,6 +1,4 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\design.py
-#Всегда пиши код без «поддержки старых версий». Если они есть в коде - удаляй.
-
 from __future__ import annotations
 
 import os
@@ -22,7 +20,7 @@ import bot.utils.billing_db as billing_db          # биллинг: карты/
 from bot.config import get_file_path
 from bot.utils.database import is_trial_active, trial_remaining_hours
 from bot.states.states import RedesignStates, ZeroDesignStates
-from executor.prompt_factory import create_prompt
+from executor.design_generate import build_design_prompt
 from bot.utils.image_processor import save_image_as_png
 from bot.utils.chat_actions import run_long_operation_with_action
 from bot.utils.ai_processor import generate_design, download_image_from_url
@@ -346,7 +344,8 @@ async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot:
     except Exception:
         style_choice = "Модерн"
 
-    prompt = create_prompt(style=style_choice, room_type=room_type)
+    # Переносим формирование промпта в executor (единая логика)
+    prompt = build_design_prompt(style=style_choice, room_type=room_type)
 
     await _edit_text_or_caption(callback.message, "⏳ Генерирую дизайн… Это может занять до 1–2 минут.")
 
@@ -512,7 +511,8 @@ async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot
     except Exception:
         style_choice = "Модерн"
 
-    prompt = create_prompt(style=style_choice, room_type=room_type, furniture=furniture_choice)
+    # Переносим формирование промпта в executor (единая логика)
+    prompt = build_design_prompt(style=style_choice, room_type=room_type, furniture=furniture_choice)
 
     await _edit_text_or_caption(callback.message, "⏳ Генерирую дизайн… Это может занять до 1–2 минут.")
 

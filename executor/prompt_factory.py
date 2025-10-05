@@ -5,59 +5,6 @@ from typing import Optional, Dict, Any, List, Tuple, Set
 from executor.ai_config import *
 
 
-def create_prompt(
-        style: str,
-        room_type: str | None = None,
-        furniture: str | None = None,
-        plan_type: str | None = None
-) -> str:
-    base_prompt = PROMPT_INTERIOR_BASE
-
-    # Обработка случайного стиля
-    if style == "🔥 Случайный выбор ИИ":
-        available_styles = {k: v for k, v in STYLES_DETAIL.items() if v != "random_style"}
-        random_style_name = random.choice(list(available_styles.keys()))
-        style_text = available_styles[random_style_name]
-    else:
-        # Если стиль не случайный, получаем его детализацию из конфига
-        style_text = STYLES_DETAIL.get(style, "modern style")
-
-    # Сценарий "Дизайн планировок"
-    if plan_type:
-        plan_text = PLAN_TYPE_PROMPTS.get(plan_type, "")
-        # Используем шаблон из конфига
-        final_prompt = PROMPT_PLAN_DESIGN.format(
-            plan_type=plan_text,
-            style_text=style_text
-        )
-
-    # Сценарий "Редизайн интерьера"
-    elif room_type and furniture is None:
-        room_text = ROOM_TYPE_PROMPTS.get(room_type, "room")
-        # Используем шаблон из конфига
-        final_prompt = PROMPT_REDESIGN.format(
-            base_prompt=base_prompt,
-            room_type=room_text,
-            style_text=style_text
-        )
-
-    # Сценарий "Дизайн с нуля"
-    elif room_type and furniture:
-        room_text = ROOM_TYPE_PROMPTS.get(room_type, "room")
-        furniture_text = FURNITURE_PROMPTS.get(furniture, "")
-        # Используем шаблон из конфига
-        final_prompt = PROMPT_ZERO_DESIGN.format(
-            base_prompt=base_prompt,
-            room_type=room_text,
-            furniture_text=furniture_text,
-            style_text=style_text
-        )
-    else:
-        # Запасной вариант
-        final_prompt = f"{base_prompt}, {style_text}"
-
-    # Очищаем от лишних пробелов и запятых
-    return ", ".join(part.strip() for part in final_prompt.split(',') if part.strip())
 
 
 def create_floor_plan_prompt(visualization_style: str, interior_style: str) -> str:
