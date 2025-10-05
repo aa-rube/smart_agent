@@ -7,7 +7,8 @@ Self-contained module for the /design/generate endpoint.
 — Не тянет внешние конфиги (кроме ENV/ executor.config для фолбэка ключа)
 — Все константы, билдеры, обработчики и утилиты — внутри
 — Контроллер должен лишь делегировать сюда: design_generate(request)
-— Двухпроходная схема: 1) черновик; 2) уточнение (истина + черновик + промпт)
+— Двухпроходная схема была: 1) черновик; 2) уточнение (истина + черновик + промпт)
+— ⚠️ Второй проход временно отключён (вызов закомментирован ниже).
 """
 
 import json
@@ -353,26 +354,27 @@ def design_generate(req: Request):
             max_retries=2,
         )
 
-        # 2-й проход — истина (исходник) + черновик, акцент на геометрию/инженерию
+        # 2-й проход — (ОТКЛЮЧЕНО). Оставляем только результат первого прохода.
         final_resp = p1
-        if second_pass_flag and p1.get("images"):
-            try:
-                draft_bytes, _mime = p1["images"][0]
-                refine_prompt = build_refine_prompt(base_prompt=prompt, extra=refine_extra)
-                LOG.info("design_generate (banano) pass2 start req_id=%s", request_id)
-                final_resp = _banano_generate_image(
-                    api_key=api_key,
-                    model=BANANO_MODEL,
-                    endpoint=BANANO_ENDPOINT,
-                    prompt=refine_prompt,
-                    images=[img_bytes, draft_bytes],
-                    aspect_ratio=aspect_ratio,
-                    images_only=True,
-                    max_retries=2,
-                )
-            except Exception as _e:
-                LOG.warning("design_generate second pass skipped: %s", _e)
-                final_resp = p1
+        # --- SECOND PASS DISABLED ---
+        # if second_pass_flag and p1.get("images"):
+        #     try:
+        #         draft_bytes, _mime = p1["images"][0]
+        #         refine_prompt = build_refine_prompt(base_prompt=prompt, extra=refine_extra)
+        #         LOG.info("design_generate (banano) pass2 start req_id=%s", request_id)
+        #         final_resp = _banano_generate_image(
+        #             api_key=api_key,
+        #             model=BANANO_MODEL,
+        #             endpoint=BANANO_ENDPOINT,
+        #             prompt=refine_prompt,
+        #             images=[img_bytes, draft_bytes],
+        #             aspect_ratio=aspect_ratio,
+        #             images_only=True,
+        #             max_retries=2,
+        #         )
+        #     except Exception as _e:
+        #         LOG.warning("design_generate second pass skipped: %s", _e)
+        #         final_resp = p1
 
         # Ответ
         out_imgs = [_to_data_url(b, mime=m) for b, m in final_resp.get("images", [])]
@@ -384,14 +386,14 @@ def design_generate(req: Request):
         if debug_flag:
             body["debug"] = {
                 "prompt_pass1": prompt,
-                "prompt_pass2": (build_refine_prompt(base_prompt=prompt, extra=refine_extra) if second_pass_flag else ""),
+                "prompt_pass2": "",  # second pass disabled
                 "image_meta": _image_meta(img_bytes),
                 "endpoint": BANANO_ENDPOINT,
                 "aspect_ratio": aspect_ratio,
                 "response_mode": response_mode,
-                "second_pass": bool(second_pass_flag),
+                "second_pass": False,  # forced off
                 "pass1_images_count": len(p1.get("images", [])),
-                "pass2_images_count": len(final_resp.get("images", [])) if second_pass_flag else 0,
+                "pass2_images_count": 0,
             }
         return jsonify(body), 200
 
