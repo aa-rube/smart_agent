@@ -1,6 +1,4 @@
 # smart_agent/bot/handlers/plans.py
-# Всегда пиши код без «поддержки старых версий». Если они есть в коде - удаляй.
-
 from __future__ import annotations
 
 import os
@@ -17,10 +15,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.enums.chat_action import ChatAction
 from aiogram.exceptions import TelegramBadRequest
 
-from bot.config import get_file_path
+from bot.config import get_file_path, EXECUTOR_BASE_URL
 from bot.states.states import FloorPlanStates
 from bot.utils.chat_actions import run_long_operation_with_action
-from bot.utils.ai_processor import generate_floor_plan
 from bot.utils.file_utils import safe_remove
 from bot.utils.redis_repo import quota_repo
 
@@ -358,6 +355,63 @@ async def handle_style_plan(callback: CallbackQuery, state: FSMContext, bot: Bot
         await state.clear()
 
 
+
+
+#########################################################################################################
+################################## HTTP CLIENT: GENERATE FLOOR PLAN #####################################
+#########################################################################################################
+
+async def generate_floor_plan(*, floor_plan_path: str, visualization_style: str, interior_style: str) -> str:
+    """
+    Отправляет изображение планировки и параметры визуализации на executor.
+    Промпт строится на стороне executor/apps/plan_generate.py.
+    Возвращает URL сгенерированного изображения или пустую строку.
+    """
+    import os, io
+    from aiohttp import FormData, ClientSession
+
+    # Основной путь через Blueprint с префиксом и фолбэк на «старый» путь без префикса
+    base = os.getenv("EXECUTOR_BASE_URL", "http://localhost:8080").rstrip("/")
+    api_prefix = os.getenv("EXECUTOR_API_PREFIX", "/api/v1").strip("/")
+    primary_url = f"{base}/{api_prefix}/plan/generate" if api_prefix else f"{base}/plan/generate"
+    fallback_url = f"{base}/plan/generate"
+
+    # Читаем файл в память, чтобы можно было переиспользовать payload при фолбэке
+    with open(floor_plan_path, "rb") as fh:
+        img_bytes = fh.read()
+
+    def _build_form() -> FormData:
+        form = FormData()
+        form.add_field(
+            "image",
+            io.BytesIO(img_bytes),
+            filename=os.path.basename(floor_plan_path),
+            content_type="image/png",
+        )
+        if visualization_style:
+            form.add_field("visualization_style", visualization_style)
+        form.add_field("interior_style", interior_style or "Модерн")
+        return form
+
+    async with ClientSession() as session:
+        # 1) пробуем новый путь с префиксом (/api/v1/plan/generate)
+        async with session.post(primary_url, data=_build_form()) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return data.get("url") or ""
+            # 404 — пробуем фолбэк на старый путь
+            if resp.status != 404:
+                return ""
+
+        # 2) фолбэк на /plan/generate
+        async with session.post(fallback_url, data=_build_form()) as resp:
+            if resp.status != 200:
+                return ""
+            data = await resp.json()
+            return data.get("url") or ""
+
+
+
 async def handle_plan_back_to_upload(callback: CallbackQuery, state: FSMContext, bot: Bot):
     """
     Кнопка «Назад» с экрана результата:
@@ -382,7 +436,6 @@ async def handle_plan_back_to_upload(callback: CallbackQuery, state: FSMContext,
     )
 
     await callback.answer()
-
 
 # ===========================
 # Router

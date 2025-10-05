@@ -1,9 +1,7 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\design.py
 from __future__ import annotations
 
-import os
 import fitz
-import aiohttp
 from typing import Optional
 
 from aiogram import Router, F, Bot
@@ -17,13 +15,12 @@ from aiogram.exceptions import TelegramBadRequest
 
 import bot.utils.database as db                    # приложение: триал/история/consents
 import bot.utils.billing_db as billing_db          # биллинг: карты/подписки/лог платежей
-from bot.config import get_file_path
+from bot.config import *
 from bot.utils.database import is_trial_active, trial_remaining_hours
 from bot.states.states import RedesignStates, ZeroDesignStates
 from executor.apps.design_generate import build_design_prompt
-from bot.utils.image_processor import save_image_as_png
+from bot.utils.image_processor import *
 from bot.utils.chat_actions import run_long_operation_with_action
-from bot.utils.ai_processor import generate_design, download_image_from_url
 from bot.utils.file_utils import safe_remove
 
 
@@ -617,6 +614,45 @@ async def handle_zero_back_to_upload(callback: CallbackQuery, state: FSMContext,
         ),
     )
     await callback.answer()
+
+
+
+#########################################################################################################
+################################## HTTP CLIENT: GENERATE FLOOR PLAN #####################################
+#########################################################################################################
+async def generate_design(image_path: str, prompt: str) -> str | None:
+    return await _post_image("/api/v1/design/generate", image_path, prompt)
+
+
+
+async def _post_image(endpoint: str, image_path: str, prompt: str) -> str | None:
+    url = f"{EXECUTOR_BASE_URL.rstrip('/')}{endpoint}"
+    try:
+        # Читаем в память и закрываем файл сразу (на Windows это критично)
+        with open(image_path, "rb") as f:
+            file_bytes = f.read()
+
+        form = aiohttp.FormData()
+        form.add_field(
+            "image",
+            file_bytes,  # <-- bytes вместо открытого файла
+            filename=os.path.basename(image_path),
+            content_type="image/png",
+        )
+        form.add_field("prompt", prompt)
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, data=form, timeout=600) as resp:
+                if resp.status == 200:
+                    js = await resp.json()
+                    return js.get("url")
+                else:
+                    txt = await resp.text()
+                    print(f"Executor error {resp.status}: {txt}")
+                    return None
+    except Exception as e:
+        print(f"HTTP client error: {e}")
+        return None
 
 
 # =============================================================================

@@ -1,6 +1,7 @@
-#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\utils\image_processor.py
+# C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\utils\image_processor.py
 import os
 import uuid
+import aiohttp
 from PIL import Image
 from io import BytesIO
 
@@ -18,4 +19,18 @@ async def save_image_as_png(image_bytes: bytes, user_id: int) -> str | None:
         return filepath
     except Exception as e:
         print(f"Ошибка сохранения файла: {e}")
+        return None
+
+
+async def download_image_from_url(url: str) -> bytes | None:
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+                else:
+                    print(f"Download error {resp.status} for {url}")
+                    return None
+    except Exception as e:
+        print(f"Download exception: {e}")
         return None
