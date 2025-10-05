@@ -35,8 +35,35 @@ async def _post_image(endpoint: str, image_path: str, prompt: str) -> str | None
 async def generate_design(image_path: str, prompt: str) -> str | None:
     return await _post_image("/api/v1/design/generate", image_path, prompt)
 
-async def generate_floor_plan(floor_plan_path: str, prompt: str) -> str | None:
-    return await _post_image("/api/v1/plan/generate", floor_plan_path, prompt)
+async def generate_floor_plan(*, floor_plan_path: str, visualization_style: str, interior_style: str) -> str:
+    """
+    Отправляет изображение планировки и параметры визуализации на executor.
+    Промпт строится на стороне executor/apps/plan_generate.py.
+    Возвращает URL сгенерированного изображения или пустую строку.
+    """
+    import os
+    from aiohttp import FormData, ClientSession
+    
+    url = f"{os.getenv('EXECUTOR_BASE_URL', 'http://localhost:8080')}/plan/generate"
+    
+    form = FormData()
+    form.add_field(
+        "image",
+        open(floor_plan_path, "rb"),
+        filename=os.path.basename(floor_plan_path),
+        content_type="image/png",
+    )
+    # Вместо prompt передаём параметры
+    if visualization_style:
+        form.add_field("visualization_style", visualization_style)
+    form.add_field("interior_style", interior_style or "Модерн")
+    
+    async with ClientSession() as session:
+        async with session.post(url, data=form) as resp:
+            if resp.status != 200:
+                return ""
+            data = await resp.json()
+            return data.get("url") or ""
 
 async def download_image_from_url(url: str) -> bytes | None:
     try:

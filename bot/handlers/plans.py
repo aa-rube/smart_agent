@@ -19,7 +19,6 @@ from aiogram.exceptions import TelegramBadRequest
 
 from bot.config import get_file_path
 from bot.states.states import FloorPlanStates
-from executor.prompt_factory import create_floor_plan_prompt
 from bot.utils.chat_actions import run_long_operation_with_action
 from bot.utils.ai_processor import generate_floor_plan
 from bot.utils.file_utils import safe_remove
@@ -313,11 +312,6 @@ async def handle_style_plan(callback: CallbackQuery, state: FSMContext, bot: Bot
     except Exception:
         interior_style = "Модерн"
 
-    prompt = create_floor_plan_prompt(
-        visualization_style=viz,
-        interior_style=interior_style
-    )
-
     # 1) «Часики» — редактируем текущее сообщение
     await _edit_text_or_caption(
         callback.message,
@@ -327,13 +321,18 @@ async def handle_style_plan(callback: CallbackQuery, state: FSMContext, bot: Bot
 
     success = False
     try:
-        # 2) чат-статус во время долгой операции
-        coro = generate_floor_plan(floor_plan_path=plan_path, prompt=prompt)
+        # 2) чат-статус во время долгой операции — теперь передаём параметры,
+        # а промпт собирается на стороне executor
+        coro = generate_floor_plan(
+            floor_plan_path=plan_path,
+            visualization_style=viz,
+            interior_style=interior_style,
+        )
         image_url = await run_long_operation_with_action(
             bot=bot,
             chat_id=user_id,
             action=ChatAction.UPLOAD_PHOTO,
-            coro=coro
+            coro=coro,
         )
 
         # 3) по готовности — ЗАМЕНЯЕМ это же сообщение на фото-результат
