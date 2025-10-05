@@ -14,6 +14,7 @@ from aiogram.types import (
 from aiogram.fsm.context import FSMContext
 from aiogram.enums.chat_action import ChatAction
 from aiogram.exceptions import TelegramBadRequest
+import asyncio
 
 import bot.utils.database as db                    # приложение: триал/история/consents
 import bot.utils.billing_db as billing_db          # биллинг: карты/подписки/лог платежей
@@ -24,6 +25,15 @@ from bot.states.states import RedesignStates, ZeroDesignStates
 from bot.utils.image_processor import *
 from bot.utils.chat_actions import run_long_operation_with_action
 from bot.utils.file_utils import safe_remove
+
+
+async def _safe_answer(cb: CallbackQuery) -> None:
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
+    except Exception:
+        pass
 
 
 # =============================================================================
@@ -328,6 +338,9 @@ async def handle_room_type_redesign(callback: CallbackQuery, state: FSMContext):
 
 async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot: Bot):
     """Генерация редизайна по фото + room_type + style."""
+    # ВАЖНО: сразу закрываем callback, чтобы не «протух»
+    await _safe_answer(callback)
+    
     user_id = callback.from_user.id
     if not _has_access(user_id):
         await _edit_text_or_caption(callback.message, _format_access_text(user_id), SUBSCRIBE_KB)
@@ -391,7 +404,7 @@ async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot:
             else:
                 print(f"Не удалось удалить временный файл (занят): {image_path}")
         await state.clear()
-        await callback.answer()
+        # НЕ отвечаем повторно — к этому моменту query уже может протухнуть
 
 
 # =============================================================================
@@ -490,6 +503,9 @@ async def handle_furniture_zero(callback: CallbackQuery, state: FSMContext):
 
 
 async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    # Сразу закрываем callback
+    await _safe_answer(callback)
+    
     user_id = callback.from_user.id
 
     if not _has_access(user_id):
@@ -561,7 +577,7 @@ async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot
             else:
                 print(f"Не удалось удалить временный файл (занят): {image_path}")
         await state.clear()
-        await callback.answer()
+        # Повторный answer убирать
 
 
 # =============================================================================
