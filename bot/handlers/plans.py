@@ -96,7 +96,7 @@ def kb_result_back() -> InlineKeyboardMarkup:
 # ===========================
 # Квоты
 # ===========================
-GEN_LIMIT_PER_DAY = 5          # попыток на пользователя
+GEN_LIMIT_PER_DAY = 500          # попыток на пользователя
 GEN_WINDOW_SEC    = 86400      # 24 часа
 
 
