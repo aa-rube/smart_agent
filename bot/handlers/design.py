@@ -25,6 +25,10 @@ from bot.states.states import RedesignStates, ZeroDesignStates
 from bot.utils.image_processor import *
 from bot.utils.chat_actions import run_long_operation_with_action
 from bot.utils.file_utils import safe_remove
+import base64
+import re
+import uuid
+from datetime import datetime
 
 
 async def _safe_answer(cb: CallbackQuery) -> None:
@@ -229,6 +233,19 @@ async def _edit_or_replace_with_photo_url(
             pass
         await bot.send_photo(chat_id=msg.chat.id, photo=url, caption=caption, reply_markup=kb)
 
+# --- helpers for data: URLs ---
+_DATA_URL_RE = re.compile(r"^data:(?P<mime>[^;]+);base64,(?P<b64>.+)$", re.I | re.S)
+
+def _is_data_url(s: str) -> bool:
+    return bool(_DATA_URL_RE.match(s or ""))
+
+def _data_url_to_bytes(s: str) -> tuple[bytes, str]:
+    m = _DATA_URL_RE.match(s or "")
+    if not m:
+        return b"", "application/octet-stream"
+    mime = m.group("mime") or "application/octet-stream"
+    return base64.b64decode(m.group("b64")), mime
+
 
 # =============================================================================
 # Главный экран «Дизайн»
@@ -369,7 +386,11 @@ async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot:
         )
 
         if image_url:
-            image_bytes = await download_image_from_url(image_url)
+            # Поддерживаем как http(s), так и data:URL
+            if _is_data_url(image_url):
+                image_bytes, _ = _data_url_to_bytes(image_url)
+            else:
+                image_bytes = await download_image_from_url(image_url)
             if image_bytes:
                 tmp_path = get_file_path(f"img/tmp/result_{user_id}.png")
                 os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
@@ -542,7 +563,10 @@ async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot
         )
 
         if image_url:
-            image_bytes = await download_image_from_url(image_url)
+            if _is_data_url(image_url):
+                image_bytes, _ = _data_url_to_bytes(image_url)
+            else:
+                image_bytes = await download_image_from_url(image_url)
             if image_bytes:
                 tmp_path = get_file_path(f"img/tmp/result_{user_id}.png")
                 os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
@@ -668,6 +692,8 @@ async def _post_image(
     room_type: str | None = None,
     furniture: str | None = None,
 ) -> str | None:
+    # полезно иметь request-id и debug для логов executor'а
+    req_id = f"dg-{uuid.uuid4().hex[:8]}-{int(datetime.utcnow().timestamp())}"
     url = f"{EXECUTOR_BASE_URL.rstrip('/')}{endpoint}"
     try:
         # Читаем в память и закрываем файл сразу (на Windows это критично)
@@ -689,10 +715,24 @@ async def _post_image(
             form.add_field("furniture", furniture)
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, data=form, timeout=600) as resp:
+            async with session.post(
+                url,
+                params={"debug": "1"},
+                data=form,
+                timeout=600,
+                headers={"X-Request-ID": req_id},
+            ) as resp:
                 if resp.status == 200:
                     js = await resp.json()
-                    return js.get("url")
+                    # 1) обычный url
+                    url_val = js.get("url")
+                    if url_val:
+                        return url_val
+                    # 2) фолбэк: images[0] (может быть data:URL)
+                    imgs = js.get("images") or []
+                    if isinstance(imgs, list) and imgs:
+                        return imgs[0]
+                    return None
                 else:
                     txt = await resp.text()
                     print(f"Executor error {resp.status}: {txt}")
