@@ -14,6 +14,7 @@ import os
 import hashlib
 import logging
 from typing import Any, Dict, Optional, List
+import re
 
 from flask import jsonify, Request
 import replicate
@@ -22,6 +23,13 @@ from replicate.exceptions import ReplicateError, ModelError
 __all__ = ["plan_generate", "build_plan_prompt"]
 
 LOG = logging.getLogger(__name__)
+
+class ParamFallbackError(Exception):
+    """Поднимается, когда исчерпаны все варианты image_param."""
+    def __init__(self, message: str, attempted: List[str], last: Optional[Exception] = None):
+        super().__init__(message)
+        self.attempted = attempted
+        self.last = last
 
 # =========================
 #   Model / Runtime config
@@ -119,6 +127,26 @@ The buyer should see the layout, fall in love with it, and want to buy this home
 #      Helper utils
 # ======================
 
+def _is_param_mismatch_error(err: Exception) -> bool:
+    """
+    Эвристика: ошибка явно говорит о проблеме с входными полями/типами.
+    Даём шанс следующему image_param вместо немедленного raise.
+    """
+    msg = f"{err}".lower()
+    patterns = [
+        r"unexpected keyword argument",            # Pythonic "image" не ожидается
+        r"unknown input|unknown field",            # Replicate: неизвестное поле
+        r"invalid input|invalid value",            # некорректный формат/тип
+        r"missing required.*(image|input)",        # не передан файл/поле
+        r"(image|input).*required",                # image обязателен
+        r"expected.*image|must be an image",       # ожидали картинку
+        r"cannot identify image file",             # плохой/непонятный файл
+        r"unsupported file type|content-type",     # неправильный формат
+        r"field.*not allowed",                     # лишнее поле
+        r"got list|got bytes|must be list",        # тип не совпал (list vs file)
+    ]
+    return any(re.search(p, msg) for p in patterns)
+
 def _image_meta(img_bytes: bytes) -> Dict[str, Any]:
     """Минимальная мета для отладки — без внешних зависимостей."""
     return {
@@ -176,14 +204,16 @@ def _build_input_dict(
 
 def _run_with_fallbacks(img_bytes: bytes, prompt: str) -> str:
     """
-    Запускаем replicate.run c прогрессивными фолбэками имени поля изображения:
-    MODEL_IMAGE_PARAM -> 'image' -> 'input_image' -> 'input_images'.
-    Возвращаем URL результата или выбрасываем исключение.
+    Replicate.run с «настоящими» фолбэками:
+    пробуем MODEL_IMAGE_PARAM -> 'image' -> 'input_image' -> 'input_images'
+    и продолжаем на типичных ошибках соответствия входов.
     """
     order: List[str] = [MODEL_IMAGE_PARAM] + [p for p in ["image", "input_image", "input_images"] if p != MODEL_IMAGE_PARAM]
+    attempted: List[str] = []
     last_err: Optional[Exception] = None
 
     for param in order:
+        attempted.append(param)
         try:
             payload = _build_input_dict(
                 prompt=prompt,
@@ -200,25 +230,32 @@ def _run_with_fallbacks(img_bytes: bytes, prompt: str) -> str:
                     LOG.warning("Image param auto-switched: %s -> %s", MODEL_IMAGE_PARAM, param)
                 return url
             last_err = RuntimeError("No URL in output")
+            LOG.warning("No URL in output for image_param=%s; trying next...", param)
         except (ModelError, ReplicateError) as e:
             last_err = e
-            # Если по метрикам видно, что изображение не распозналось — пробуем дальше
+            # 1) Явная телеметрия (metrics.image_count == 0) → пробуем следующее поле
             try:
                 pred = getattr(e, "prediction", None)
                 metrics = getattr(pred, "metrics", {}) if pred else {}
                 if (metrics or {}).get("image_count") == 0:
-                    LOG.warning("Replicate image param suspected mismatch for %s: %s", param, e)
+                    LOG.warning("Replicate suspected image param mismatch for %s: %s", param, e)
                     continue
             except Exception:
                 pass
-            # Иные ошибки — пробрасываем наружу
+            # 2) Эвристики по тексту ошибки → пробуем следующее поле
+            if _is_param_mismatch_error(e):
+                LOG.warning("Param/type mismatch for image_param=%s: %s; trying next...", param, e)
+                continue
+            # 3) Иное — выходим немедленно
+            LOG.error("Replicate error for image_param=%s (no fallback): %s", param, e)
             raise
         except Exception as e:
             last_err = e
+            LOG.warning("Unhandled exception for image_param=%s: %s; trying next...", param, e)
+            continue
 
-    if last_err:
-        raise last_err
-    raise RuntimeError("Unknown replicate fallback failure")
+    # Все варианты исчерпаны — поднимаем информативную ошибку
+    raise ParamFallbackError("All image_param variants failed", attempted, last_err)
 
 # =================
 #   Prompt builder
@@ -300,7 +337,7 @@ def plan_generate(req: Request):
             }
         return jsonify(body), 200
 
-    except (ModelError, ReplicateError) as e:
+    except (ModelError, ReplicateError, ParamFallbackError, RuntimeError) as e:
         payload: Dict[str, Any] = {"error": "replicate_error", "detail": str(e)}
         try:
             pred = getattr(e, "prediction", None)
@@ -313,6 +350,9 @@ def plan_generate(req: Request):
             })
         except Exception:
             pass
+        # Если это наш информативный фолбэк — добавим список попыток
+        if isinstance(e, ParamFallbackError):
+            payload["attempted_params"] = getattr(e, "attempted", None)
         return jsonify(payload), 502
 
     except Exception as e:
