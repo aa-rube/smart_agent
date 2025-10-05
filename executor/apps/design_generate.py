@@ -10,8 +10,6 @@ Self-contained module for the /design/generate endpoint.
 — Двухпроходная схема: 1) черновик; 2) уточнение (истина + черновик + промпт)
 """
 
-import io
-import os
 import json
 import base64
 import hashlib
@@ -74,7 +72,7 @@ STYLES_DETAIL: Dict[str, str] = {
     "🔥 Случайный выбор ИИ": "random_style",
 }
 
-# Дополнительный англ. шаблон для 2-го прохода (укрепляет соблюдение геометрии)
+# Дополнительный шаблон для 2-го прохода (укрепляет соблюдение геометрии)
 REFINE_INTERIOR_INSTRUCTIONS_EN = """
 REFINE PASS (Image-to-Image with two inputs):
 • Image #1 is the ground-truth shell. Treat all structural / engineering elements as immutable:
