@@ -198,8 +198,13 @@ async def main():
 
 
 if __name__ == '__main__':
+    import sys
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)],
     )
+    # чуть приглушим шум сетевых библиотек
+    logging.getLogger("aiohttp.client").setLevel(logging.WARNING)
+    logging.getLogger("aiogram").setLevel(logging.WARNING)
     asyncio.run(main())

@@ -303,6 +303,7 @@ def plan_generate(req: Request):
             return jsonify({"error": "bad_request", "detail": "multipart form-data expected"}), 400
 
         debug_flag = (req.args.get("debug") == "1") if hasattr(req, "args") else False
+        request_id = req.headers.get("X-Request-ID", "")
 
         if "image" not in files:
             return jsonify({"error": "bad_request", "detail": "field 'image' is required"}), 400
@@ -326,6 +327,7 @@ def plan_generate(req: Request):
         meta = _image_meta(img_bytes)
 
         # Генерация изображения на Replicate (+ умный фолбэк имени поля)
+        LOG.info("plan_generate start req_id=%s model=%s", request_id, MODEL_REF)
         url = _run_with_fallbacks(img_bytes, prompt)
 
         body: Dict[str, Any] = {"url": url}
@@ -334,6 +336,7 @@ def plan_generate(req: Request):
                 "prompt": prompt,
                 "image_meta": meta,
                 "model_ref": MODEL_REF,
+                "request_id": request_id,
             }
         return jsonify(body), 200
 
@@ -353,8 +356,26 @@ def plan_generate(req: Request):
         # Если это наш информативный фолбэк — добавим список попыток
         if isinstance(e, ParamFallbackError):
             payload["attempted_params"] = getattr(e, "attempted", None)
+        if debug_flag:
+            payload["debug"] = {
+                "prompt": locals().get("prompt", ""),
+                "image_meta": locals().get("meta", {}),
+                "model_ref": MODEL_REF,
+                "request_id": locals().get("request_id", ""),
+            }
         return jsonify(payload), 502
 
     except Exception as e:
         LOG.exception("Unhandled error in plan_generate")
-        return jsonify({"error": "internal_error", "detail": str(e)}), 500
+        body = {"error": "internal_error", "detail": str(e)}
+        try:
+            if (req.args.get("debug") == "1"):
+                body["debug"] = {
+                    "prompt": locals().get("prompt", ""),
+                    "image_meta": locals().get("meta", {}),
+                    "model_ref": MODEL_REF,
+                    "request_id": locals().get("request_id", ""),
+                }
+        except Exception:
+            pass
+        return jsonify(body), 500

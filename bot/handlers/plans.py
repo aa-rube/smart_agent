@@ -1,5 +1,6 @@
 # smart_agent/bot/handlers/plans.py
 from __future__ import annotations
+import logging
 
 import os
 import fitz
@@ -20,6 +21,8 @@ from bot.states.states import FloorPlanStates
 from bot.utils.chat_actions import run_long_operation_with_action
 from bot.utils.file_utils import safe_remove
 from bot.utils.redis_repo import quota_repo
+
+LOG = logging.getLogger(__name__)
 
 
 # ===========================
@@ -367,7 +370,8 @@ async def generate_floor_plan(*, floor_plan_path: str, visualization_style: str,
     Промпт строится на стороне executor/apps/plan_generate.py.
     Возвращает URL сгенерированного изображения или пустую строку.
     """
-    import os, io
+    import os, io, json, uuid
+    from datetime import datetime
     from aiohttp import FormData, ClientSession
 
     # Основной путь через Blueprint с префиксом и фолбэк на «старый» путь без префикса
@@ -393,22 +397,56 @@ async def generate_floor_plan(*, floor_plan_path: str, visualization_style: str,
         form.add_field("interior_style", interior_style or "Модерн")
         return form
 
-    async with ClientSession() as session:
-        # 1) пробуем новый путь с префиксом (/api/v1/plan/generate)
-        async with session.post(primary_url, data=_build_form()) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                return data.get("url") or ""
-            # 404 — пробуем фолбэк на старый путь
-            if resp.status != 404:
-                return ""
+    req_id = f"fp-{uuid.uuid4().hex[:8]}-{int(datetime.utcnow().timestamp())}"
+    try:
+        async with ClientSession() as session:
+            # 1) пробуем новый путь с префиксом (/api/v1/plan/generate)
+            async with session.post(
+                primary_url,
+                params={"debug": "1"},
+                data=_build_form(),
+                headers={"X-Request-ID": req_id},
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("url") or ""
+                # 404 — пробуем фолбэк на старый путь
+                if resp.status != 404:
+                    body_text = await resp.text()
+                    try:
+                        body_json = json.loads(body_text)
+                    except Exception:
+                        body_json = {"raw": body_text}
+                    LOG.error(
+                        "FloorPlan primary failed [%s] %s status=%s details=%s",
+                        req_id, primary_url, resp.status, body_json
+                    )
+                    return ""
 
-        # 2) фолбэк на /plan/generate
-        async with session.post(fallback_url, data=_build_form()) as resp:
-            if resp.status != 200:
-                return ""
-            data = await resp.json()
-            return data.get("url") or ""
+            # 2) фолбэк на /plan/generate
+            async with session.post(
+                fallback_url,
+                params={"debug": "1"},
+                data=_build_form(),
+                headers={"X-Request-ID": req_id},
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("url") or ""
+                else:
+                    body_text = await resp.text()
+                    try:
+                        body_json = json.loads(body_text)
+                    except Exception:
+                        body_json = {"raw": body_text}
+                    LOG.error(
+                        "FloorPlan fallback failed [%s] %s status=%s details=%s",
+                        req_id, fallback_url, resp.status, body_json
+                    )
+                    return ""
+    except Exception as e:
+        LOG.exception("Exception in generate_floor_plan [%s]: %s", req_id, e)
+        return ""
 
 
 
