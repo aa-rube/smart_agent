@@ -4,45 +4,43 @@ from __future__ import annotations
 """
 Self-contained module for the /design/generate endpoint.
 
-— Не тянет внешние конфиги
+— Не тянет внешние конфиги (кроме ENV/ executor.config для фолбэка ключа)
 — Все константы, билдеры, обработчики и утилиты — внутри
 — Контроллер должен лишь делегировать сюда: design_generate(request)
+— Двухпроходная схема: 1) черновик; 2) уточнение (истина + черновик + промпт)
 """
 
 import io
 import os
+import json
+import base64
 import hashlib
 import logging
-from typing import Any, Dict, Optional, List
+import urllib.error
+from typing import Any, Dict, Optional, List, Tuple
 
 from flask import jsonify, Request
-import replicate
-from replicate.exceptions import ReplicateError, ModelError
+from executor.config import *  # BANANO_API_KEY_FALLBACK и т.п.
 
-__all__ = ["design_generate", "build_design_prompt"]
+__all__ = ["design_generate", "build_design_prompt", "build_refine_prompt"]
 
 LOG = logging.getLogger(__name__)
 
 # =========================
-# Constants: Models/Prompts
+# Constants: Gemini/Banano
 # =========================
 
-# Базовая модель для интерьера (env-переопределяемая, с безопасным дефолтом)
-MODEL_REF = os.getenv(
-    "MODEL_INTERIOR_DESIGN_REF",
-    "adirik/interior-design:76604baddc85b1b4616e1c6475eca080da339c8875bd4996705440484a6eac38",
-)
+# Публичный REST endpoint Google (можно прокинуть свой прокси)
+BANANO_ENDPOINT = os.getenv("BANANO_ENDPOINT", "https://generativelanguage.googleapis.com/v1beta")
 
-# Имя поля с изображением для replicate.run; будет авто-фолбэк, если не подойдёт
-MODEL_IMAGE_PARAM = os.getenv("MODEL_INTERIOR_DESIGN_IMAGE_PARAM", "image")
+# Модель генерации изображений
+BANANO_MODEL = os.getenv("BANANO_MODEL_INTERIOR", "gemini-2.5-flash-image")
 
-# Нужен ли прокид OPENAI_API_KEY внутрь Replicate модели
-MODEL_NEEDS_OPENAI_KEY = os.getenv("MODEL_INTERIOR_DESIGN_NEEDS_OPENAI_KEY", "0") == "1"
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+# По умолчанию — только изображения в ответе
+BANANO_IMAGES_ONLY = os.getenv("BANANO_IMAGES_ONLY", "1") == "1"
 
-# Убедимся, что токен Replicate доступен SDK
-if os.getenv("REPLICATE_API_TOKEN") and not os.environ.get("REPLICATE_API_TOKEN"):
-    os.environ["REPLICATE_API_TOKEN"] = os.getenv("REPLICATE_API_TOKEN") or ""
+# Необязательное соотношение сторон
+BANANO_ASPECT_RATIO = os.getenv("BANANO_ASPECT_RATIO", "")
 
 # Prompt templates & dictionaries (самодостаточные)
 PROMPT_INTERIOR_BASE = "photorealistic interior, hyperrealistic, 8k, highly detailed, professional photography"
@@ -76,6 +74,22 @@ STYLES_DETAIL: Dict[str, str] = {
     "🔥 Случайный выбор ИИ": "random_style",
 }
 
+# Дополнительный англ. шаблон для 2-го прохода (укрепляет соблюдение геометрии)
+REFINE_INTERIOR_INSTRUCTIONS_EN = """
+REFINE PASS (Image-to-Image with two inputs):
+• Image #1 is the ground-truth shell. Treat all structural / engineering elements as immutable:
+  - load-bearing walls and columns;
+  - gas risers / pipes and water/plumbing lines;
+  - wet areas positions (kitchen, bathroom, toilet).
+• Image #2 is a draft for color, lighting, materials and movable furniture only.
+Hard constraints:
+- Do NOT move/resize/remove walls or partitions; preserve room sizes and proportions exactly.
+- Keep door/window openings at the same positions and dimensions.
+- Remove any text, numbers, labels and axis marks completely.
+- Apply finishes, décor and loose furniture only; no structural changes.
+Output: final photo-realistic interior image with geometry identical to Image #1.
+""".strip()
+
 # ======================
 # Helpers / Util methods
 # ======================
@@ -88,105 +102,127 @@ def _image_meta(img_bytes: bytes) -> Dict[str, Any]:
     }
 
 
-def _extract_url(output: Any) -> Optional[str]:
-    """Достаём URL из разных форматов ответа replicate.run."""
+def _read_api_key(req: Request) -> str:
+    """
+    Источник API-ключа (приоритет):
+     1) из запроса: form['api_key'] либо Authorization: Bearer/ X-API-Key / X-Banano-Key
+     2) из ENV (BANANO_API_KEY_FALLBACK / GOOGLE_API_KEY / GEMINI_API_KEY)
+    """
     try:
-        # список строк/объектов
-        if isinstance(output, list):
-            for item in output:
-                if isinstance(item, str) and item.startswith("http"):
-                    return item
-            for item in output:
-                url = getattr(item, "url", None)
-                if isinstance(url, str) and url.startswith("http"):
-                    return url
-
-        # объект с .url
-        url = getattr(output, "url", None)
-        if isinstance(url, str) and url.startswith("http"):
-            return url
-
-        # словарь
-        if isinstance(output, dict):
-            if isinstance(output.get("url"), str) and output["url"].startswith("http"):
-                return output["url"]
-            res = output.get("output")
-            if isinstance(res, str) and res.startswith("http"):
-                return res
-            if isinstance(res, list):
-                for item in res:
-                    if isinstance(item, str) and item.startswith("http"):
-                        return item
-        return None
+        if hasattr(req, "form") and req.form and "api_key" in req.form:
+            v = (req.form.get("api_key") or "").strip()
+            if v:
+                return v
     except Exception:
-        return None
+        pass
+
+    auth = req.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth.split(" ", 1)[1].strip()
+
+    for h in ("X-API-Key", "X-Banano-Key", "X-Api-Key", "X-BANANO-KEY"):
+        v = req.headers.get(h, "")
+        if v:
+            return v.strip()
+
+    return BANANO_API_KEY_FALLBACK
 
 
-def _build_input_dict(
-    *,
-    prompt: str,
-    image_param: str,
-    img_bytes: bytes,
-    needs_openai_key: bool,
-    openai_api_key: Optional[str],
-) -> Dict[str, Any]:
-    """Сборка input-пэйлоада для replicate.run (используем file-like BytesIO)."""
-    buffer = io.BytesIO(img_bytes)
-    buffer.name = "upload.png"  # replicate любит имя файла
-    input_dict: Dict[str, Any] = {"prompt": prompt}
-    if needs_openai_key and openai_api_key:
-        input_dict["openai_api_key"] = openai_api_key
-    if image_param == "input_images":
-        input_dict["input_images"] = [buffer]
-    else:
-        input_dict[image_param] = buffer
-    return input_dict
+def _detect_mime(b: bytes) -> str:
+    if b.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if b[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if b[:4] == b"RIFF" and b[8:12] == b"WEBP":
+        return "image/webp"
+    return "application/octet-stream"
 
 
-def _run_with_fallbacks(img_bytes: bytes, prompt: str) -> str:
-    """
-    Запуск replicate с прогрессивными фолбэками имени поля изображения:
-    MODEL_IMAGE_PARAM -> 'image' -> 'input_image' -> 'input_images'
-    Возвращает URL или бросает исключение.
-    """
-    order: List[str] = [MODEL_IMAGE_PARAM] + [p for p in ["image", "input_image", "input_images"] if p != MODEL_IMAGE_PARAM]
-    last_err: Optional[Exception] = None
+def _to_data_url(img_bytes: bytes, mime: str = "image/png") -> str:
+    return f"data:{mime};base64,{base64.b64encode(img_bytes).decode('ascii')}"
 
-    for param in order:
+
+def _build_google_payload(*, prompt: str, images: List[bytes],
+                         aspect_ratio: Optional[str], images_only: bool) -> Dict[str, Any]:
+    parts: List[Dict[str, Any]] = [{"text": prompt}]
+    for b in images:
+        parts.append({"inlineData": {"mimeType": _detect_mime(b),
+                                     "data": base64.b64encode(b).decode("ascii")}})
+
+    payload: Dict[str, Any] = {"contents": [{"role": "user", "parts": parts}]}
+    gen_cfg: Dict[str, Any] = {}
+    if images_only:
+        gen_cfg["responseModalities"] = ["IMAGE"]
+    if aspect_ratio:
+        gen_cfg["imageConfig"] = {"aspectRatio": aspect_ratio}
+    if gen_cfg:
+        payload["generationConfig"] = gen_cfg
+    return payload
+
+
+def _http_post_json(url: str, params: Dict[str, str], body: Dict[str, Any], timeout: int = 90) -> Dict[str, Any]:
+    import urllib.request, urllib.parse
+    full_url = f"{url}?{urllib.parse.urlencode(params)}" if params else url
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(full_url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8")
         try:
-            payload = _build_input_dict(
-                prompt=prompt,
-                image_param=param,
-                img_bytes=img_bytes,
-                needs_openai_key=MODEL_NEEDS_OPENAI_KEY,
-                openai_api_key=OPENAI_API_KEY,
-            )
-            LOG.info("Replicate.run model=%s try image_param=%s keys=%s", MODEL_REF, param, list(payload.keys()))
-            out = replicate.run(MODEL_REF, input=payload)
-            url = _extract_url(out)
-            if url:
-                if param != MODEL_IMAGE_PARAM:
-                    LOG.warning("Image param auto-switched: %s -> %s", MODEL_IMAGE_PARAM, param)
-                return url
-            last_err = RuntimeError("No URL in output")
-        except (ModelError, ReplicateError) as e:
-            last_err = e
-            # Если в метриках prediction явно 0 изображений — пробуем следующее имя поля
-            try:
-                pred = getattr(e, "prediction", None)
-                metrics = getattr(pred, "metrics", {}) if pred else {}
-                if (metrics or {}).get("image_count") == 0:
-                    LOG.warning("Replicate image param suspected mismatch for %s: %s", param, e)
-                    continue
-            except Exception:
-                pass
-            raise
-        except Exception as e:
-            last_err = e
+            as_json = json.loads(error_body)
+        except Exception:
+            as_json = {"error": {"message": error_body}}
+        if e.code == 429:
+            raise Exception(f"HTTP 429 Too Many Requests: {as_json.get('error',{}).get('message','rate limit')}")
+        raise Exception(f"HTTP {e.code}: {as_json.get('error',{}).get('message','request failed')}")
 
-    if last_err:
-        raise last_err
-    raise RuntimeError("Unknown replicate fallback failure")
+
+def _parse_google_response(js: Dict[str, Any]) -> Tuple[List[Tuple[bytes, str]], Optional[str]]:
+    images: List[Tuple[bytes, str]] = []
+    text_out: Optional[str] = None
+    try:
+        cands = js.get("candidates") or []
+        parts = ((cands[0] or {}).get("content") or {}).get("parts") or []
+        for p in parts:
+            if "inlineData" in p:
+                mime = (p["inlineData"].get("mimeType") or "image/png").lower()
+                b64 = p["inlineData"].get("data") or ""
+                if b64:
+                    images.append((base64.b64decode(b64), mime))
+            elif "text" in p and not text_out:
+                text_out = p["text"]
+    except Exception:
+        pass
+    return images, text_out
+
+
+def _banano_generate_image(*, api_key: str, model: str, endpoint: str,
+                          prompt: str, images: List[bytes], aspect_ratio: Optional[str],
+                          images_only: bool, timeout: int = 90, max_retries: int = 3) -> Dict[str, Any]:
+    url = endpoint.rstrip("/") + f"/models/{model}:generateContent"
+    params = {"key": api_key}
+    payload = _build_google_payload(prompt=prompt, images=images,
+                                   aspect_ratio=aspect_ratio, images_only=images_only)
+
+    last = None
+    for attempt in range(max_retries + 1):
+        try:
+            js = _http_post_json(url, params, payload, timeout=timeout)
+            imgs, txt = _parse_google_response(js)
+            return {"images": imgs, "text": txt, "raw": js}
+        except Exception as e:
+            last = e
+            if "429" in str(e) and attempt < max_retries:
+                wait = (2 ** attempt) * 5
+                LOG.warning("rate limit, retry in %ss (%s/%s)", wait, attempt + 1, max_retries + 1)
+                import time; time.sleep(wait); continue
+            raise
+    raise last or Exception("all retries failed")
+
+
+
 
 # =================
 # Prompt Builders
@@ -233,6 +269,19 @@ def build_design_prompt(
     parts = [p.strip() for p in final_prompt.split(",") if p and p.strip()]
     return ", ".join(parts)
 
+
+def build_refine_prompt(*, base_prompt: str, extra: Optional[str] = None) -> str:
+    """
+    Промпт для 2-го прохода (интерьер): фиксируем размеры помещений и инженерные конструкции.
+    """
+    blocks: List[str] = []
+    if base_prompt.strip():
+        blocks.append("Context from the initial prompt:\n" + base_prompt.strip())
+    blocks.append(REFINE_INTERIOR_INSTRUCTIONS_EN)
+    if extra and extra.strip():
+        blocks.append(extra.strip())
+    return "\n\n".join(blocks)
+
 # ==============
 # HTTP Handler
 # ==============
@@ -243,8 +292,13 @@ def design_generate(req: Request):
     Ожидает multipart/form-data:
       - image: file (обязательно)
       - prompt: str (если нет — можно передать style/room_type/furniture, и мы соберём промпт сами)
+      - aspect_ratio: str (опц.; напр. '16:9')
+      - response: 'image' | 'image+text' (опц.; по умолчанию env BANANO_IMAGES_ONLY)
+      - api_key: str (опц.; приоритетный источник ключа)
+      - second_pass: '0' | '1' (опц.; default '1')
+      - refine_prompt: str (опц.; добавка к промпту для 2-го прохода)
 
-    Ответ: JSON (url[, debug]) с корректными HTTP кодами.
+    Ответ: JSON { images: [dataUrl,...], url?: http(s) } + debug при ?debug=1.
     """
     try:
         files = getattr(req, "files", None)
@@ -253,6 +307,7 @@ def design_generate(req: Request):
             return jsonify({"error": "bad_request", "detail": "multipart form-data expected"}), 400
 
         debug_flag = (req.args.get("debug") == "1") if hasattr(req, "args") else False
+        request_id = req.headers.get("X-Request-ID", "")
 
         if "image" not in files:
             return jsonify({"error": "bad_request", "detail": "field 'image' is required"}), 400
@@ -274,31 +329,74 @@ def design_generate(req: Request):
                 }), 400
             prompt = build_design_prompt(style=style, room_type=room_type, furniture=furniture)
 
-        meta = _image_meta(img_bytes)
+        # Параметры ответа
+        aspect_ratio = (form.get("aspect_ratio") or BANANO_ASPECT_RATIO or "").strip() or None
+        response_mode = (form.get("response") or ("image" if BANANO_IMAGES_ONLY else "image+text")).strip().lower()
+        images_only = response_mode == "image"
+        second_pass_flag = (form.get("second_pass") or "1").strip() != "0"
+        refine_extra = (form.get("refine_prompt") or "").strip()
 
-        # Генерация изображения через Replicate (с умным фолбэком имени поля с изображением)
-        url = _run_with_fallbacks(img_bytes, prompt)
+        # Ключ
+        api_key = _read_api_key(req)
+        if not api_key:
+            return jsonify({"error": "auth_error", "detail": "API key is required (header/form or ENV)"}), 401
 
-        body: Dict[str, Any] = {"url": url}
+        LOG.info("design_generate (banano) pass1 start req_id=%s model=%s", request_id, BANANO_MODEL)
+
+        # 1-й проход — черновик
+        p1 = _banano_generate_image(
+            api_key=api_key,
+            model=BANANO_MODEL,
+            endpoint=BANANO_ENDPOINT,
+            prompt=prompt,
+            images=[img_bytes],
+            aspect_ratio=aspect_ratio,
+            images_only=images_only,
+            max_retries=2,
+        )
+
+        # 2-й проход — истина (исходник) + черновик, акцент на геометрию/инженерию
+        final_resp = p1
+        if second_pass_flag and p1.get("images"):
+            try:
+                draft_bytes, _mime = p1["images"][0]
+                refine_prompt = build_refine_prompt(base_prompt=prompt, extra=refine_extra)
+                LOG.info("design_generate (banano) pass2 start req_id=%s", request_id)
+                final_resp = _banano_generate_image(
+                    api_key=api_key,
+                    model=BANANO_MODEL,
+                    endpoint=BANANO_ENDPOINT,
+                    prompt=refine_prompt,
+                    images=[img_bytes, draft_bytes],
+                    aspect_ratio=aspect_ratio,
+                    images_only=True,
+                    max_retries=2,
+                )
+            except Exception as _e:
+                LOG.warning("design_generate second pass skipped: %s", _e)
+                final_resp = p1
+
+        # Ответ
+        out_imgs = [_to_data_url(b, mime=m) for b, m in final_resp.get("images", [])]
+        body: Dict[str, Any] = {"ok": True, "model": BANANO_MODEL, "images": out_imgs}
+        if out_imgs and isinstance(out_imgs[0], str) and out_imgs[0].startswith(("http://", "https://")):
+            body["url"] = out_imgs[0]
+        if not images_only and final_resp.get("text"):
+            body["text"] = final_resp["text"]
         if debug_flag:
-            body["debug"] = {"prompt": prompt, "image_meta": meta, "model_ref": MODEL_REF}
+            body["debug"] = {
+                "prompt_pass1": prompt,
+                "prompt_pass2": (build_refine_prompt(base_prompt=prompt, extra=refine_extra) if second_pass_flag else ""),
+                "image_meta": _image_meta(img_bytes),
+                "endpoint": BANANO_ENDPOINT,
+                "aspect_ratio": aspect_ratio,
+                "response_mode": response_mode,
+                "second_pass": bool(second_pass_flag),
+                "pass1_images_count": len(p1.get("images", [])),
+                "pass2_images_count": len(final_resp.get("images", [])) if second_pass_flag else 0,
+            }
         return jsonify(body), 200
 
-    except (ModelError, ReplicateError) as e:
-        payload: Dict[str, Any] = {"error": "replicate_error", "detail": str(e)}
-        try:
-            pred = getattr(e, "prediction", None)
-            payload.update({
-                "prediction_id": getattr(pred, "id", None),
-                "prediction_status": getattr(pred, "status", None),
-                "prediction_error": getattr(pred, "error", None),
-                "prediction_logs": getattr(pred, "logs", None),
-                "metrics": getattr(pred, "metrics", None),
-            })
-        except Exception:
-            pass
-        return jsonify(payload), 502
-
     except Exception as e:
-        LOG.exception("Unhandled error in design_generate")
+        LOG.exception("Unhandled error in design_generate (banano)")
         return jsonify({"error": "internal_error", "detail": str(e)}), 500
