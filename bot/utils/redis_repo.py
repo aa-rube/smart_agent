@@ -1,5 +1,4 @@
 # smart_agent/bot/utils/redis_repo.py
-#Всегда пиши код без «поддержки старых версий». Если они есть в коде - удаляй.
 
 from __future__ import annotations
 
@@ -7,6 +6,7 @@ import json
 import logging
 import os
 import time
+from bot.config import REDIS_PREFIX
 from typing import Any, Dict, List, Optional, Tuple
 from contextlib import asynccontextmanager
 
@@ -17,6 +17,7 @@ except Exception as e:
     raise RuntimeError("Install redis>=5.0: pip install redis>=5.0") from e
 
 LOG = logging.getLogger(__name__)
+
 
 def _make_redis() -> Redis:
     """
@@ -32,7 +33,9 @@ def _make_redis() -> Redis:
         socket_timeout=5,
     )
 
+
 _redis = _make_redis()
+
 
 def _now_ts() -> int:
     """Unix time seconds."""
@@ -223,9 +226,11 @@ class SummaryRedisRepo:
             prev = (cur.get("text") or "") if (cur.get("type") == "text") else ""
             text = ((prev + "\n" + (text or "")).strip()) if prev else (text or "")
         input_obj = {"type": "text", "text": text or ""}
-        await self.r.hset(k, mapping={"input_json": json.dumps(input_obj, ensure_ascii=False), "updated_at": int(time.time())})
+        await self.r.hset(k, mapping={"input_json": json.dumps(input_obj, ensure_ascii=False),
+                                      "updated_at": int(time.time())})
 
-    async def set_input_audio(self, user_id: int, *, local_path: str, telegram_meta: Optional[Dict[str, Any]] = None) -> None:
+    async def set_input_audio(self, user_id: int, *, local_path: str,
+                              telegram_meta: Optional[Dict[str, Any]] = None) -> None:
         input_obj = {"type": "audio", "local_path": local_path}
         if telegram_meta:
             input_obj["telegram"] = telegram_meta
@@ -248,7 +253,8 @@ class SummaryRedisRepo:
         })
 
     async def set_error(self, user_id: int, error: str) -> None:
-        await self.r.hset(self._key(user_id), mapping={"status": "error", "error": error, "updated_at": int(time.time())})
+        await self.r.hset(self._key(user_id),
+                          mapping={"status": "error", "error": error, "updated_at": int(time.time())})
 
     # ---- чтение ----
     async def get_draft(self, user_id: int) -> Dict[str, Any]:
@@ -263,7 +269,8 @@ class SummaryRedisRepo:
             "stage": h.get("stage"),
             "updated_at": int(h.get("updated_at") or 0) if h.get("updated_at") else None,
         }
-        for f, dst in (("input_json", "input"), ("last_payload", "last_payload"), ("last_result", "last_result"), ("meta", "meta")):
+        for f, dst in (("input_json", "input"), ("last_payload", "last_payload"), ("last_result", "last_result"),
+                       ("meta", "meta")):
             if f in h and h[f]:
                 try:
                     out[dst] = json.loads(h[f])
@@ -283,6 +290,7 @@ class QuotaRedisRepo:
 
     Поддерживает N попыток за window_sec (например, 3 за 86400 секунд).
     """
+
     def __init__(self, redis: Redis, prefix: str = "sa"):
         self.r = redis
         self.prefix = prefix
@@ -302,13 +310,13 @@ class QuotaRedisRepo:
         return await self.r.zcard(key)
 
     async def try_consume(
-        self,
-        user_id: int,
-        *,
-        scope: str,
-        limit: int,
-        window_sec: int = 86400,
-        now_ts: Optional[int] = None,
+            self,
+            user_id: int,
+            *,
+            scope: str,
+            limit: int,
+            window_sec: int = 86400,
+            now_ts: Optional[int] = None,
     ) -> Tuple[bool, int, int]:
         """
         Пытаемся «потратить» один токен.
@@ -350,12 +358,6 @@ class QuotaRedisRepo:
         return True, remaining, reset_at
 
 
-# Глобальные экземпляры
-feedback_repo = FeedbackRedisRepo(_redis, prefix=os.getenv("REDIS_PREFIX", "sa"))
-summary_repo  = SummaryRedisRepo(_redis,  prefix=os.getenv("REDIS_PREFIX", "sa"))
-quota_repo    = QuotaRedisRepo(_redis,    prefix=os.getenv("REDIS_PREFIX", "sa"))
-
-
 # === YooKassa Webhook Idempotency ============================================
 class YooWebhookDedupRepo:
     """
@@ -372,8 +374,8 @@ class YooWebhookDedupRepo:
     STATUS_RANK = {
         "waiting_for_capture": 1,
         "succeeded": 2,
-        "canceled": 2,   # финальный
-        "expired": 2,    # финальный
+        "canceled": 2,  # финальный
+        "expired": 2,  # финальный
     }
 
     def __init__(self, redis: Redis, prefix: str = "sa", ttl_sec: int = 144 * 3600):
@@ -428,5 +430,8 @@ class YooWebhookDedupRepo:
             return False
 
 
-# Глобальный экземпляр
-yookassa_dedup = YooWebhookDedupRepo(_redis, prefix=os.getenv("REDIS_PREFIX", "sa"))
+# Глобальные экземпляры
+feedback_repo = FeedbackRedisRepo(_redis, prefix=REDIS_PREFIX)
+summary_repo = SummaryRedisRepo(_redis, prefix=REDIS_PREFIX)
+quota_repo = QuotaRedisRepo(_redis, prefix=REDIS_PREFIX)
+yookassa_dedup = YooWebhookDedupRepo(_redis, prefix=REDIS_PREFIX)

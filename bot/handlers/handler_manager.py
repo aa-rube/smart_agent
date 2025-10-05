@@ -19,7 +19,7 @@ from aiogram.types import (
     InputMediaPhoto,
 )
 
-from bot.config import get_file_path
+from bot.config import get_file_path, PARTNER_URL
 from bot.handlers.subscribe_partner_manager import ensure_partner_subs, PARTNER_CHECK_CB
 from bot.handlers.payment_handler import show_rates as show_rates_handler
 import bot.utils.database as app_db
@@ -83,7 +83,7 @@ frst_kb_inline = InlineKeyboardMarkup(
         [InlineKeyboardButton(text="🛋️ Генератор дизайна интерьера", callback_data="nav.design_home")],
         [InlineKeyboardButton(text="📐 Планировки (Тестовая версия)", callback_data="floor_plan")],
         [InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")],
-        [InlineKeyboardButton(text="Наше сообщество", url="https://t.me/setrealtora")],
+        [InlineKeyboardButton(text="Наше сообщество", url=PARTNER_URL)],
         [InlineKeyboardButton(text="Тех. поддержка", url="https://t.me/dashaadminrealtor")],
     ]
 )

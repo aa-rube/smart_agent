@@ -1,6 +1,4 @@
 # C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\utils\mailing.py
-# Всегда без "поддержки старых версий": никаких file_ids в payload, только payload["items"] для media_group.
-# Секрет офигенного бота: никакие anchors не нужны (тут они и не используются).
 
 from __future__ import annotations
 
@@ -12,12 +10,11 @@ from html import escape as _html_escape
 
 from aiogram import Bot
 from aiogram.types import InputMediaPhoto, InputMediaVideo
-from sqlalchemy import text as _sa_text
 
 import bot.utils.admin_db as adb
 import bot.utils.database as app_db
 import bot.utils.billing_db as billing_db
-from bot.utils.redis_repo import _redis as _redis_client, set_nx_with_ttl
+from bot.utils.redis_repo import set_nx_with_ttl
 
 
 MSK = ZoneInfo("Europe/Moscow")

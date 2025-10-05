@@ -65,6 +65,7 @@ PARTNER_CHANNELS = [{"chat_id": PARTNER_CHANNEL, "url": PARTNER_URL, "label": "�
 # --- Новые конфиги для callback от executor ---
 BOT_PUBLIC_BASE_URL = os.getenv("BOT_CALLBACK_BASE_URL", "").rstrip("/")
 EXECUTOR_BASE_URL = os.getenv("EXECUTOR_BASE_URL")
+REDIS_PREFIX=os.getenv("REDIS_PREFIX", "sa")
 
 # Основная база данных
 MYSQL_DB = os.getenv("MYSQL_DB", "null")
