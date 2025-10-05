@@ -7,9 +7,9 @@ from executor.helpers import *
 
 from executor.openai_service import *
 from executor import replicate_service as svc
-import executor.design_generate as design_module
+import executor.apps.design_generate as design_module
 
-import executor.description as description_module
+import executor.apps.description as description_module
 
 api = Blueprint("api", __name__, url_prefix="/api/v1")
 

@@ -20,7 +20,7 @@ import bot.utils.billing_db as billing_db          # биллинг: карты/
 from bot.config import get_file_path
 from bot.utils.database import is_trial_active, trial_remaining_hours
 from bot.states.states import RedesignStates, ZeroDesignStates
-from executor.design_generate import build_design_prompt
+from executor.apps.design_generate import build_design_prompt
 from bot.utils.image_processor import save_image_as_png
 from bot.utils.chat_actions import run_long_operation_with_action
 from bot.utils.ai_processor import generate_design, download_image_from_url
