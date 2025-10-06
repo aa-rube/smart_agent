@@ -6,7 +6,7 @@ import os
 import fitz
 import aiohttp
 from typing import Optional
-import base64, re, uuid, tempfile
+import base64, re, tempfile
 
 from aiogram import Router, F, Bot
 from aiogram.types import (

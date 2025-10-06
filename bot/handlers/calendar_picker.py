@@ -1,8 +1,4 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\calendar_picker.py
-#Всегда пиши код без «поддержки старых версий». Если они есть в коде - удаляй.
-
-# smart_agent/bot/handlers/calendar_picker.py
-
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta

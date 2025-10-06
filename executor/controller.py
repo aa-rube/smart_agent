@@ -1,15 +1,12 @@
 # smart_agent/executor/controller.py
 from __future__ import annotations
 from flask import Blueprint, request, jsonify
-from replicate.exceptions import ReplicateError, ModelError
-from executor.config import *
-from executor.helpers import *
 
 from executor.openai_service import *
 import executor.apps.plan_generate as plan_module
 import executor.apps.design_generate as design_module
 
-import executor.apps.description as description_module
+import executor.apps.description_generate as description_module
 
 api = Blueprint("api", __name__, url_prefix="/api/v1")
 LOG = logging.getLogger(__name__)

@@ -296,10 +296,10 @@ FLAT_ASK_RENOVATION      = "Ремонт:"
 FLAT_ASK_LAYOUT          = "Планировка комнат:"
 FLAT_ASK_BALCONY         = "Балкон/лоджия:"
 FLAT_ASK_CEILING         = "Высота потолков (м, опционально). Пример: 2.7"
-FLAT_ASK_TOTAL_AREA      = "Общая площадь (м²): выберите диапазон"
-FLAT_ASK_KITCHEN_AREA    = "Площадь кухни (м²): выберите диапазон"
-FLAT_ASK_FLOOR           = "Этаж квартиры: выберите вариант"
-FLAT_ASK_FLOORS_TOTAL    = "Этажность дома: выберите вариант"
+FLAT_ASK_TOTAL_AREA      = "Общая площадь (м²). Пример: 56.4"
+FLAT_ASK_KITCHEN_AREA    = "Площадь кухни (м²). Пример: 10.5"
+FLAT_ASK_FLOOR           = "Этаж квартиры. Пример: 5"
+FLAT_ASK_FLOORS_TOTAL    = "Этажность дома. Пример: 17"
 
 # Справочник опций для кнопок (код, метка)
 DESCRIPTION_CLASSES = {
@@ -340,21 +340,7 @@ FLAT_ENUMS: dict[str, list[tuple[str, str]]] = {
     "mortgage_ok": [
         ("yes", "Да"), ("no", "Нет"),
     ],
-    "total_area": [
-        ("lt30",  "До 30"), ("30-40", "30–40"), ("40-50", "40–50"),
-        ("50-60", "50–60"), ("60-80", "60–80"), ("80-100", "80–100"), ("100+", "100+"),
-    ],
-    "kitchen_area": [
-        ("0-5",  "0–5"), ("6-9", "6–9"), ("10-12", "10–12"),
-        ("13-15","13–15"), ("16+", "16+"),
-    ],
-    "floor": [
-        ("1", "1"), ("2", "2"), ("3", "3"), ("4", "4"), ("5", "5"),
-        ("6-9", "6–9"), ("10-14", "10–14"), ("15-19", "15–19"), ("20+", "20+"),
-    ],
-    "floors_total": [
-        ("1-5", "1–5"), ("6-9", "6–9"), ("10-14", "10–14"), ("15-19", "15–19"), ("20+", "20+"),
-    ],
+
     "bathroom_type": [
         ("combined", "Совмещённый"), ("separate", "Раздельный"),
     ],
@@ -399,11 +385,11 @@ FLAT_ENUMS: dict[str, list[tuple[str, str]]] = {
 # ==========================
 COUNTRY_GROUP_ASK            = "Выберите группу загородного объекта:"
 COUNTRY_ASK_OBJECT_TYPE      = "1️⃣ Выберите тип загородного объекта:"
-COUNTRY_ASK_HOUSE_AREA       = "Площадь дома (м²): выберите диапазон"
-COUNTRY_ASK_PLOT_AREA        = "Площадь участка (сотки): выберите диапазон"
-COUNTRY_ASK_DISTANCE         = "Расстояние от города (км): выберите диапазон"
-COUNTRY_ASK_FLOORS           = "Этажей в доме:"
-COUNTRY_ASK_ROOMS            = "Количество комнат:"
+COUNTRY_ASK_HOUSE_AREA       = "Введите площадь дома (м²). Пример: 120"
+COUNTRY_ASK_PLOT_AREA        = "Введите площадь участка (сотки). Пример: 6"
+COUNTRY_ASK_DISTANCE         = "Введите расстояние от города (км). Пример: 25"
+COUNTRY_ASK_FLOORS           = "Введите количество этажей. Пример: 2"
+COUNTRY_ASK_ROOMS            = "Введите количество комнат. Пример: 4"
 COUNTRY_ASK_LAND_CATEGORY_H  = "Категория земель:"
 COUNTRY_ASK_RENOVATION       = "Состояние/ремонт:"
 COUNTRY_ASK_TOILET           = "Санузел:"
@@ -427,24 +413,7 @@ COUNTRY_ENUMS: dict[str, list[tuple[str, str]]] = {
         ("plot",      "Земельный участок"),
     ],
     # Дом/Дача/Коттедж/Таунхаус
-    "country_house_area_m2": [
-        ("lt50", "до 50"), ("50-100", "50–100"), ("100-150", "100–150"),
-        ("150-200", "150–200"), ("200-300", "200–300"), ("300+", "300+"),
-    ],
-    "country_plot_area_sotki": [
-        ("lt4", "до 4"), ("5-6","5–6"), ("7-10","7–10"),
-        ("11-15","11–15"), ("16-20","16–20"), ("20+","20+"),
-    ],
-    "country_distance_km": [
-        ("lt5","до 5"), ("6-10","6–10"), ("11-20","11–20"),
-        ("21-30","21–30"), ("31-50","31–50"), ("50+","50+"),
-    ],
-    "country_floors": [
-        ("1","1"), ("2","2"), ("3","3"), ("4+","4+"),
-    ],
-    "country_rooms": [
-        ("1","1"), ("2","2"), ("3","3"), ("4","4"), ("5+","5+"),
-    ],
+
     "country_land_category_house": [
         ("izhs","ИЖС"), ("sad","садоводство"), ("lph","ЛПХ"), ("kfh","КФХ"), ("other","Иное"),
     ],
@@ -1197,16 +1166,29 @@ async def _ask_next_flat_step(msg: Message, state: FSMContext, *, new: bool = Fa
 
     key = keys[step]
 
-    # Все поля для квартиры задаются кнопками (опционально — «Свой вариант…»)
-    if key in {
+    # Поля с кнопками (перечисления)
+    enum_keys = {
         "market", "completion_term", "sale_method", "rooms", "mortgage_ok",
-        "total_area", "kitchen_area", "floor", "floors_total",
         "bathroom_type", "windows", "house_type", "lift", "parking",
-        "renovation", "layout", "balcony", "ceiling_height_m"
-    }:
+        "renovation", "layout", "balcony"
+    }
+    # Поля, переведённые на текстовый ввод
+    text_keys = {"total_area", "kitchen_area", "floor", "floors_total"}
+    
+    if key in enum_keys:
         await _send_step(msg, await _with_summary(state, _flat_prompt_for_key(key)), _kb_enum(key), new=new)
         return
-    # На всякий случай (если вдруг шаг без предустановленных вариантов)
+    
+    if key in text_keys:
+        await _send_step(msg, await _with_summary(state, _form_prompt_for_key(key)), _kb_back_only(), new=new)
+        return
+    
+    if key == "ceiling_height_m":
+        # высота потолков — опциональна: даём кнопку «Пропустить»
+        await _send_step(msg, await _with_summary(state, _form_prompt_for_key(key)), _kb_skip_field("ceiling_height_m"), new=new)
+        return
+    
+    # Фолбэк
     await _send_step(msg, await _with_summary(state, _form_prompt_for_key(key)), _kb_back_only(), new=new)
 
 # ==========================
@@ -1268,6 +1250,14 @@ def _country_prompt_for_key(key: str) -> str:
     }.get(key, "Выберите вариант:")
 
 COUNTRY_MULTI_KEYS = {"country_utilities", "country_leisure", "country_communications_plot"}
+# какие country-поля теперь запрашиваются текстовым вводом (раньше были диапазоны/кнопки)
+COUNTRY_TEXT_KEYS = {
+    "country_house_area_m2",
+    "country_plot_area_sotki",
+    "country_distance_km",
+    "country_floors",
+    "country_rooms",
+}
 
 async def _ask_next_country_step(msg: Message, state: FSMContext, *, new: bool = False):
     data = await state.get_data()
@@ -1285,7 +1275,11 @@ async def _ask_next_country_step(msg: Message, state: FSMContext, *, new: bool =
         selected = _normalize_multi_selected(key, data.get(key) or [])
         await _send_step(msg, await _with_summary(state, _country_prompt_for_key(key)), _kb_multi_enum(key, selected), new=new)
         return
-    # обычные перечисления
+    # текстовый ввод для числовых полей
+    if key in COUNTRY_TEXT_KEYS:
+        await _send_step(msg, await _with_summary(state, _country_prompt_for_key(key)), _kb_back_only(), new=new)
+        return
+    # остальные — перечисления по кнопкам
     await _send_step(msg, await _with_summary(state, _country_prompt_for_key(key)), _kb_enum(key), new=new)
 
 # ==========================
@@ -1413,6 +1407,37 @@ def _validate_and_store(key: str, text: str, data: Dict) -> Optional[str]:
         if v is None or v <= 0:
             return "Введите число в метрах. Пример: 2.7 или нажмите «Пропустить»."
         data["ceiling_height_m"] = v
+        return None
+    # загородные числовые поля
+    if key == "country_house_area_m2":
+        v = _parse_float(t)
+        if v is None or v <= 0:
+            return "Введите площадь дома (м²). Пример: 120"
+        data["country_house_area_m2"] = v
+        return None
+    if key == "country_plot_area_sotki":
+        v = _parse_float(t)
+        if v is None or v <= 0:
+            return "Введите площадь участка (сотки). Пример: 6"
+        data["country_plot_area_sotki"] = v
+        return None
+    if key == "country_distance_km":
+        v = _parse_float(t)
+        if v is None or v < 0:
+            return "Введите расстояние от города (км). Пример: 25"
+        data["country_distance_km"] = v
+        return None
+    if key == "country_floors":
+        v = _parse_int(t)
+        if v is None or v <= 0:
+            return "Введите количество этажей. Пример: 2"
+        data["country_floors"] = v
+        return None
+    if key == "country_rooms":
+        v = _parse_int(t)
+        if v is None or v <= 0:
+            return "Введите количество комнат. Пример: 4"
+        data["country_rooms"] = v
         return None
     # по умолчанию — просто сохранить
     data[key] = t
@@ -1572,6 +1597,8 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
         await state.update_data(__form_step=step)
         if data.get("__country_mode"):
             await _ask_next_country_step(message, state, new=True)
+        elif data.get("__commercial_mode"):
+            await _ask_next_commercial_step(message, state, new=True)
         else:
             await _ask_next_flat_step(message, state, new=True)
         return
@@ -1603,16 +1630,16 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
         step: int = int(data.get("__form_step") or 0)
         if form_keys and step < len(form_keys):
             current_key = form_keys[step]
+            # блокируем ввод только там, где должны быть кнопки (перечисления)
             if current_key in {
                 "market", "completion_term", "sale_method", "rooms", "mortgage_ok",
-                "total_area", "kitchen_area", "floor", "floors_total",
                 "bathroom_type", "windows", "house_type", "lift", "parking",
-                "renovation", "layout", "balcony", "ceiling_height_m"
+                "renovation", "layout", "balcony"
             }:
                 await message.answer("Пожалуйста, выберите вариант кнопкой ниже.", reply_markup=_kb_enum(current_key))
                 return
 
-    # Блокируем произвольный ввод для country: только кнопки
+    # Блокируем произвольный ввод для country: только кнопки для нетекстовых полей
     if data.get("__country_mode"):
         form_keys: List[str] = data.get("__form_keys") or []
         step: int = int(data.get("__form_step") or 0)
@@ -1621,6 +1648,9 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
             if current_key in COUNTRY_MULTI_KEYS:
                 await message.answer("Это поле — множественный выбор. Пожалуйста, используйте кнопки ниже.", reply_markup=_kb_multi_enum(current_key, set(data.get(current_key) or [])))
                 return
+            # для числовых полей теперь разрешаем текстовый ввод
+            if current_key in COUNTRY_TEXT_KEYS:
+                pass
             else:
                 await message.answer("Пожалуйста, выберите вариант кнопкой ниже.", reply_markup=_kb_enum(current_key))
                 return
@@ -1657,7 +1687,9 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
     # Сохраняем изменения после валидации
     await state.update_data(**{k: data.get(k) for k in [
         "total_area","floors_total","floor","kitchen_area","rooms",
-        "year_or_condition","utilities","location","features"
+        "year_or_condition","utilities","location","features",
+        "country_house_area_m2","country_plot_area_sotki","country_distance_km",
+        "country_floors","country_rooms"
     ]})
 
     # Следующий шаг или переход к свободному комментарию

@@ -1,6 +1,4 @@
 # C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\feedback_playbook.py
-#Всегда пиши код без «поддержки старых версий». Если они есть в коде - удаляй.
-
 from __future__ import annotations
 
 import asyncio
@@ -18,7 +16,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import *
 from pathlib import Path
 from bot.config import EXECUTOR_BASE_URL, get_file_path
-from bot.handlers.feedback.model.review_payload import ReviewPayload
 from bot.utils.database import history_add, history_list, history_get
 from bot.states.states import FeedbackStates
 from bot.utils.redis_repo import feedback_repo
@@ -34,12 +31,18 @@ from bot.utils.database import (
     is_trial_active, trial_remaining_hours
 )
 
+class ReviewPayload:
+    client_name: str
+    agent_name: str
+    company: Optional[str]
+    city: str
+    address: Optional[str]
+    deal_type: str  # sale|buy|rent|lease|custom
+    deal_custom: Optional[str]
+    situation: str
+    style: str  # friendly|neutral|formal|brief|long
+
 def _is_sub_active(user_id: int) -> bool:
-    """
-    Новая логика: доступ считается активным, если есть действующий триал
-    ИЛИ у пользователя сохранена карта для рекуррентных списаний (активная подписка).
-    Дату sub_until мы больше не храним в app_db.
-    """
     return bool(billing_db.has_saved_card(user_id))
 
 def _format_access_text(user_id: int) -> str:
@@ -1644,7 +1647,6 @@ async def go_menu(callback: CallbackQuery, state: FSMContext):
 # =============================================================================
 # Router
 # =============================================================================
-
 def router(rt: Router) -> None:
 
     # start & cancel & menu

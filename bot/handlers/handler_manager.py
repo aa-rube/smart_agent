@@ -62,7 +62,7 @@ smm_description = ('''
 За месяц ты получаешь 👇
 ✅ 30 готовых тем для постов и рассылок.
 ✅ Тексты и картинки для *ВКонтакте, Telegram, Instagram, Одноклассников.*
-✅ Сторис и истории для *WhatsApp, Telegram, ВК, 1nstagram.*
+✅ Сторис и истории для *WhatsApp, Telegram, ВК, Instagram.*
 ✅ Короткие видео для *WhatsApp, Reels, Shorts, TikTok, ВК*.
 
 💼 Всё создано, чтобы ты экономил время и получал больше заявок из соцсетей.
@@ -347,7 +347,6 @@ async def smm_content(callback: CallbackQuery) -> None:
         except Exception as e:
             logging.warning("Failed to send back prompt to %s: %s", user_id, e)
 
-        # ответим на колбэк, чтобы убрать “часики”
         try:
             await callback.answer()
         except Exception:
@@ -368,14 +367,12 @@ async def smm_content(callback: CallbackQuery) -> None:
 # =============================================================================
 async def sub_cmd(message: Message) -> None:
     await init_user(message)
-    # централизованный показ тарифов/оплаты
     await show_rates_handler(message)
 
 
 
 async def help_cmd(message: Message) -> None:
     await init_user(message)
-    user_id = message.from_user.id
     await message.answer(HELP, reply_markup=help_kb())
 
 def router(rt: Router) -> None:

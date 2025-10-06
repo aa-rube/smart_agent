@@ -1,4 +1,4 @@
-# C:\Users\alexr\Desktop\dev\super_bot\smart_agent\executor\description.py
+#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\executor\apps\description_generate.py
 from __future__ import annotations
 
 import os
@@ -86,7 +86,7 @@ def _send_with_fallback(payload: Dict[str, Any],
 
     for i, model_name in enumerate(chain, start=1):
         try:
-            req = dict(payload);
+            req = dict(payload)
             req["model"] = model_name
             _log_request(req)
             # type: ignore подавляет IDE-жалобу, когда пакет подхвачен как Any
