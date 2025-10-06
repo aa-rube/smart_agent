@@ -25,6 +25,22 @@ import bot.utils.billing_db as billing_db     # карты/подписки/ло
 from bot.utils.database import is_trial_active, trial_remaining_hours
 
 
+def _clean_autofilled_comment(text: str, bot_username: Optional[str]) -> str:
+    """
+    Универсальная очистка свободного комментария от автоподстановки
+    вида '@username_bot ' (switch_inline_query_current_chat).
+    Удаляет префикс от '@' до первого пробела, если совпадает с username.
+    Работает для всех сценариев ввода.
+    """
+    t = (text or "").strip()
+    if not t or not bot_username:
+        return t
+    # Начало строки: @username_bot + пробелы → удалить (регистронезависимо)
+    pattern = rf"^@{re.escape(bot_username)}\b\s+"
+    cleaned = re.sub(pattern, "", t, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
 # ==========================
 # Навигация (Назад/Выход) и резюме
 # ==========================
@@ -856,6 +872,22 @@ def kb_skip_comment() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def kb_short_comment_edit(bot_username: Optional[str], original_text: str) -> InlineKeyboardMarkup:
+    """
+    Клавиатура для слишком короткого комментария (< 50):
+    1. «Пропустить»
+    2. «Редактировать» — switch_inline_query_current_chat с автоподстановкой
+        '@username_bot [оригинальный комментарий пользователя]'.
+    """
+    query = (f"@{bot_username} {original_text}".strip() if bot_username else (original_text or "").strip())
+    rows: list[list[InlineKeyboardButton]] = [
+        [InlineKeyboardButton(text="⏭ Пропустить", callback_data="desc_comment_skip")],
+        [InlineKeyboardButton(text="✏️ Редактировать", switch_inline_query_current_chat=query)],
+    ]
+    _kb_add_back_exit(rows)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 # Кнопка к офферу подписки
 SUBSCRIBE_KB = InlineKeyboardMarkup(
     inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
@@ -1608,21 +1640,29 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
 
     # Этап 2: свободный комментарий?
     if data.get("__awaiting_free_comment"):
-        # Минимальная длина свободного комментария — 50 символов (или пользователь нажимает «Пропустить»)
-        if len(user_text) < 50:
-            remain = 50 - len(user_text)
+        # Получаем username бота для корректной очистки префикса
+        try:
+            me = await bot.get_me()
+            bot_username = (me.username or "").strip()
+        except Exception:
+            bot_username = ""
+        # Универсальная очистка от автоподстановки '@username_bot '
+        cleaned_text = _clean_autofilled_comment(user_text, bot_username)
+        # Минимальная длина свободного комментария — 50 символов (или «Пропустить»/«Редактировать»)
+        if len(cleaned_text) < 50:
+            remain = 50 - len(cleaned_text)
             await message.answer(
                 "✍️ Свободный комментарий слишком короткий. "
-                f"Добавьте ещё хотя бы {remain} симв. или нажмите «Пропустить».",
-                reply_markup=kb_skip_comment()
+                f"Добавьте ещё хотя бы {remain} симв., нажмите «Редактировать» или «Пропустить».",
+                reply_markup=kb_short_comment_edit(bot_username, user_text)
             )
             return
-        # Пользователь прислал достаточный текст — генерируем с этим комментарием
+        # Пользователь прислал достаточный (очищенный) текст — генерируем
         await _generate_and_output(
             message,
             state,
             bot,
-            comment=user_text,
+            comment=cleaned_text,
             reuse_anchor=False
         )
         return
