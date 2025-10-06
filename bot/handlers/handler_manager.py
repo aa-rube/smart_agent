@@ -48,7 +48,7 @@ ai_tools_text = ('''
 
 • 📊 Анализ диалогов
 
-• ✍️ Отзывов от клиентов'''
+• ⭐⭐⭐ Составить отзыв'''
 )
 
 smm_description = ('''
@@ -95,7 +95,7 @@ ai_tools_inline = InlineKeyboardMarkup(
         [InlineKeyboardButton(text="🎨 Редизайн квартиры", callback_data="nav.design_home")],
         [InlineKeyboardButton(text="📐 Обрисовка планировок", callback_data="floor_plan")],
         [InlineKeyboardButton(text="📊 Анализ диалогов", callback_data="nav.summary_home")],
-        [InlineKeyboardButton(text="✍️ Отзывов от клиентов", callback_data="nav.feedback_home")],
+        [InlineKeyboardButton(text="⭐⭐⭐ Составить отзыв", callback_data="nav.feedback_home")],
 
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")],
     ]
