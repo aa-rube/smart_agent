@@ -16,11 +16,9 @@ Self-contained module for the /plan/generate endpoint.
 - Ключ берём из запроса, если нет — из ENV/конфига
 """
 
-import json
 import base64
 import hashlib
 import logging
-import urllib.error
 from executor.config import *
 from typing import Any, Dict, Optional, List, Tuple
 import os
