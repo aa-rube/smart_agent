@@ -83,7 +83,7 @@ def _start_screen_text(user_id: int) -> str:
 • 🆕 *Дизайн с нуля* — загрузи фото пустого помещения, выбери стиль и мебель.
 """.strip()
 
-_TEXT_GET_FILE_REDESIGN_TPL = """
+_TEXT_GET_FILE = """
 {tokens_text}
 
 Загрузи фото помещения -  Получи макет за 1–2 минуты 💡
@@ -91,15 +91,10 @@ _TEXT_GET_FILE_REDESIGN_TPL = """
 """.strip()
 
 def text_get_file_redesign(user_id: int) -> str:
-    return _TEXT_GET_FILE_REDESIGN_TPL.format(tokens_text=_format_access_text(user_id))
-
-_TEXT_GET_FILE_ZERO_TPL = """
-Загрузи фото помещения -  Получи макет за 1–2 минуты 💡
-Готов? Кидай файл сюда 👇
-""".strip()
+    return _TEXT_GET_FILE.format(tokens_text=_format_access_text(user_id))
 
 def text_get_file_zero(user_id: int) -> str:
-    return _TEXT_GET_FILE_ZERO_TPL.format(tokens_text=_format_access_text(user_id))
+    return _TEXT_GET_FILE.format(tokens_text=_format_access_text(user_id))
 
 TEXT_GET_STYLE = "Ок! Теперь выбери стиль оформления 🖼️"
 TEXT_FINAL = "✅ Готово! Вот результат."
