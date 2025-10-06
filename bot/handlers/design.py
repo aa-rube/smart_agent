@@ -1,9 +1,7 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\design.py
 from __future__ import annotations
 
-import os
 import fitz
-import aiohttp
 from typing import Optional
 
 from aiogram import Router, F, Bot
@@ -14,7 +12,6 @@ from aiogram.types import (
 from aiogram.fsm.context import FSMContext
 from aiogram.enums.chat_action import ChatAction
 from aiogram.exceptions import TelegramBadRequest
-import asyncio
 
 import bot.utils.database as db                    # приложение: триал/история/consents
 import bot.utils.billing_db as billing_db          # биллинг: карты/подписки/лог платежей
@@ -80,38 +77,24 @@ def _start_screen_text(user_id: int) -> str:
     tokens_text = _format_access_text(user_id)
     return f"""
 {tokens_text}
-
-1️⃣ Выбери режим:
-
 • 🛋 *Редизайн интерьера* — загрузи фото мебелированного помещения и выбери стиль.
+
 • 🆕 *Дизайн с нуля* — загрузи фото пустого помещения, выбери стиль и мебель.
-
-2️⃣ Получи результат за 1–2 минуты 💡
-
-Просто пришли мне фото помещения, когда будешь готов 👇
 """.strip()
 
 _TEXT_GET_FILE_REDESIGN_TPL = """
-1️⃣ Загрузи *фото помещения* — подойдёт изображение (jpeg/jpg/png), PDF (1 стр.) или прямая ссылка на картинку.
-
-2️⃣ Выбери интерьерный стиль и получи обновлённый дизайн.
-
 {tokens_text}
 
-Жду файл 👇
+Загрузи *фото помещения* -  Получи макет за 1–2 минуты 💡
+Готов? Кидай файл сюда 👇
 """.strip()
 
 def text_get_file_redesign(user_id: int) -> str:
     return _TEXT_GET_FILE_REDESIGN_TPL.format(tokens_text=_format_access_text(user_id))
 
 _TEXT_GET_FILE_ZERO_TPL = """
-1️⃣ Загрузи *фото интерьера* (jpeg/jpg/png), PDF (1 стр.) или ссылку на изображение.
-
-2️⃣ Выбери тип помещения, меблировку и стиль — и получишь готовую визуализацию.
-
-{tokens_text}
-
-Жду файл 👇
+Загрузи *фото помещения* -  Получи макет за 1–2 минуты 💡
+Готов? Кидай файл сюда 👇
 """.strip()
 
 def text_get_file_zero(user_id: int) -> str:
