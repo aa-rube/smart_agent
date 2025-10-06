@@ -1,5 +1,4 @@
 # smart_agent/bot/handlers/handler_manager.py
-#Всегда пиши код без «поддержки старых версий». Если они есть - удаляй.
 from __future__ import annotations
 
 import logging
@@ -56,7 +55,7 @@ smm_description = ('''
 
 Никакого ИИ - только опытные маркетологи с практикой в недвижимости.
 
-🕗 Каждый день в *08:00 по МСК* мы отправляем тебе новый пост.
+🕗 Каждый день в *09:00 по МСК* мы отправляем тебе новый пост.
 
 Тебе остается только *скопировать → вставить* в свои соцсети.
 
@@ -378,7 +377,6 @@ async def help_cmd(message: Message) -> None:
     await init_user(message)
     user_id = message.from_user.id
     await message.answer(HELP, reply_markup=help_kb())
-    app_db.event_add(user_id=user_id, text="MAIN_HELP")
 
 def router(rt: Router) -> None:
 
@@ -392,5 +390,3 @@ def router(rt: Router) -> None:
     rt.callback_query.register(ai_tools, F.data == "nav.ai_tools")
     rt.callback_query.register(check_subscribe_retry, F.data == "start_retry")
     rt.callback_query.register(smm_content, F.data == "smm_content")
-    
-    # Обработка partners.check теперь полностью в subscribe_partner_manager
