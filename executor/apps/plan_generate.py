@@ -23,6 +23,7 @@ import logging
 import urllib.error
 from executor.config import *
 from typing import Any, Dict, Optional, List, Tuple
+import os
 
 from flask import jsonify, Request
 
@@ -34,9 +35,6 @@ LOG = logging.getLogger(__name__)
 
 
 
-# Публичный REST endpoint Google (можно прокинуть свой прокси)
-BANANO_ENDPOINT = os.getenv("BANANO_ENDPOINT", "https://generativelanguage.googleapis.com/v1beta")
-
 # Модель для генерации изображений
 BANANO_MODEL = os.getenv("BANANO_MODEL", "gemini-2.5-flash-image")
 
@@ -47,6 +45,11 @@ BANANO_IMAGES_ONLY = os.getenv("BANANO_IMAGES_ONLY", "1") == "1"
 BANANO_ASPECT_RATIO = os.getenv("BANANO_ASPECT_RATIO", "")
 
 __all__ = ["plan_generate", "build_plan_prompt", "build_refine_prompt"]
+
+from google import genai
+from google.genai import types
+from PIL import Image
+from io import BytesIO
 
 
 # ======================
@@ -205,168 +208,56 @@ def _to_data_url(img_bytes: bytes, mime: str = "image/png") -> str:
 
 
 # ======================
-#    Banano HTTP client
+#    google-genai client
 # ======================
 
-def _build_google_payload(
-    *,
-    prompt: str,
-    images: List[bytes],
-    aspect_ratio: Optional[str],
-    images_only: bool,
-) -> Dict[str, Any]:
-    """
-    Строим JSON под Google REST:
-    POST /models/{model}:generateContent?key=API_KEY
-    {
-      "contents":[{"role":"user","parts":[{"text":"..."},{"inlineData":{"mimeType":"...","data":"...b64..."}}]}],
-      "generationConfig":{"responseModalities":["IMAGE"],"imageConfig":{"aspectRatio":"16:9"}}
-    }
-    """
-    parts: List[Dict[str, Any]] = [{"text": prompt}]
-    for b in images:
-        parts.append({
-            "inlineData": {
-                "mimeType": _detect_mime(b),
-                "data": base64.b64encode(b).decode("ascii"),
-            }
-        })
-
-    payload: Dict[str, Any] = {"contents": [{"role": "user", "parts": parts}]}
-
-    gen_cfg: Dict[str, Any] = {}
-    if images_only:
-        gen_cfg["responseModalities"] = ["IMAGE"]
-    if aspect_ratio:
-        gen_cfg["imageConfig"] = {"aspectRatio": aspect_ratio}
-    if gen_cfg:
-        payload["generationConfig"] = gen_cfg
-
-    return payload
-
-
-def _http_post_json(url: str, params: Dict[str, str], body: Dict[str, Any], timeout: int = 90) -> Dict[str, Any]:
-    """
-    Минимальный HTTP POST с использованием стандартной библиотеки (без сторонних зависимостей).
-    Если в окружении установлен requests — можно раскомментировать альтернативу.
-    """
-    # --- Вариант на стандартной библиотеке ---
-    import urllib.request
-    import urllib.parse
-
-    full_url = url
-    if params:
-        q = urllib.parse.urlencode(params)
-        full_url = f"{url}?{q}"
-
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
-        full_url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            resp_body = resp.read()
-            return json.loads(resp_body.decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode('utf-8')
-        try:
-            error_json = json.loads(error_body)
-        except:
-            error_json = {"error": {"message": error_body}}
-        
-        # Преобразуем HTTP ошибку в исключение с деталями
-        if e.code == 429:
-            raise Exception(f"HTTP Error 429: Too Many Requests - {error_json.get('error', {}).get('message', 'Rate limit exceeded')}")
-        elif e.code >= 400:
-            raise Exception(f"HTTP Error {e.code}: {error_json.get('error', {}).get('message', 'API request failed')}")
-        else:
-            raise Exception(f"HTTP Error {e.code}: {error_body}")
-
-    # --- Вариант с requests (если предпочитаешь) ---
-    # import requests
-    # r = requests.post(url, params=params, json=body, timeout=timeout)
-    # r.raise_for_status()
-    # return r.json()
-
-
-def _parse_google_response(js: Dict[str, Any]) -> Tuple[List[Tuple[bytes, str]], Optional[str]]:
-    """
-    Возвращает ([(bytes, mime)], optional_text).
-    """
-    images: List[Tuple[bytes, str]] = []
-    text_out: Optional[str] = None
-    try:
-        cands = js.get("candidates") or []
-        if not cands:
-            return images, text_out
-        parts = ((cands[0] or {}).get("content") or {}).get("parts") or []
-        for p in parts:
-            if "inlineData" in p:
-                inline = p["inlineData"]
-                mime = (inline.get("mimeType") or "image/png").lower()
-                data_b64 = inline.get("data") or ""
-                if data_b64:
-                    images.append((base64.b64decode(data_b64), mime))
-            elif "text" in p and not text_out:
-                text_out = p["text"]
-    except Exception:
-        pass
-    return images, text_out
-
-
-def _banano_generate_image(
+def _genai_generate_image(
     *,
     api_key: str,
     model: str,
-    endpoint: str,
     prompt: str,
     images: List[bytes],
     aspect_ratio: Optional[str],
     images_only: bool,
-    timeout: int = 90,
-    max_retries: int = 3,
 ) -> Dict[str, Any]:
     """
-    Тонкий вызов REST: {endpoint}/models/{model}:generateContent?key=API_KEY
-    С retry логикой для rate limits
+    Вызов через официальную библиотеку google-genai.
+    Возвращает {"images": [(bytes, mime)], "text": Optional[str]}.
     """
-    import time
-    
-    url = endpoint.rstrip("/") + f"/models/{model}:generateContent"
-    params = {"key": api_key}
+    client = genai.Client(api_key=api_key)
 
-    payload = _build_google_payload(
-        prompt=prompt,
-        images=images,
-        aspect_ratio=aspect_ratio,
-        images_only=images_only,
+    contents: List[Any] = [prompt]
+    for b in images:
+        contents.append(Image.open(BytesIO(b)))  # как в оф. примерах
+
+    cfg_kwargs: Dict[str, Any] = {}
+    if images_only:
+        cfg_kwargs["response_modalities"] = ["Image"]
+    if aspect_ratio:
+        cfg_kwargs["image_config"] = types.ImageConfig(aspect_ratio=aspect_ratio)
+
+    resp = client.models.generate_content(
+        model=model,
+        contents=contents,
+        config=types.GenerateContentConfig(**cfg_kwargs) if cfg_kwargs else None,
     )
 
-    last_exception = None
-    for attempt in range(max_retries + 1):
-        try:
-            resp_json = _http_post_json(url, params, payload, timeout=timeout)
-            out_images, out_text = _parse_google_response(resp_json)
-            return {"images": out_images, "text": out_text, "raw": resp_json}
-        except Exception as e:
-            last_exception = e
-            error_msg = str(e)
-            
-            # Если rate limit и есть еще попытки - ждем и повторяем
-            if "429" in error_msg and attempt < max_retries:
-                wait_time = (2 ** attempt) * 5  # Экспоненциальная задержка: 5, 10, 20 сек
-                LOG.warning(f"Rate limit hit, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries + 1})")
-                time.sleep(wait_time)
-                continue
-            else:
-                # Не rate limit или кончились попытки
-                raise e
-    
-    # Если дошли сюда, значит все попытки исчерпаны
-    raise last_exception or Exception("All retry attempts failed")
+    out_images: List[Tuple[bytes, str]] = []
+    out_text: Optional[str] = None
+    try:
+        cand = resp.candidates[0]
+        for part in cand.content.parts:
+            if getattr(part, "text", None):
+                if not out_text:
+                    out_text = part.text
+            elif getattr(part, "inline_data", None):
+                data = part.inline_data.data
+                mime = getattr(part.inline_data, "mime_type", None) or "image/png"
+                out_images.append((data, mime))
+    except Exception:
+        pass
+
+    return {"images": out_images, "text": out_text}
 
 
 # =================
@@ -454,18 +345,16 @@ def plan_generate(req: Request):
         if not api_key:
             return jsonify({"error": "auth_error", "detail": "API key is required (header or form, or ENV)"}), 401
 
-        LOG.info("plan_generate (banano) start req_id=%s model=%s", request_id, BANANO_MODEL)
+        LOG.info("plan_generate (genai) start req_id=%s model=%s", request_id, BANANO_MODEL)
 
         # 5) 1-й проход: черновик
-        nb_resp = _banano_generate_image(
+        nb_resp = _genai_generate_image(
             api_key=api_key,
             model=BANANO_MODEL,
-            endpoint=BANANO_ENDPOINT,
             prompt=prompt,
             images=[img_bytes],
             aspect_ratio=aspect_ratio,
             images_only=images_only,
-            max_retries=2,  # Максимум 3 попытки всего
         )
 
         # 6) 2-й проход (опционально): картинка-истина + черновик
@@ -474,16 +363,14 @@ def plan_generate(req: Request):
             try:
                 draft_img_bytes, draft_mime = nb_resp["images"][0]  # берём первое изображение черновика
                 refine_prompt = build_refine_prompt(base_prompt=prompt, extra=refine_prompt_extra)
-                LOG.info("plan_generate (banano) second pass start req_id=%s model=%s", request_id, BANANO_MODEL)
-                final_resp = _banano_generate_image(
+                LOG.info("plan_generate (genai) second pass start req_id=%s model=%s", request_id, BANANO_MODEL)
+                final_resp = _genai_generate_image(
                     api_key=api_key,
                     model=BANANO_MODEL,
-                    endpoint=BANANO_ENDPOINT,
                     prompt=refine_prompt,
                     images=[img_bytes, draft_img_bytes],  # истина + черновик
                     aspect_ratio=aspect_ratio,
                     images_only=True,  # финал — только картинка
-                    max_retries=2,
                 )
             except Exception as _e:
                 LOG.warning("Second pass skipped due to error: %s", _e)
@@ -506,7 +393,7 @@ def plan_generate(req: Request):
                 "request_id": request_id,
                 "aspect_ratio": aspect_ratio,
                 "response_mode": response_mode,
-                "endpoint": BANANO_ENDPOINT,
+                "lib": "google.genai",
                 "second_pass": bool(second_pass_flag),
                 "pass1_images_count": len(nb_resp.get("images", [])),
                 "pass2_images_count": len(final_resp.get("images", [])) if second_pass_flag else 0,
@@ -515,13 +402,13 @@ def plan_generate(req: Request):
         return jsonify(body), 200
 
     except Exception as e:
-        LOG.exception("Unhandled error in plan_generate (banano)")
+        LOG.exception("Unhandled error in plan_generate (genai)")
         body = {"error": "internal_error", "detail": str(e)}
         try:
             if (req.args.get("debug") == "1"):
                 body["debug"] = {
-                    "endpoint": BANANO_ENDPOINT,
                     "model": BANANO_MODEL,
+                    "lib": "google.genai",
                 }
         except Exception:
             pass
