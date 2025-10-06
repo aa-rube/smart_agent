@@ -46,7 +46,9 @@ ai_tools_text = ('''
 
 • 📐 Обрисовка планировок 
 
-• 📊 Анализ диалогов'''
+• 📊 Анализ диалогов
+
+• ✍️ Отзывов от клиентов'''
 )
 
 smm_description = ('''
@@ -80,8 +82,6 @@ frst_kb_inline = InlineKeyboardMarkup(
     inline_keyboard=[
         [InlineKeyboardButton(text="🏡 Контент для соцсетей риелтора", callback_data="smm_content")],
         [InlineKeyboardButton(text="🧠 Продвинутые инструменты", callback_data="nav.ai_tools")],
-        [InlineKeyboardButton(text="🛋️ Генератор дизайна интерьера", callback_data="nav.design_home")],
-        [InlineKeyboardButton(text="📐 Планировки (Тестовая версия)", callback_data="floor_plan")],
         [InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")],
         [InlineKeyboardButton(text="Наше сообщество", url=PARTNER_URL)],
         [InlineKeyboardButton(text="Тех. поддержка", url="https://t.me/dashaadminrealtor")],
@@ -90,10 +90,13 @@ frst_kb_inline = InlineKeyboardMarkup(
 
 ai_tools_inline = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="🤖 ИИ для закрытия возражений", callback_data="nav.objection_start")],
-        [InlineKeyboardButton(text="✍️ ИИ для написания отзывов от клиентов", callback_data="nav.feedback_home")],
-        [InlineKeyboardButton(text="✨  Анализ диалога с клиентом", callback_data="nav.summary_home")],
-        [InlineKeyboardButton(text="💎 Генератор продающих описаний объектов", callback_data="nav.descr_home")],
+        [InlineKeyboardButton(text="✍️ Описание объявлений", callback_data="nav.descr_home")],
+        [InlineKeyboardButton(text="🗣 Отработка возражений", callback_data="nav.objection_start")],
+        [InlineKeyboardButton(text="🎨 Редизайн квартиры", callback_data="nav.design_home")],
+        [InlineKeyboardButton(text="📐 Обрисовка планировок", callback_data="floor_plan")],
+        [InlineKeyboardButton(text="📊 Анализ диалогов", callback_data="nav.summary_home")],
+        [InlineKeyboardButton(text="✍️ Отзывов от клиентов", callback_data="nav.feedback_home")],
+
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")],
     ]
 )
