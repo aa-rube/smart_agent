@@ -276,7 +276,7 @@ SUB_PAY = """
 """.strip()
 
 def text_descr_intro(user_id: int) -> str:
-    """Стартовый текст с информацией о доступе (как в plans). Начинаем с типа сделки."""
+    """Стартовый текст с информацией о доступе. Начинаем с типа сделки."""
     return f"{DESC_INTRO}\n\n{_format_access_text(user_id)}\n\n{ASK_DEAL}"
 
 # ==========================
@@ -1122,14 +1122,17 @@ async def handle_area(cb: CallbackQuery, state: FSMContext):
 # ==========================
 # Квартира: шаги/подсказки
 # ==========================
-def _flat_after_market_keys() -> list[str]:
-    """Поля, которые идут для обеих веток рынка."""
-    return [
-        "rooms", "mortgage_ok",
+def _flat_after_market_keys(*, include_mortgage: bool) -> list[str]:
+    """Поля, которые идут после выбора рынка. Ипотека только для продажи."""
+    keys = ["rooms"]
+    if include_mortgage:
+        keys.append("mortgage_ok")
+    keys += [
         "total_area", "kitchen_area", "floor", "floors_total",
         "bathroom_type", "windows", "house_type", "lift", "parking",
         "renovation", "layout", "balcony", "ceiling_height_m",
     ]
+    return keys
 
 def _flat_prompt_for_key(key: str) -> str:
     return {
@@ -1825,7 +1828,8 @@ async def handle_enum_select(cb: CallbackQuery, state: FSMContext):
 
     # Особая логика после выбора рынка (квартира)
     if key == "market" and data.get("__form_step") == 0:
-        after = _flat_after_market_keys()
+        # Ипотека имеет смысл только при продаже
+        after = _flat_after_market_keys(include_mortgage=(data.get("deal_type") == "sale"))
         if code == "new":
             new_keys = ["market", "completion_term", "sale_method"] + after
         else:
