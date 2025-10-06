@@ -27,10 +27,8 @@ _client_default: Any = None
 def _log_request(payload: Dict[str, Any]) -> None:
     if HTTP_DEBUG:
         LOG.info(
-            "OpenAI request: model=%s temp=%s max_tokens=%s messages=%d",
+            "OpenAI request: model=%s messages=%d",
             payload.get("model"),
-            # payload.get("temperature"),
-            # payload.get("any+", "max_tokens"),
             len(payload.get("messages") or []),
         )
 
@@ -460,6 +458,7 @@ def compose_description_user_message(fields: Dict[str, Any]) -> str:
     Собирает пользовательское сообщение из полей анкеты (с нормализацией).
     """
     t_key = fields.get("type")
+    deal_type_raw = str(fields.get("deal_type") or "").strip().lower()
     c_key = fields.get("apt_class") if (t_key == "flat") else None
     x_key = fields.get("in_complex")
     a_key = fields.get("area")
@@ -488,19 +487,28 @@ def compose_description_user_message(fields: Dict[str, Any]) -> str:
     # Добираем дополнительные поля (квартира/загород/коммерция) — в EXTRAS,
     # чтобы ассистент мог использовать их, не перегружая основную сетку.
     extras: Dict[str, Any] = {}
-    for k in (
-            # квартира
-            "market", "completion_term", "sale_method", "mortgage_ok", "bathroom_type", "windows",
-            "house_type", "lift", "parking", "renovation", "layout", "balcony", "ceiling_height_m",
-            # загород
-            "country_object_type", "country_house_area_m2", "country_plot_area_sotki", "country_distance_km",
-            "country_floors", "country_rooms", "country_land_category_house", "country_renovation", "country_toilet",
-            "country_utilities", "country_leisure", "country_wall_material", "country_parking", "country_transport",
-            "country_land_category_plot", "country_communications_plot",
-            # коммерция
-            "comm_object_type", "land_area", "comm_building_type", "comm_whole_object", "comm_finish", "comm_entrance",
-            "comm_parking", "comm_layout"
-    ):
+    # Базовый набор ключей для EXTRAS
+    extras_keys = [
+        # квартира
+        "market", "completion_term", "sale_method",
+        # "mortgage_ok" — добавляем ТОЛЬКО для продажи, см. ниже
+        "bathroom_type", "windows", "house_type", "lift", "parking",
+        "renovation", "layout", "balcony", "ceiling_height_m",
+        # загород
+        "country_object_type", "country_house_area_m2", "country_plot_area_sotki", "country_distance_km",
+        "country_floors", "country_rooms", "country_land_category_house", "country_renovation", "country_toilet",
+        "country_utilities", "country_leisure", "country_wall_material", "country_parking", "country_transport",
+        "country_land_category_plot", "country_communications_plot",
+        # коммерция
+        "comm_object_type", "land_area", "comm_building_type", "comm_whole_object", "comm_finish", "comm_entrance",
+        "comm_parking", "comm_layout",
+    ]
+    # Ипотека при аренде — исключаем из EXTRAS
+    # Разрешаем "mortgage_ok" только для продажи (sale).
+    if deal_type_raw != "rent":
+        extras_keys.insert(3, "mortgage_ok")  # держим рядом с способом продажи
+    
+    for k in extras_keys:
         v = fields.get(k, None)
         if v not in (None, "", [], "—"):
             extras[k] = v
