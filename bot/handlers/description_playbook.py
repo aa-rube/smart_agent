@@ -872,14 +872,15 @@ def kb_skip_comment() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def kb_short_comment_edit(bot_username: Optional[str], original_text: str) -> InlineKeyboardMarkup:
+def kb_short_comment_edit(original_text: str) -> InlineKeyboardMarkup:
     """
     Клавиатура для слишком короткого комментария (< 50):
     1. «Пропустить»
-    2. «Редактировать» — switch_inline_query_current_chat с автоподстановкой
-        '@username_bot [оригинальный комментарий пользователя]'.
+    2. «Редактировать» — switch_inline_query_current_chat.
+        В query передаём ТОЛЬКО исходный текст; имя бота не добавляем —
+        клиент Telegram сам подставляет @username_bot.
     """
-    query = (f"@{bot_username} {original_text}".strip() if bot_username else (original_text or "").strip())
+    query = (original_text or "").strip()
     rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text="⏭ Пропустить", callback_data="desc_comment_skip")],
         [InlineKeyboardButton(text="✏️ Редактировать", switch_inline_query_current_chat=query)],
@@ -1654,7 +1655,7 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
             await message.answer(
                 "✍️ Свободный комментарий слишком короткий. "
                 f"Добавьте ещё хотя бы {remain} симв., нажмите «Редактировать» или «Пропустить».",
-                reply_markup=kb_short_comment_edit(bot_username, user_text)
+                reply_markup=kb_short_comment_edit(user_text)
             )
             return
         # Пользователь прислал достаточный (очищенный) текст — генерируем
