@@ -1552,6 +1552,12 @@ async def _generate_and_output(
 
     data = await state.get_data()
 
+    # Флаги для условной передачи юр.полей
+    is_sale = (data.get("deal_type") == "sale")
+    market_code = (data.get("__market_code") or "").strip()
+    market_label = (data.get("market") or "").strip().lower()
+    is_new_build = (market_code == "new") or ("новострой" in market_label)
+
     fields = {
         "deal_type":  data.get("deal_type"),  # sale / rent
         "type":       data.get("type"),
@@ -1586,7 +1592,8 @@ async def _generate_and_output(
         # --- новые обязательные текстовые поля (квартира)
         "flat_location_text":        data.get("flat_location_text"),
         "flat_infrastructure_text":  data.get("flat_infrastructure_text"),
-        "flat_legal_text":           (data.get("flat_legal_text") if data.get("deal_type") == "sale" else None),
+        # Юридические вопросы: только для продажи и НЕ для новостройки
+        "flat_legal_text":           (data.get("flat_legal_text") if (is_sale and not is_new_build) else None),
         # --- для Загородной (новая карта) ---
         "country_object_type":        data.get("country_object_type"),
         "country_house_area_m2":      data.get("country_house_area_m2"),
@@ -1914,11 +1921,15 @@ async def handle_enum_select(cb: CallbackQuery, state: FSMContext):
 
     # Особая логика после выбора рынка (квартира)
     if key == "market" and data.get("__form_step") == 0:
-        # Ипотека и юр.особенности имеют смысл только при продаже
+        # Ипотека и юр.особенности:
+        # - ипотека только для продажи;
+        # - юр.поле только для продажи И НЕ для новостройки.
         is_sale = (data.get("deal_type") == "sale")
+        # Сохраняем внутренний код рынка для последующей логики/payload
+        await state.update_data(__market_code=code)
         after = _flat_after_market_keys(
             include_mortgage=is_sale,
-            include_legal=is_sale,
+            include_legal=(is_sale and code != "new"),
         )
         if code == "new":
             new_keys = ["market", "completion_term", "sale_method"] + after
