@@ -149,13 +149,29 @@ DESCRIPTION_AREA = {
 # ------------------ Специализированные USER-TEMPLATE по типам ------------------
 # Квартира — ПРОДАЖА
 DESCRIPTION_USER_TEMPLATE_FLAT_SALE_RU = """
-Создай художественное описание квартиры, которое помогает покупателю представить себя в этом пространстве.
-Не используй списки — только плавный, связный текст, где характеристики превращаются в преимущества и выгоды.
+Сгенерируй готовое объявление (квартира, ПРОДАЖА) по данным ниже, соблюдая правила из системного промпта.
+Если какое-либо поле равно «—» или пусто — просто пропусти соответствующую мысль/строку/блок.
 
-Инструкция:
-Опиши атмосферу, комфорт и стиль жизни, который даёт эта квартира.
-Сделай упор на эмоции, свет, ощущение уюта и удобства.
-Текст — единый художественный абзац (700–1000 символов).
+Требуемая композиция (не анкета, а продающий текст):
+
+Заголовок (до ~70 символов) — 1 сильная выгода/образ без кавычек и клише.
+
+Лид-абзац (1–3 предложения) — Сборка главных смыслов: метраж/планировка/этажность → ощущение света/пространства → для кого это идеально.
+
+4–6 выгод-маркеров — Каждый маркер = «факт → зачем это покупателю». Варьируй формулировки; диапазоны осмысляй.
+
+Микро-блоки (выводи только те, где есть факты)
+— Планировка: общая площадь {total_area} м², кухня {kitchen_area} м², комнаты {rooms}, этаж {floor_number} / {building_floors}, особенности {amenities}.
+— Дом/ЖК: {in_complex_label}, класс/тип: {type_label} {apt_class_label}.
+— Локация: {location} (и «{area_label}», если это несёт смысл).
+— Адрес/ориентиры (текст): {flat_location_text}
+— Инфраструктура рядом (текст): {flat_infrastructure_text}
+
+Условия сделки (продажа)
+— Сделка: {deal_label}. При наличии — укажи способ продажи/срок сдачи. Ипотеку упоминай только если релевантно для продажи.
+— Юридические особенности (текст): {flat_legal_text}
+
+CTA — 1–2 предложения: показ/созвон, без давления.
 
 Данные анкеты (используй только по смыслу, без вывода «—»):
 — Тип: {type_label}
@@ -171,6 +187,9 @@ DESCRIPTION_USER_TEMPLATE_FLAT_SALE_RU = """
 — Коммуникации: {utilities}
 — Особенности/удобства: {amenities}
 — Комментарий: {comment}
+— (Текст) Локация: {flat_location_text}
+— (Текст) Инфраструктура: {flat_infrastructure_text}
+— (Текст) Юридические особенности: {flat_legal_text}
 """
 
 # Квартира — АРЕНДА
@@ -186,6 +205,8 @@ DESCRIPTION_USER_TEMPLATE_FLAT_RENT_RU = """
 — Планировка: {total_area} м², кухня {kitchen_area} м², комнаты {rooms}, этаж {floor_number}/{building_floors}, особенности {amenities}.
 — Дом/ЖК: {in_complex_label}, класс/тип: {type_label} {apt_class_label}.
 — Локация: {location} (и «{area_label}», если важно).
+— Адрес/ориентиры (текст): {flat_location_text}
+— Инфраструктура рядом (текст): {flat_infrastructure_text}
 5) Условия аренды
 — Коротко: срок/залог/коммунальные/правила. Не упоминай ипотеку.
 6) CTA на просмотр/созвон.
@@ -204,6 +225,8 @@ DESCRIPTION_USER_TEMPLATE_FLAT_RENT_RU = """
 — Коммуникации: {utilities}
 — Особенности/удобства: {amenities}
 — Комментарий: {comment}
+— (Текст) Локация: {flat_location_text}
+— (Текст) Инфраструктура: {flat_infrastructure_text}
 """
 
 # Загородная недвижимость
@@ -538,6 +561,11 @@ def _normalize_fields(raw: Dict[str, Any]) -> Dict[str, Any]:
         "location": _first_nonempty(raw.get("location_exact"), raw.get("location")),
         "amenities": _first_nonempty(raw.get("features"), raw.get("amenities")),
 
+        # новые текстовые поля (квартира)
+        "flat_location_text": raw.get("flat_location_text"),
+        "flat_infrastructure_text": raw.get("flat_infrastructure_text"),
+        "flat_legal_text": raw.get("flat_legal_text"),
+
         # квартира (если есть)
         "market": raw.get("market"),
         "completion_term": raw.get("completion_term"),
@@ -609,6 +637,11 @@ def _normalize_fields(raw: Dict[str, Any]) -> Dict[str, Any]:
     for k, v in list(norm.items()):
         if v in ("", "—"):
             norm[k] = None
+
+    # защита от «ипотека/право» при аренде: юр.текст имеет смысл только для продажи
+    if (norm.get("deal_type") or "").strip().lower() != "sale":
+        # если прилетело по ошибке — вычистим, чтобы не попадало в шаблон
+        norm["flat_legal_text"] = None
     return norm
 
 
@@ -717,6 +750,10 @@ def compose_description_user_message(fields: Dict[str, Any]) -> str:
         "utilities": _safe(fields.get("utilities")),
         "amenities": _safe(fields.get("amenities")),
         "comment": _safe(fields.get("comment")),
+        # нов. текстовые поля (квартира)
+        "flat_location_text": _safe(fields.get("flat_location_text")),
+        "flat_infrastructure_text": _safe(fields.get("flat_infrastructure_text")),
+        "flat_legal_text": _safe(fields.get("flat_legal_text")),
     }
 
     # Добираем дополнительные поля (квартира/загород/коммерция) — в EXTRAS,
@@ -750,6 +787,10 @@ def compose_description_user_message(fields: Dict[str, Any]) -> str:
         extras_str = ", ".join(f"{kk}={_safe(vv)}" for kk, vv in extras.items() if _safe(vv) != "—")
         user_payload["comment"] = (
                     user_payload["comment"] + ((" | EXTRAS: " + extras_str) if extras_str else "")).strip()
+
+    # NB: Текстовые поля локации/инфраструктуры/юридических особенностей уже включены
+    # в основной шаблон через плейсхолдеры; не дублируем их в EXTRAS.
+    # (Если потребуется, можно добавлять в EXTRAS отдельным флагом/настройкой.)
 
     # Добавим сделку и выбранный TEMPLATE
     msg = "Сгенерируй продающее описание по анкете. Соблюдай «Х-П-В», без воды, с явным CTA.\n\n"

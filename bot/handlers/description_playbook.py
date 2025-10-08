@@ -312,10 +312,15 @@ FLAT_ASK_RENOVATION      = "Ремонт:"
 FLAT_ASK_LAYOUT          = "Планировка комнат:"
 FLAT_ASK_BALCONY         = "Балкон/лоджия:"
 FLAT_ASK_CEILING         = "Высота потолков (м, опционально). Пример: 2.7"
-FLAT_ASK_TOTAL_AREA      = "Общая площадь (м²). Пример: 56.4"
+FLAT_ASK_TOTAL_AREA      = "Общая площадь (м²): выберите диапазон"
 FLAT_ASK_KITCHEN_AREA    = "Площадь кухни (м²). Пример: 10.5"
 FLAT_ASK_FLOOR           = "Этаж квартиры. Пример: 5"
-FLAT_ASK_FLOORS_TOTAL    = "Этажность дома. Пример: 17"
+FLAT_ASK_FLOORS_TOTAL    = "Этажность дома: выберите вариант"
+
+# --- НОВОЕ: обязательные текстовые поля (перед свободным комментарием)
+FLAT_ASK_LOCATION_TEXT = "Локация:\nОпишите местоположение объекта, адрес."
+FLAT_ASK_INFRA_TEXT = "Ближайшие точки инфраструктуры:\nОпишите ближайшую инфраструктуру: школы, детские сады, остановки транспорта, парки, достопримечательности."
+FLAT_ASK_LEGAL_TEXT = "Расскажите о юридических особенностях объекта.\nПрименялся ли маткапитал текущим собственником, находится ли квартира в ипотеке/залоге, есть ли аресты? Квартира готова к заселению?"
 
 # Справочник опций для кнопок (код, метка)
 DESCRIPTION_CLASSES = {
@@ -1155,8 +1160,12 @@ async def handle_area(cb: CallbackQuery, state: FSMContext):
 # ==========================
 # Квартира: шаги/подсказки
 # ==========================
-def _flat_after_market_keys(*, include_mortgage: bool) -> list[str]:
-    """Поля, которые идут после выбора рынка. Ипотека только для продажи."""
+def _flat_after_market_keys(*, include_mortgage: bool, include_legal: bool) -> list[str]:
+    """Поля, которые идут после выбора рынка.
+    Ипотека (mortgage_ok) — только для продажи.
+    Юр.особенности (flat_legal_text) — только для продажи.
+    Локация и инфраструктура — всегда.
+    """
     keys = ["rooms"]
     if include_mortgage:
         keys.append("mortgage_ok")
@@ -1164,7 +1173,12 @@ def _flat_after_market_keys(*, include_mortgage: bool) -> list[str]:
         "total_area", "kitchen_area", "floor", "floors_total",
         "bathroom_type", "windows", "house_type", "lift", "parking",
         "renovation", "layout", "balcony", "ceiling_height_m",
+        # новые обязательные текстовые поля
+        "flat_location_text",
+        "flat_infrastructure_text",
     ]
+    if include_legal:
+        keys.append("flat_legal_text")
     return keys
 
 def _flat_prompt_for_key(key: str) -> str:
@@ -1187,6 +1201,10 @@ def _flat_prompt_for_key(key: str) -> str:
         "layout":            FLAT_ASK_LAYOUT,
         "balcony":           FLAT_ASK_BALCONY,
         "ceiling_height_m":  FLAT_ASK_CEILING,
+        # новые текстовые поля
+        "flat_location_text":      FLAT_ASK_LOCATION_TEXT,
+        "flat_infrastructure_text":FLAT_ASK_INFRA_TEXT,
+        "flat_legal_text":         FLAT_ASK_LEGAL_TEXT,
     }.get(key, "Введите значение:")
 
 async def _ask_next_flat_step(msg: Message, state: FSMContext, *, new: bool = False):
@@ -1208,8 +1226,11 @@ async def _ask_next_flat_step(msg: Message, state: FSMContext, *, new: bool = Fa
         "bathroom_type", "windows", "house_type", "lift", "parking",
         "renovation", "layout", "balcony"
     }
-    # Поля, переведённые на текстовый ввод
-    text_keys = {"total_area", "kitchen_area", "floor", "floors_total"}
+    # Поля, требующие текстового ввода (включая новые обязательные)
+    text_keys = {
+        "total_area", "kitchen_area", "floor", "floors_total",
+        "flat_location_text", "flat_infrastructure_text", "flat_legal_text",
+    }
     
     if key in enum_keys:
         await _send_step(msg, await _with_summary(state, _flat_prompt_for_key(key)), _kb_enum(key), new=new)
@@ -1358,6 +1379,10 @@ def _form_prompt_for_key(key: str) -> str:
         "features":         ASK_FORM_FEATURES,
         "completion_term":  FLAT_ASK_COMPLETION_TERM,
         "ceiling_height_m": FLAT_ASK_CEILING,
+        # новые подсказки для текста (квартира)
+        "flat_location_text":       FLAT_ASK_LOCATION_TEXT,
+        "flat_infrastructure_text": FLAT_ASK_INFRA_TEXT,
+        "flat_legal_text":          FLAT_ASK_LEGAL_TEXT,
         # commercial
         "comm_building_type": COMM_ASK_BUILDING_TYPE,
         "comm_whole_object":  COMM_ASK_WHOLE_OBJECT,
@@ -1428,6 +1453,22 @@ def _validate_and_store(key: str, text: str, data: Dict) -> Optional[str]:
         return None
     if key == "features":
         data["features"] = _normalize_list(t)
+        return None
+    # новые обязательные текстовые поля (квартира)
+    if key == "flat_location_text":
+        if len(t) < 3:
+            return "Опишите местоположение и адрес хотя бы несколькими словами."
+        data["flat_location_text"] = t
+        return None
+    if key == "flat_infrastructure_text":
+        if len(t) < 3:
+            return "Опишите ближайшую инфраструктуру хотя бы несколькими словами."
+        data["flat_infrastructure_text"] = t
+        return None
+    if key == "flat_legal_text":
+        if len(t) < 3:
+            return "Опишите юридические особенности хотя бы несколькими словами."
+        data["flat_legal_text"] = t
         return None
     if key == "completion_term":
         if len(t) < 4:
@@ -1542,6 +1583,10 @@ async def _generate_and_output(
         "layout":            data.get("layout"),
         "balcony":           data.get("balcony"),
         "ceiling_height_m":  data.get("ceiling_height_m"),
+        # --- новые обязательные текстовые поля (квартира)
+        "flat_location_text":        data.get("flat_location_text"),
+        "flat_infrastructure_text":  data.get("flat_infrastructure_text"),
+        "flat_legal_text":           (data.get("flat_legal_text") if data.get("deal_type") == "sale" else None),
         # --- для Загородной (новая карта) ---
         "country_object_type":        data.get("country_object_type"),
         "country_house_area_m2":      data.get("country_house_area_m2"),
@@ -1869,8 +1914,12 @@ async def handle_enum_select(cb: CallbackQuery, state: FSMContext):
 
     # Особая логика после выбора рынка (квартира)
     if key == "market" and data.get("__form_step") == 0:
-        # Ипотека имеет смысл только при продаже
-        after = _flat_after_market_keys(include_mortgage=(data.get("deal_type") == "sale"))
+        # Ипотека и юр.особенности имеют смысл только при продаже
+        is_sale = (data.get("deal_type") == "sale")
+        after = _flat_after_market_keys(
+            include_mortgage=is_sale,
+            include_legal=is_sale,
+        )
         if code == "new":
             new_keys = ["market", "completion_term", "sale_method"] + after
         else:
