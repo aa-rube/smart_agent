@@ -79,8 +79,10 @@ def _send_with_fallback(payload: Dict[str, Any],
         try:
             req = dict(payload)
             req["model"] = model_name
-            log.info("_send_with_fallback {}", req)
-
+            
+            # Логируем промпт перед отправкой в OpenAI
+            if "messages" in req:
+                log.info("OpenAI prompt: %s", json.dumps(req["messages"], ensure_ascii=False, indent=2))
             resp = client.chat.completions.create(**req)
             text = _extract_text(resp)
             if text:
