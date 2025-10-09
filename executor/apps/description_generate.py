@@ -815,13 +815,16 @@ def _post_callback(callback_url: str, payload: Dict[str, Any]) -> None:
     """
     Безопасно шлём результат на callback_url. Не бросаем исключения наружу.
     """
+    log.info("Sending callback to URL: %s", callback_url)
+    log.info("Callback payload: %s", json.dumps(payload, ensure_ascii=False, indent=2))
     try:
         # небольшая валидация URL
         pr = urlparse(callback_url)
         if pr.scheme not in {"http", "https"}:
             raise ValueError("callback_url must be http/https")
         headers = {"Content-Type": "application/json"}
-        requests.post(callback_url, data=json.dumps(payload), headers=headers, timeout=30)
+        response = requests.post(callback_url, data=json.dumps(payload), headers=headers, timeout=30)
+        log.info("Callback sent successfully, status: %s, response: %s", response.status_code, response.text)
     except Exception as e:
         log.warning("Callback POST failed: %s", e)
 
@@ -835,10 +838,19 @@ def description_generate(req: Request):
     вызываем локальный OpenAI-сервис и возвращаем Flask-совместимый ответ.
     Контроллер просто делегирует сюда: return description_module.description_generate(request).
     """
+    # Логируем входящие данные по API
+    log.info("API request received - Method: %s, URL: %s", req.method, req.url)
+    log.info("Request headers: %s", dict(req.headers))
+    
     # мягкая проверка конфигурации: если нет env-ключа и не передан per-request ключ — 500
     issues = validate_config()
     data = req.get_json(silent=True) or {}
     form = req.form or {}
+    
+    # Логируем данные запроса
+    log.info("Request JSON data: %s", json.dumps(data, ensure_ascii=False, indent=2))
+    log.info("Request form data: %s", dict(form))
+    log.info("Request args: %s", dict(req.args))
 
     api_key = (
             req.headers.get("X-OpenAI-Api-Key")
@@ -858,6 +870,9 @@ def description_generate(req: Request):
         fields.update(data)
     for k in form.keys():
         fields[k] = form.get(k)
+    
+    # Логируем собранные поля анкеты
+    log.info("Collected fields: %s", json.dumps(fields, ensure_ascii=False, indent=2))
 
     # Минимальная валидация
     t = (fields.get("type") or "").strip()
@@ -882,6 +897,7 @@ def description_generate(req: Request):
 
         def _bg():
             """Фоновая генерация и POST результата на callback_url."""
+            log.info("Starting async description generation for chat_id=%s, msg_id=%s", chat_id, msg_id)
             try:
                 text, used_model = send_description_generate_request_from_fields(
                     fields=fields,
@@ -895,6 +911,8 @@ def description_generate(req: Request):
                     "error": "",
                     "token": callback_token or "",
                 }
+                log.info("Async generation completed successfully, sending callback to: %s", callback_url)
+                log.info("Callback payload: %s", json.dumps(payload, ensure_ascii=False, indent=2))
                 _post_callback(callback_url, payload)
             except Exception as e:
                 log.exception("OpenAI error (description, async)")
@@ -905,13 +923,16 @@ def description_generate(req: Request):
                     "error": str(e),
                     "token": callback_token or "",
                 }
+                log.info("Async generation failed, sending error callback: %s", json.dumps(payload, ensure_ascii=False, indent=2))
                 _post_callback(callback_url, payload)
 
         threading.Thread(target=_bg, daemon=True).start()
         # Быстрый ACK, чтобы бот не «ждал»
+        log.info("Async request accepted, returning 202")
         return jsonify({"accepted": True}), 202
 
     # Обычный синхронный режим (совместимость)
+    log.info("Starting sync description generation")
     try:
         text, used_model = send_description_generate_request_from_fields(
             fields=fields,
@@ -921,10 +942,12 @@ def description_generate(req: Request):
         body: Dict[str, Any] = {"text": text}
         if debug_flag:
             body["debug"] = {"model_used": used_model}
+        log.info("Sync generation completed successfully, response: %s", json.dumps(body, ensure_ascii=False, indent=2))
         return jsonify(body), 200
     except Exception as e:
         log.exception("OpenAI error (description)")
         body: Dict[str, Any] = {"error": "openai_error", "detail": str(e)}
         if debug_flag:
             body["debug"] = {"model": DESCRIPTION_MODEL}
+        log.info("Sync generation failed, error response: %s", json.dumps(body, ensure_ascii=False, indent=2))
         return jsonify(body), 502
