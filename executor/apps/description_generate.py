@@ -11,26 +11,19 @@ import requests
 import json
 import re
 from urllib.parse import urlparse
+import bot.utils.logging_config as logging_config
+
+log = logging_config.logger
+
 
 try:
     from openai import OpenAI
 except Exception:
-    # Для тайпченкера и рантайма: не валимся при отсутствии пакета.
-    OpenAI = None  # type: ignore
+    OpenAI = None
 
 _FALLBACK_MODELS: List[str] = ["gpt-5", "gpt-4o", "gpt-4.1", "gpt-4o-mini", "gpt-4.1-mini"]
 
-# Храним общий клиент без жесткой типизации, чтобы IDE не ругалась.
 _client_default: Any = None
-
-
-def _log_request(payload: Dict[str, Any]) -> None:
-    if HTTP_DEBUG:
-        LOG.info(
-            "OpenAI request: model=%s messages=%d",
-            payload.get("model"),
-            len(payload.get("messages") or []),
-        )
 
 
 # =========================
@@ -86,33 +79,30 @@ def _send_with_fallback(payload: Dict[str, Any],
         try:
             req = dict(payload)
             req["model"] = model_name
-            _log_request(req)
-            # type: ignore подавляет IDE-жалобу, когда пакет подхвачен как Any
-            resp = client.chat.completions.create(**req)  # type: ignore[attr-defined]
+            log.info("_send_with_fallback {}", req)
+
+            resp = client.chat.completions.create(**req)
             text = _extract_text(resp)
             if text:
                 if i > 1:
-                    LOG.warning("Fallback model used: %s (requested %s)", model_name, first_model)
+                    log.warning("Fallback model used: %s (requested %s)", model_name, first_model)
                 return text, model_name
             last_err = RuntimeError("Empty completion text")
         except Exception as e:
             last_err = e
-            LOG.warning("OpenAI call failed on model %s: %s", model_name, e)
+            log.warning("OpenAI call failed on model %s: %s", model_name, e)
 
-    LOG.error("All OpenAI fallbacks failed. Last error: %s", last_err)
+    log.error("All OpenAI fallbacks failed. Last error: %s", last_err)
     raise last_err or RuntimeError("OpenAI request failed")
 
 
 # =========================
 # Конфиг / Логгер
 # =========================
-LOG = logging.getLogger(__name__)
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
-
 HTTP_DEBUG = os.getenv("HTTP_DEBUG", "0") == "1"
 OPENAI_FALLBACK = os.getenv("OPENAI_FALLBACK", "1") == "1"
 
-# Базовая модель (можно переопределить переменной окружения)
+# Базовая модель
 DESCRIPTION_MODEL = os.getenv("DESCRIPTION_MODEL", "gpt-5")
 
 # ------------------ Карты лейблов для select-полей ------------------
@@ -299,7 +289,7 @@ DESCRIPTION_USER_TEMPLATE_RU = """
 — Избегай перечислений «без обременений/перепланировок», если таких фактов нет.
 
 6) CTA
-— 1–2 предложения. Конкретика: созвон/просмотр/допфото. Никакого давления.
+— 1–2 предложения. Конкретика: созвон/просмотр/доп фото. Никакого давления.
 
 Данные анкеты (используй только по смыслу, без вывода «—»):
 — Тип: {type_label}
@@ -831,7 +821,7 @@ def _post_callback(callback_url: str, payload: Dict[str, Any]) -> None:
         headers = {"Content-Type": "application/json"}
         requests.post(callback_url, data=json.dumps(payload), headers=headers, timeout=30)
     except Exception as e:
-        LOG.warning("Callback POST failed: %s", e)
+        log.warning("Callback POST failed: %s", e)
 
 
 # =====================================================================================
@@ -905,7 +895,7 @@ def description_generate(req: Request):
                 }
                 _post_callback(callback_url, payload)
             except Exception as e:
-                LOG.exception("OpenAI error (description, async)")
+                log.exception("OpenAI error (description, async)")
                 payload = {
                     "chat_id": chat_id,
                     "msg_id": msg_id,
@@ -931,7 +921,7 @@ def description_generate(req: Request):
             body["debug"] = {"model_used": used_model}
         return jsonify(body), 200
     except Exception as e:
-        LOG.exception("OpenAI error (description)")
+        log.exception("OpenAI error (description)")
         body: Dict[str, Any] = {"error": "openai_error", "detail": str(e)}
         if debug_flag:
             body["debug"] = {"model": DESCRIPTION_MODEL}
