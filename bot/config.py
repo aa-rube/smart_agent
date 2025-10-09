@@ -15,16 +15,6 @@ BOT_DIR = CURRENT_FILE.parent  # .../smart_agent/bot
 PROJECT_DIR = CURRENT_FILE.parents[1]  # .../smart_agent
 WORKSPACE = PROJECT_DIR.parent  # .../super_bot
 
-# Целевая папка для БД — соседняя к smart_agent: .../super_bot/smart_agent_bd
-DEFAULT_DB_DIR = WORKSPACE / f"{PROJECT_DIR.name}_bd"
-DATA_DIR = Path(os.getenv("DATA_DIR", str(PROJECT_DIR / "data"))).resolve()
-
-# Важно: чтобы записи в data/ не падали
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-# Можно переопределить через переменную окружения DB_DIR
-DB_DIR = Path(os.getenv("DB_DIR", str(DEFAULT_DB_DIR))).resolve()
-DB_DIR.mkdir(parents=True, exist_ok=True)
 
 # === MySQL Database ===
 MYSQL_HOST = os.getenv("MYSQL_HOST", "null")
