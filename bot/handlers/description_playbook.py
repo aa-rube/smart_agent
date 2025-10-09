@@ -850,7 +850,6 @@ async def _cb_description_result(request: web.Request):
             await bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=parts[0], reply_markup=kb_retry())
         except TelegramBadRequest:
             sent = await bot.send_message(chat_id, parts[0], reply_markup=kb_retry())
-            msg_id = sent.message_id
     for p in parts[1:]:
         await bot.send_message(chat_id, p)
 
