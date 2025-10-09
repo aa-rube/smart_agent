@@ -919,13 +919,13 @@ def mount_internal_routes(app: web.Application, bot: Bot):
 # ==========================
 async def _request_description_text(fields: dict, *, timeout_sec: int = 70) -> str:
     """
-    Шлём СЫРЫЕ поля в executor (/api/v1/description/generate) и ждём чистый текст.
-    fields = {type, apt_class?, in_complex, area, comment}
+    Шлём ВСЕ поля анкеты в executor (/api/v1/description/generate) под ключом 'fields'
+    и ждём чистый текст.
     """
     url = f"{EXECUTOR_BASE_URL.rstrip('/')}/api/v1/description/generate"
     t = aiohttp.ClientTimeout(total=timeout_sec)
     async with aiohttp.ClientSession(timeout=t) as session:
-        async with session.post(url, json=fields) as resp:
+        async with session.post(url, json={"fields": fields}) as resp:
             if resp.status != 200:
                 try:
                     data = await resp.json()
@@ -955,14 +955,14 @@ async def _request_description_async(
         raise RuntimeError("BOT_PUBLIC_BASE_URL is not set")
     callback_url = str(URL(BOT_PUBLIC_BASE_URL) / "api" / "v1" / "description" / "result")
 
-    payload = dict(fields)
-    payload.update({
+    payload = {
+        "fields": fields,  # все поля анкеты ЕДИНЫМ объектом
         "callback_url": callback_url,
         "callback_token": EXECUTOR_CALLBACK_TOKEN,
         "chat_id": chat_id,
         "msg_id": msg_id,
         "msgId": msg_uuid,  # для последующего обновления по msgId
-    })
+    }
 
     url = f"{EXECUTOR_BASE_URL.rstrip('/')}/api/v1/description/generate"
     t = aiohttp.ClientTimeout(total=timeout_sec)
@@ -1613,8 +1613,8 @@ async def _generate_and_output(
         # --- новые обязательные текстовые поля (квартира)
         "flat_location_text":        data.get("flat_location_text"),
         "flat_infrastructure_text":  data.get("flat_infrastructure_text"),
-        # Юридические вопросы: только для продажи и НЕ для новостройки
-        "flat_legal_text":           (data.get("flat_legal_text") if (is_sale and not is_new_build) else None),
+        # Юридические вопросы: всегда передаём, если пользователь ввёл
+        "flat_legal_text":           data.get("flat_legal_text"),
         # --- для Загородной (новая карта) ---
         "country_object_type":        data.get("country_object_type"),
         "country_house_area_m2":      data.get("country_house_area_m2"),
