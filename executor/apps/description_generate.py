@@ -141,36 +141,19 @@ DESCRIPTION_AREA = {
 # ------------------ Специализированные USER-TEMPLATE по типам ------------------
 # Квартира — ПРОДАЖА
 DESCRIPTION_USER_TEMPLATE_FLAT_SALE_RU = """
-Создай художественное описание квартиры, которое помогает покупателю представить себя в этом пространстве.
-Не используй списки — только плавный, связный текст, где характеристики превращаются в преимущества и выгоды.
+Сгенерируй объявление о ПРОДАЖЕ КВАРТИРЫ. Если какое-либо поле равно «—» или пусто — просто пропусти соответствующую мысль/строку.
 
-Инструкция:
-Опиши атмосферу, комфорт и стиль жизни, который даёт эта квартира.
-Сделай упор на эмоции, свет, ощущение уюта и удобства.
-Текст — единый художественный абзац (700–1000 символов).
+1) Короткий лид (1–2 предложения) — ощущение пространства/света/тишины по фактам.
+2) Смысловые маркеры (в тексте, без списков): факты → выгоды.
+3) Микро-блоки (только если есть данные):
 
-ПАРАМЕТПЫ КВАРТИРЫ:
-Условия сделки (продажа)
-— Сделка: {deal_label}. При наличии — укажи способ продажи/срок сдачи. Ипотеку упоминай только если релевантно для продажи.
-— Юридические особенности (текст): {flat_legal_text}
+— Планировка: общая {total_area} м², кухня {kitchen_area} м², комнаты {rooms}, этаж {floor_number}/{building_floors}, потолки {ceiling_height_m} м, планировка {layout}, балкон/лоджия {balcony}.
 
-Данные анкеты (используй только по смыслу, без вывода «—»):
-— Тип: {type_label}
-— Класс: {apt_class_label}
-— Новостройка/ЖК: {in_complex_label}
-— Расположение (общее): {area_label}
-— Локация (район/метро/транспорт): {location}
-— Общая площадь: {total_area} м²
-— Кухня: {kitchen_area} м²
-— Этаж / Этажность: {floor_number} / {building_floors}
-— Комнат: {rooms}
-— Год / Состояние: {year_state}
-— Коммуникации: {utilities}
-— Особенности/удобства: {amenities}
-— Комментарий: {comment}
-— (Текст) Локация: {flat_location_text}
-— (Текст) Инфраструктура: {flat_infrastructure_text}
-— (Текст) Юридические особенности: {flat_legal_text}
+— Дом/ЖК/материал: {in_complex_label}, тип: {type_label} {apt_class_label}, материал {house_type}, лифты {lift}, окна {windows}, санузел {bathroom_type}, парковка {parking}, отделка {renovation}.
+
+— Локация: {location}; (текст) адрес/ориентиры: {flat_location_text}; (текст) инфраструктура: {flat_infrastructure_text}; общая зона: {area_label}.
+4) Условия сделки: сделка {deal_label}, способ продажи {sale_method}, срок передачи/сдачи {completion_term}, ипотека {mortgage_ok}, юр.особенности: {flat_legal_text}.
+5) Комментарий: {comment}
 """
 
 # Квартира — АРЕНДА
@@ -619,6 +602,18 @@ def _normalize_fields(raw: Dict[str, Any]) -> Dict[str, Any]:
         if v in ("", "—"):
             norm[k] = None
 
+    # 4) Деривации по умолчанию для неполных анкет
+    # 4.1) Если это квартира и указан «market=Новостройка», но не задано in_complex — подставим "yes"
+    if (norm.get("type") or "").strip().lower() == "flat" and not norm.get("in_complex"):
+        if str(raw.get("market") or "").strip().lower() in {"новостройка", "new", "newbuild", "новая"}:
+            norm["in_complex"] = "yes"
+
+    # 4.2) Если нет «location», но есть развернутая «flat_location_text» — используем её как локацию
+    if not norm.get("location") and raw.get("flat_location_text"):
+        loc = str(raw.get("flat_location_text")).strip()
+        if loc:
+            norm["location"] = loc
+
     # защита от «ипотека/право» при аренде: юр.текст имеет смысл только для продажи
     if (norm.get("deal_type") or "").strip().lower() != "sale":
         # если прилетело по ошибке — вычистим, чтобы не попадало в шаблон
@@ -735,6 +730,23 @@ def compose_description_user_message(fields: Dict[str, Any]) -> str:
         "flat_location_text": _safe(fields.get("flat_location_text")),
         "flat_infrastructure_text": _safe(fields.get("flat_infrastructure_text")),
         "flat_legal_text": _safe(fields.get("flat_legal_text")),
+
+        # ПРОДАЖА/квартира — явно передаём в шаблон, а не только через EXTRAS
+        "market": _safe(fields.get("market")),
+        "completion_term": _safe(fields.get("completion_term")),
+        "sale_method": _safe(fields.get("sale_method")),
+        "mortgage_ok": (_safe(fields.get("mortgage_ok")) if deal_type_raw == "sale" else "—"),
+
+        # дополнительные «понятные» параметры квартиры, чтобы шаблон мог их встроить
+        "bathroom_type": _safe(fields.get("bathroom_type")),
+        "windows": _safe(fields.get("windows")),
+        "house_type": _safe(fields.get("house_type")),
+        "lift": _safe(fields.get("lift")),
+        "parking": _safe(fields.get("parking")),
+        "renovation": _safe(fields.get("renovation")),
+        "layout": _safe(fields.get("layout")),
+        "balcony": _safe(fields.get("balcony")),
+        "ceiling_height_m": _safe(fields.get("ceiling_height_m")),
     }
 
     # Добираем дополнительные поля (квартира/загород/коммерция) — в EXTRAS,
