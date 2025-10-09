@@ -160,10 +160,26 @@ class DescriptionHistory(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
 
+    # Новое поле: уникальный идентификатор генерации (для связи с options и обновления по callback)
+    msg_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+
     fields_json: Mapped[str] = mapped_column(Text, nullable=False)
     result_text: Mapped[str] = mapped_column(Text, nullable=False)
 
     user: Mapped[User] = relationship(back_populates="descriptions")
+
+
+class DescriptionOption(Base):
+    """
+    EAV-таблица параметров генерации.
+    Хранит все пары (variable, value) для конкретного msgId.
+    """
+    __tablename__ = "description_options"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    msg_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    variable: Mapped[str] = mapped_column(String(255), nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class UserConsent(Base):
@@ -236,6 +252,23 @@ def init_schema() -> None:
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_users_username ON users (username)"
             )
+            # Миграция для description_history.msg_id
+            conn.exec_driver_sql(
+                "ALTER TABLE description_history ADD COLUMN IF NOT EXISTS msg_id VARCHAR(64) NULL"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_description_history_msg_id ON description_history (msg_id)"
+            )
+            # Таблица description_options
+            conn.exec_driver_sql("""
+                CREATE TABLE IF NOT EXISTS description_options (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    msg_id VARCHAR(64) NOT NULL,
+                    variable VARCHAR(255) NOT NULL,
+                    value TEXT NOT NULL,
+                    INDEX ix_description_options_msg_id (msg_id)
+                )
+            """)
     except Exception:
         # Не падаем на старых версиях MySQL — таблица уже может быть мигрирована вручную.
         pass
@@ -420,12 +453,87 @@ class AppRepository:
                 s.add(User(user_id=user_id))
             rec = DescriptionHistory(
                 user_id=user_id,
+                msg_id=None,
                 fields_json=json.dumps(fields or {}, ensure_ascii=False),
                 result_text=result_text or "",
             )
             s.add(rec)
             s.flush()
             return rec.id
+
+    # --- description v2: start/finish by msgId + EAV options ---
+    def description_start(self, user_id: int, *, msg_id: str, fields: dict) -> int:
+        """
+        Создаёт запись истории с msg_id и начальными данными (статус «processing» имплицитен —
+        result_text пустой). Возвращает id записи.
+        """
+        with self._session() as s, s.begin():
+            if s.get(User, user_id) is None:
+                s.add(User(user_id=user_id))
+            rec = DescriptionHistory(
+                user_id=user_id,
+                msg_id=msg_id,
+                fields_json=json.dumps(fields or {}, ensure_ascii=False),
+                result_text="",  # обработка ещё идёт
+            )
+            s.add(rec)
+            s.flush()
+            return rec.id
+
+    def description_finish_by_msgid(self, *, msg_id: str, result_text: str, fields: Optional[dict] = None) -> bool:
+        """
+        Обновляет запись по msgId финальным результатом (status «completed» имплицитен — result_text заполнен).
+        Возвращает True, если запись найдена и обновлена.
+        """
+        if not msg_id:
+            return False
+        with self._session() as s, s.begin():
+            rec = s.query(DescriptionHistory).filter(DescriptionHistory.msg_id == msg_id).one_or_none()
+            if rec is None:
+                return False
+            if fields is not None:
+                rec.fields_json = json.dumps(fields or {}, ensure_ascii=False)
+            rec.result_text = result_text or ""
+            s.flush()
+            return True
+
+    def description_options_save(self, *, msg_id: str, options: dict) -> int:
+        """
+        Сохраняет все параметры запроса в виде EAV (по одному ряду на параметр).
+        Возвращает количество записанных опций.
+        """
+        if not msg_id:
+            return 0
+        rows = []
+        for k, v in (options or {}).items():
+            try:
+                val = json.dumps(v, ensure_ascii=False)
+            except Exception:
+                val = str(v)
+            rows.append(DescriptionOption(msg_id=msg_id, variable=str(k), value=val))
+        if not rows:
+            return 0
+        with self._session() as s, s.begin():
+            s.add_all(rows)
+            return len(rows)
+
+    def description_options_get(self, *, msg_id: str) -> dict:
+        """Читает параметры генерации по msgId как dict variable->вalue (JSON-парс при возможности)."""
+        if not msg_id:
+            return {}
+        with self._session() as s:
+            items = (
+                s.query(DescriptionOption.variable, DescriptionOption.value)
+                .filter(DescriptionOption.msg_id == msg_id)
+                .all()
+            )
+            out: dict = {}
+            for var, val in items:
+                try:
+                    out[var] = json.loads(val)
+                except Exception:
+                    out[var] = val
+            return out
 
     def description_list(self, user_id: int, limit: int = 10) -> list[dict]:
         with self._session() as s:
@@ -538,6 +646,19 @@ def summary_get_entry(user_id: int, entry_id: int) -> Optional[dict]:
 # Descriptions
 def description_add(*, user_id: int, fields: dict, result_text: str) -> int:
     return _repo.description_add(user_id, fields=fields, result_text=result_text)
+
+# v2: msgId workflow
+def description_start(*, user_id: int, msg_id: str, fields: dict) -> int:
+    return _repo.description_start(user_id, msg_id=msg_id, fields=fields)
+
+def description_finish_by_msgid(*, msg_id: str, result_text: str, fields: Optional[dict] = None) -> bool:
+    return _repo.description_finish_by_msgid(msg_id=msg_id, result_text=result_text, fields=fields)
+
+def description_options_save(*, msg_id: str, options: dict) -> int:
+    return _repo.description_options_save(msg_id=msg_id, options=options)
+
+def description_options_get(*, msg_id: str) -> dict:
+    return _repo.description_options_get(msg_id=msg_id)
 
 
 def description_list(user_id: int, limit: int = 10) -> list[dict]:

@@ -13,6 +13,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiohttp import web
 from yarl import URL
+from uuid import uuid4
 import os
 
 from bot.config import EXECUTOR_BASE_URL, get_file_path
@@ -822,6 +823,7 @@ async def _cb_description_result(request: web.Request):
 
         chat_id = int(data["chat_id"])
         msg_id  = int(data["msg_id"])
+        msg_uuid = (data.get("msgId") or data.get("msg_id_uuid") or "").strip()
         text    = (data.get("text") or "").strip()
         error   = (data.get("error") or "").strip()
         fields  = data.get("fields") or {}
@@ -853,9 +855,15 @@ async def _cb_description_result(request: web.Request):
     for p in parts[1:]:
         await bot.send_message(chat_id, p)
 
-    # --- История (user_id == chat_id) ---
+    # --- История (обновление по msgId, fallback на старую запись) ---
     try:
-        app_db.description_add(user_id=chat_id, fields=fields, result_text=text)
+        if msg_uuid:
+            updated = app_db.description_finish_by_msgid(msg_id=msg_uuid, result_text=text, fields=fields)
+            if not updated:
+                # На всякий случай — если стартовой записи не было
+                app_db.description_add(user_id=chat_id, fields=fields, result_text=text)
+        else:
+            app_db.description_add(user_id=chat_id, fields=fields, result_text=text)
     except Exception:
         pass
 
@@ -932,7 +940,13 @@ async def _request_description_text(fields: dict, *, timeout_sec: int = 70) -> s
             return txt
 
 # --- Новый: асинхронная постановка задачи без ожидания результата ---
-async def _request_description_async(fields: dict, *, chat_id: int, msg_id: int, timeout_sec: int = 10) -> None:
+async def _request_description_async(
+    fields: dict, *,
+    chat_id: int,
+    msg_id: int,
+    msg_uuid: str,
+    timeout_sec: int = 10
+) -> None:
     """
     Отправляет задачу в executor и НЕ ждёт результата.
     Executor позже вызовет наш callback.
@@ -947,10 +961,18 @@ async def _request_description_async(fields: dict, *, chat_id: int, msg_id: int,
         "callback_token": EXECUTOR_CALLBACK_TOKEN,
         "chat_id": chat_id,
         "msg_id": msg_id,
+        "msgId": msg_uuid,  # для последующего обновления по msgId
     })
 
     url = f"{EXECUTOR_BASE_URL.rstrip('/')}/api/v1/description/generate"
     t = aiohttp.ClientTimeout(total=timeout_sec)
+    # Сохраняем историю до отправки (status: processing — implicit)
+    try:
+        app_db.description_start(user_id=chat_id, msg_id=msg_uuid, fields=fields)
+        app_db.description_options_save(msg_id=msg_uuid, options=fields)
+    except Exception:
+        # не прерываем запрос при проблемах с БД
+        pass
     async with aiohttp.ClientSession(timeout=t) as session:
         async with session.post(url, json=payload) as resp:
             if resp.status not in (200, 202):
@@ -1643,7 +1665,9 @@ async def _generate_and_output(
 
     # --- Новый режим: fire-and-forget, ответ придёт на callback и заменит это сообщение ---
     try:
-        await _request_description_async(fields, chat_id=message.chat.id, msg_id=anchor_id)
+        # Генерируем уникальный идентификатор генерации (msgId) для связи в БД
+        gen_uuid = uuid4().hex
+        await _request_description_async(fields, chat_id=message.chat.id, msg_id=anchor_id, msg_uuid=gen_uuid)
     except Exception:
         try:
             await bot.edit_message_text(
