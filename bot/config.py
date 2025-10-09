@@ -15,6 +15,10 @@ BOT_DIR = CURRENT_FILE.parent  # .../smart_agent/bot
 PROJECT_DIR = CURRENT_FILE.parents[1]  # .../smart_agent
 WORKSPACE = PROJECT_DIR.parent  # .../super_bot
 
+# Важно: чтобы записи в data/ не падали
+DATA_DIR = Path(os.getenv("DATA_DIR", str(PROJECT_DIR / "data"))).resolve()
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 
 # === MySQL Database ===
 MYSQL_HOST = os.getenv("MYSQL_HOST", "null")
