@@ -131,8 +131,7 @@ def kb_back_home() -> InlineKeyboardMarkup:
 
 def kb_ready() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📦  Анализировать диалог", callback_data="summary.generate")],
-        [InlineKeyboardButton(text="➕ Добавить ещё", callback_data="summary.add_more"),
+        [InlineKeyboardButton(text="📦  Анализировать диалог", callback_data="summary.generate"),
          InlineKeyboardButton(text="🗑 Очистить", callback_data="summary.reset")],
         [InlineKeyboardButton(text="⬅️ В начало", callback_data="nav.summary_home")]
     ])

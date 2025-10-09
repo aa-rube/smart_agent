@@ -63,11 +63,8 @@ STYLES_DETAIL: Dict[str, str] = {
     "Скандинавский": "scandinavian style, hygge, light and airy, simple, functional furniture, natural materials",
     "Классика": "classic style, elegant, ornate details, rich materials, symmetrical balance",
     "Минимализм": "minimalist style, simplicity, clean lines, monochromatic palette, uncluttered space",
-    "Хай-тек": "high-tech style, futuristic, metallic and plastic materials, advanced technology integration, sleek surfaces",
     "Лофт": "industrial loft style, exposed brick walls, high ceilings, open layout, metal and wood elements",
     "Эко-стиль": "eco-style, natural materials, sustainability, living plants, earthy tones, lots of light",
-    "Средиземноморский": "mediterranean style, rustic, warm, earthy colors, terracotta, arches, natural wood",
-    "Барокко": "baroque style, dramatic, opulent, grand scale, intricate details, gold accents",
     "Неоклассика": "neoclassical style, refined elegance, greek and roman motifs, clean lines, muted colors",
     "🔥 Случайный выбор ИИ": "random_style",
 }
@@ -327,7 +324,6 @@ def design_generate(req: Request):
             prompt = build_design_prompt(style=style, room_type=room_type, furniture=furniture)
         else:
             # если prompt пришёл готовый, всё равно определим режим для 2-го прохода
-            style = (form.get("style") or "").strip()
             room_type = (form.get("room_type") or "").strip() or None
             furniture = (form.get("furniture") or "").strip() or None
 
