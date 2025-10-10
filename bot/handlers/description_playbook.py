@@ -41,6 +41,19 @@ def _clean_autofilled_comment(text: str, bot_username: Optional[str]) -> str:
     cleaned = re.sub(pattern, "", t, flags=re.IGNORECASE)
     return cleaned.strip()
 
+def _is_filled(v) -> bool:
+    """
+    Унифицированная проверка «поле заполнено для передачи исполнителю».
+    Пустые строки, None, пустые коллекции — считаем незаполненными.
+    """
+    if v is None:
+        return False
+    if isinstance(v, str):
+        return bool(v.strip())
+    if isinstance(v, (list, tuple, set, dict)):
+        return len(v) > 0
+    return True
+
 
 # ==========================
 # Навигация (Назад/Выход) и резюме
@@ -170,8 +183,14 @@ def _compose_summary(d: Dict) -> str:
     # Общие поля (если были пройдены в анкете для любого типа)
     _add(body, "Год/состояние", d.get("year_or_condition"))
     _add(body, "Коммуникации (текст)", d.get("utilities"))
-    _add(body, "Локация", d.get("location"))
+    # для квартиры предпочитаем новый обязательный текст поля локации
+    _add(body, "Локация", d.get("flat_location_text") or d.get("location"))
     _add(body, "Особенности", d.get("features"))
+    # доп. тексты квартиры, если введены
+    if d.get("__flat_mode"):
+        _add(body, "Инфраструктура", d.get("flat_infrastructure_text"))
+        # юридические особенности не применимы к новостройкам/аренде — но если введены и применимо, покажем
+        _add(body, "Юридические особенности", d.get("flat_legal_text"))
 
     # Формирование строки: шапка через запятую, параметры — через точку с запятой
     head_str = ", ".join([h for h in head if h])
@@ -195,7 +214,6 @@ def _kb_add_back_exit(rows: list[list[InlineKeyboardButton]]) -> list[list[Inlin
         InlineKeyboardButton(text="🚪 Выход", callback_data="desc_start"),
     ])
     return rows
-
 
 
 def _is_sub_active(user_id: int) -> bool:
@@ -318,7 +336,7 @@ FLAT_ASK_KITCHEN_AREA    = "Площадь кухни (м²). Пример: 10.5
 FLAT_ASK_FLOOR           = "Этаж квартиры. Пример: 5"
 FLAT_ASK_FLOORS_TOTAL    = "Этажность дома: выберите вариант"
 
-# --- НОВОЕ: обязательные текстовые поля (перед свободным комментарием)
+# --- обязательные текстовые поля (перед свободным комментарием)
 FLAT_ASK_LOCATION_TEXT = "Локация:\nОпишите местоположение объекта, адрес."
 FLAT_ASK_INFRA_TEXT = "Ближайшие точки инфраструктуры:\nОпишите ближайшую инфраструктуру: школы, детские сады, остановки транспорта, парки, достопримечательности."
 FLAT_ASK_LEGAL_TEXT = "Расскажите о юридических особенностях объекта.\nПрименялся ли маткапитал текущим собственником, находится ли квартира в ипотеке/залоге, есть ли аресты? Квартира готова к заселению?"
@@ -909,6 +927,56 @@ SUBSCRIBE_KB = InlineKeyboardMarkup(
     inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
 )
 
+def _derive_form_header(data: Dict) -> str:
+    """
+    Возвращает человекочитаемый заголовок анкеты для передачи исполнителю.
+    Примеры:
+    - "квартира продажа новостройка" / "квартира продажа вторичка"
+    - "загородная недвижимость дом" / "загородная недвижимость участок"
+    - "коммерческая недвижимость офис" / "… свободного назначения" / "… торговая площадь" / "… склад" / "… производство" / "… общепит" / "… гостиница"
+    """
+    deal = "аренда" if data.get("deal_type") == "rent" else "продажа"
+    tp = (data.get("type") or "").strip().lower()
+
+    if tp == "flat":
+        market_lbl = (data.get("market") or "").strip().lower()
+        # нормализуем
+        if "новост" in market_lbl:
+            return f"квартира {deal} новостройка"
+        if "вторич" in market_lbl:
+            return f"квартира {deal} вторичка"
+        return f"квартира {deal}".strip()
+
+    if data.get("__country_mode") or tp in {"country", "house", "land"}:
+        obj_lbl = (data.get("country_object_type") or "").strip().lower()
+        subtype = "участок" if "участ" in obj_lbl else "дом"
+        return f"загородная недвижимость {subtype}"
+
+    if data.get("__commercial_mode") or tp == "commercial":
+        comm_lbl = (data.get("comm_object_type") or "").strip().lower()
+        # привести к целевым строкам
+        mapping = {
+            "офис": "офис",
+            "свобод": "свободного назначения",
+            "psn": "свободного назначения",
+            "торгов": "торговая площадь",
+            "retail": "торговая площадь",
+            "склад": "склад",
+            "warehouse": "склад",
+            "производ": "производство",
+            "общепит": "общепит",
+            "hotel": "гостиница",
+            "гостин": "гостиница",
+        }
+        target = None
+        for k, v in mapping.items():
+            if k in comm_lbl:
+                target = v; break
+        return f"коммерческая недвижимость {target or comm_lbl or ''}".strip()
+
+    # дефолт: просто тип + сделка
+    return f"{tp or 'объект'} {deal}".strip()
+
 
 def mount_internal_routes(app: web.Application, bot: Bot):
     """
@@ -916,6 +984,72 @@ def mount_internal_routes(app: web.Application, bot: Bot):
     """
     app["bot"] = bot
     app.router.add_post("/api/v1/description/result", _cb_description_result)
+
+def _filter_fields_for_executor(raw: Dict, data: Dict) -> Dict:
+    """
+    1) Оставляет ТОЛЬКО поля, заполненные пользователем (_is_filled).
+    2) Обрезает поля, не относящиеся к выбранному типу объекта.
+    3) Убирает flat_legal_text для новостроек и для всех сценариев аренды.
+    4) Добавляет form_header (заголовок анкеты).
+    """
+    tp = (data.get("type") or "").strip().lower()
+    is_flat = tp == "flat"
+    is_country = bool(data.get("__country_mode") or tp in {"country", "house", "land"})
+    is_comm = bool(data.get("__commercial_mode") or tp == "commercial")
+
+    common = {"deal_type", "type", "area", "comment", "form_header"}
+
+    flat_keys = common | {
+        "apt_class","in_complex",
+        "total_area","floors_total","floor","kitchen_area","rooms",
+        "year_or_condition","utilities","features",
+        "market","completion_term","sale_method","mortgage_ok",
+        "bathroom_type","windows","house_type","lift","parking",
+        "renovation","layout","balcony","ceiling_height_m",
+        "flat_location_text","flat_infrastructure_text","flat_legal_text",
+        "location_exact"
+    }
+    country_keys = common | {
+        "country_object_type","country_house_area_m2","country_plot_area_sotki",
+        "country_distance_km","country_floors","country_rooms",
+        "country_land_category_house","country_renovation","country_toilet",
+        "country_utilities","country_leisure","country_wall_material",
+        "country_parking","country_transport",
+        "country_land_category_plot","country_communications_plot",
+        "utilities","features","location_exact"
+    }
+    comm_keys = common | {
+        "total_area","land_area",
+        "comm_object_type","comm_building_type","comm_whole_object",
+        "comm_finish","comm_entrance","comm_parking","comm_layout",
+        "utilities","features","location_exact"
+    }
+
+    # 3) легальное поле для квартир: не отправляем для новостроек и аренды
+    if is_flat:
+        deal = data.get("deal_type")
+        market_lbl = (data.get("market") or "").lower()
+        if deal == "rent" or "новост" in market_lbl:
+            raw.pop("flat_legal_text", None)
+
+        # дублируем локацию в legacy-ключ, если есть новый обязательный текст
+        if _is_filled(raw.get("flat_location_text")) and not _is_filled(raw.get("location_exact")):
+            raw["location_exact"] = raw.get("flat_location_text")
+
+    # 1) отбрасываем пустые
+    compact = {k: v for k, v in raw.items() if _is_filled(v)}
+
+    # 2) оставляем только применимые поля
+    if is_flat:
+        allow = flat_keys
+    elif is_country:
+        allow = country_keys
+    elif is_comm:
+        allow = comm_keys
+    else:
+        allow = common
+
+    return {k: v for k, v in compact.items() if k in allow}
 
 # ==========================
 # HTTP к контроллеру
@@ -959,7 +1093,7 @@ async def _request_description_async(
     callback_url = str(URL(BOT_PUBLIC_BASE_URL) / "api" / "v1" / "description" / "result")
 
     payload = {
-        "fields": fields,  # все поля анкеты ЕДИНЫМ объектом
+        "fields": fields,  # только релевантные и заполненные поля
         "callback_url": callback_url,
         "callback_token": EXECUTOR_CALLBACK_TOKEN,
         "chat_id": chat_id,
