@@ -1092,8 +1092,10 @@ async def _request_description_async(
         raise RuntimeError("BOT_PUBLIC_BASE_URL is not set")
     callback_url = str(URL(BOT_PUBLIC_BASE_URL) / "api" / "v1" / "description" / "result")
 
+    # Последняя линия защиты: убираем пустые значения на случай старых/сырых вызовов
+    fields = {k: v for k, v in fields.items() if _is_filled(v)}
     payload = {
-        "fields": fields,  # только релевантные и заполненные поля
+        "fields": fields,  # только заполненные поля
         "callback_url": callback_url,
         "callback_token": EXECUTOR_CALLBACK_TOKEN,
         "chat_id": chat_id,
@@ -1371,7 +1373,22 @@ async def _ask_next_flat_step(msg: Message, state: FSMContext, *, new: bool = Fa
     step: int = int(data.get("__form_step") or 0)
 
     if step >= len(keys):
-        # Все поля собраны → переходим к свободному комментарию
+        # Все шаги пройдены → убеждаемся, что обязательные текстовые поля заполнены
+        d = await state.get_data()
+        is_sale = d.get("deal_type") == "sale"
+        market_lbl = (d.get("market") or "").strip().lower()
+        is_new = "новост" in market_lbl
+        required = ["flat_location_text", "flat_infrastructure_text"]
+        if is_sale and not is_new:
+            required.append("flat_legal_text")
+        for req in required:
+            if not _is_filled(d.get(req)):
+                # Возвращаем на первый незаполненный обязательный шаг
+                idx = keys.index(req) if req in keys else len(keys)
+                await state.update_data(__form_step=idx)
+                await _send_step(msg, await _with_summary(state, _form_prompt_for_key(req)), _kb_back_only(), new=new)
+                return
+        # Обязательные поля ок → свободный комментарий
         await state.update_data(__awaiting_free_comment=True)
         await _send_step(msg, await _with_summary(state, ASK_FREE_COMMENT), kb_skip_comment(), new=new)
         return
@@ -1941,9 +1958,11 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
         return
 
     # Сохраняем изменения после валидации
+    # ВАЖНО: добавлены flat_* текстовые поля, иначе они не попадали в state
     await state.update_data(**{k: data.get(k) for k in [
         "total_area","floors_total","floor","kitchen_area","rooms",
         "year_or_condition","utilities","location","features",
+        "flat_location_text","flat_infrastructure_text","flat_legal_text",
         "country_house_area_m2","country_plot_area_sotki","country_distance_km",
         "country_floors","country_rooms"
     ]})
@@ -2371,6 +2390,12 @@ async def handle_history_repeat(cb: CallbackQuery, state: FSMContext, bot: Bot):
         return
     
     fields = entry.get("fields") or {}
+    # На случай старых записей: добавляем заголовок и фильтруем/очищаем
+    try:
+        fields["form_header"] = _derive_form_header(fields)
+        fields = _filter_fields_for_executor(fields.copy(), fields)
+    except Exception:
+        fields = {k: v for k, v in fields.items() if _is_filled(v)}
     msg_uuid = (entry.get("msg_id") or "").strip()
 
     # Всегда очищаем стейт, это отдельный запуск
@@ -2437,7 +2462,13 @@ async def handle_retry_by_msgid(cb: CallbackQuery):
         await _edit_text_or_caption(cb.message, "Не нашли параметры анкеты для этого запроса 😔")
         return
 
-    # 2) Отправляем как обычный новый запрос, но с ТЕМ ЖЕ msgId и текущим якорем
+    # 2) Готовим поля: добавим заголовок и отфильтруем/очистим
+    try:
+        fields["form_header"] = _derive_form_header(fields)
+        fields = _filter_fields_for_executor(fields.copy(), fields)
+    except Exception:
+        fields = {k: v for k, v in fields.items() if _is_filled(v)}
+    # 3) Отправляем как обычный новый запрос, но с ТЕМ ЖЕ msgId и текущим якорем
     try:
         await _edit_text_or_caption(cb.message, "GENERATING")
         if not BOT_PUBLIC_BASE_URL:
