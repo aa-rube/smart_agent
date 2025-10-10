@@ -1811,7 +1811,7 @@ async def _generate_and_output(
                 chat_id=message.chat.id,
                 message_id=anchor_id,
                 text=ERROR_TEXT,
-                reply_markup=kb_retry()
+                reply_markup=kb_retry(gen_uuid)
             )
         except TelegramBadRequest:
             await message.answer(ERROR_TEXT, reply_markup=kb_retry(gen_uuid))
