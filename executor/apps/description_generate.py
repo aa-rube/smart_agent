@@ -876,15 +876,20 @@ def description_generate(req: Request):
             return jsonify({"error": "config", "detail": "; ".join(issues)}), 500
         api_key = fallback
 
-    # Собираем поля анкеты «как есть»: фабрика сама нормализует алиасы
+    # Собираем поля анкеты. Поддерживаем оба формата:
+    # 1) плоский: {"type": "...", "deal_type": "...", ...}
+    # 2) вложенный: {"fields": {...}, "callback_url": "...", ...}  ← именно так шлёт бот
     fields: Dict[str, Any] = {}
     if isinstance(data, dict):
-        fields.update(data)
+        if isinstance(data.get("fields"), dict):   # ← новый корректный путь
+            fields.update(data.get("fields"))
+        else:
+            fields.update(data)
     for k in form.keys():
         fields[k] = form.get(k)
-    
-    # Логируем собранные поля анкеты
-    log.info("Collected fields: %s", json.dumps(fields, ensure_ascii=False, indent=2))
+
+    # Логируем именно распакованные поля анкеты (без служебных ключей)
+    log.info("Collected fields (normalized): %s", json.dumps(fields, ensure_ascii=False, indent=2))
 
     # Минимальная валидация
     t = (fields.get("type") or "").strip()
@@ -922,6 +927,8 @@ def description_generate(req: Request):
                     "text": text,
                     "error": "",
                     "token": callback_token or "",
+                    # полезно для истории в боте (он умеет принять fields)
+                    "fields": fields,
                 }
                 log.info("Async generation completed successfully, sending callback to: %s", callback_url)
                 log.info("Callback payload: %s", json.dumps(payload, ensure_ascii=False, indent=2))
@@ -934,6 +941,7 @@ def description_generate(req: Request):
                     "text": "",
                     "error": str(e),
                     "token": callback_token or "",
+                    "fields": fields,
                 }
                 log.info("Async generation failed, sending error callback: %s", json.dumps(payload, ensure_ascii=False, indent=2))
                 _post_callback(callback_url, payload)
