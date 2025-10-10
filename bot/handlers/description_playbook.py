@@ -1811,7 +1811,7 @@ async def _generate_and_output(
                 chat_id=message.chat.id,
                 message_id=anchor_id,
                 text=ERROR_TEXT,
-                reply_markup=kb_retry(gen_uuid)
+                reply_markup=kb_retry()
             )
         except TelegramBadRequest:
             await message.answer(ERROR_TEXT, reply_markup=kb_retry(gen_uuid))
@@ -2379,7 +2379,7 @@ async def handle_history_repeat(cb: CallbackQuery, state: FSMContext, bot: Bot):
     if msg_uuid:
         # Повтор под тем же msgId (не плодим историю)
         try:
-            await _edit_text_or_caption(cb.message, "⏳ Повторяю запрос из истории…")
+            await _edit_text_or_caption(cb.message, GENERATING)
             if not BOT_PUBLIC_BASE_URL:
                 raise RuntimeError("BOT_PUBLIC_BASE_URL is not set")
             callback_url = str(URL(BOT_PUBLIC_BASE_URL) / "api" / "v1" / "description" / "result")
@@ -2397,16 +2397,16 @@ async def handle_history_repeat(cb: CallbackQuery, state: FSMContext, bot: Bot):
                 async with session.post(url, json=payload) as resp:
                     if resp.status not in (200, 202):
                         raise RuntimeError(f"Executor HTTP {resp.status}")
-            await _edit_text_or_caption(cb.message, "🛠 Генерация запущена. Результат обновится здесь.")
+            await _edit_text_or_caption(cb.message, GENERATING)
         except Exception:
             await _edit_text_or_caption(cb.message, ERROR_TEXT, kb_retry(msg_uuid))
     else:
         # Старые записи без msgId: запускаем как новый запрос (будет новый msgId и новая запись)
-        await _edit_text_or_caption(cb.message, "⏳ Повторяю запрос (новый идентификатор)…")
+        await _edit_text_or_caption(cb.message, GENERATING)
         gen_uuid = uuid4().hex
         try:
             await _request_description_async(fields, chat_id=user_id, msg_id=cb.message.message_id, msg_uuid=gen_uuid)
-            await _edit_text_or_caption(cb.message, "🛠 Генерация запущена. Результат обновится здесь.")
+            await _edit_text_or_caption(cb.message, GENERATING)
         except Exception:
             await _edit_text_or_caption(cb.message, ERROR_TEXT)
 
@@ -2439,7 +2439,7 @@ async def handle_retry_by_msgid(cb: CallbackQuery):
 
     # 2) Отправляем как обычный новый запрос, но с ТЕМ ЖЕ msgId и текущим якорем
     try:
-        await _edit_text_or_caption(cb.message, "⏳ Повторяю запрос…")
+        await _edit_text_or_caption(cb.message, "GENERATING")
         if not BOT_PUBLIC_BASE_URL:
             raise RuntimeError("BOT_PUBLIC_BASE_URL is not set")
         callback_url = str(URL(BOT_PUBLIC_BASE_URL) / "api" / "v1" / "description" / "result")
