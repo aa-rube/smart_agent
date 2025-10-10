@@ -560,8 +560,27 @@ class AppRepository:
             return {
                 "id": rec.id,
                 "created_at": rec.created_at.isoformat(timespec="seconds"),
+                "msg_id": rec.msg_id,
                 "fields": json.loads(rec.fields_json or "{}"),
                 "result_text": rec.result_text or "",
+            }
+
+    def description_get_by_msgid(self, msg_id: str) -> Optional[dict]:
+        """Возвращает карточку описания по msgId (id, user_id, fields)."""
+        if not msg_id:
+            return None
+        with self._session() as s:
+            rec = (
+                s.query(DescriptionHistory)
+                .filter(DescriptionHistory.msg_id == msg_id)
+                .one_or_none()
+            )
+            if rec is None:
+                return None
+            return {
+                "id": rec.id,
+                "user_id": rec.user_id,
+                "fields": json.loads(rec.fields_json or "{}"),
             }
 
     def description_delete(self, user_id: int, entry_id: int) -> bool:
@@ -667,6 +686,10 @@ def description_list(user_id: int, limit: int = 10) -> list[dict]:
 
 def description_get(user_id: int, entry_id: int) -> Optional[dict]:
     return _repo.description_get(user_id, entry_id)
+
+
+def description_get_by_msgid(msg_id: str) -> Optional[dict]:
+    return _repo.description_get_by_msgid(msg_id)
 
 
 def description_delete(user_id: int, entry_id: int) -> bool:

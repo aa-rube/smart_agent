@@ -778,10 +778,13 @@ def _kb_history_list(items: list[dict]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def kb_retry() -> InlineKeyboardMarkup:
+def kb_retry(msg_id: str) -> InlineKeyboardMarkup:
+    """
+    Кнопка повтора генерации. Несёт msgId, чтобы по нему вытащить поля из БД и переслать в исполнителя.
+    """
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔁 Ещё раз", callback_data="description")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")]  # внутренняя «Назад»
+        [InlineKeyboardButton(text="🔁 Ещё раз", callback_data=f"desc_retry:{msg_id}")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")]
     ])
 
 def _kb_history_item(entry_id: int) -> InlineKeyboardMarkup:
@@ -835,23 +838,23 @@ async def _cb_description_result(request: web.Request):
     # --- Ошибка от executor'а: заменить якорь на ERROR_TEXT (text -> caption -> новое) ---
     if error and not text:
         try:
-            await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=ERROR_TEXT, reply_markup=kb_retry())
+            await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=ERROR_TEXT, reply_markup=kb_retry(msg_uuid or ""))
         except TelegramBadRequest:
             try:
-                await bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=ERROR_TEXT, reply_markup=kb_retry())
+                await bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=ERROR_TEXT, reply_markup=kb_retry(msg_uuid or ""))
             except TelegramBadRequest:
-                await bot.send_message(chat_id, ERROR_TEXT, reply_markup=kb_retry())
+                await bot.send_message(chat_id, ERROR_TEXT, reply_markup=kb_retry(msg_uuid or ""))
         return web.json_response({"ok": True})
 
     # --- Успешный текст: первый чанк заменяет якорь (text -> caption -> новое), хвост — отдельными сообщениями ---
     parts = _split_for_telegram(text)
     try:
-        await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=parts[0], reply_markup=kb_retry())
+        await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=parts[0], reply_markup=kb_retry(msg_uuid or ""))
     except TelegramBadRequest:
         try:
-            await bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=parts[0], reply_markup=kb_retry())
+            await bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=parts[0], reply_markup=kb_retry(msg_uuid or ""))
         except TelegramBadRequest:
-            sent = await bot.send_message(chat_id, parts[0], reply_markup=kb_retry())
+            sent = await bot.send_message(chat_id, parts[0], reply_markup=kb_retry(msg_uuid or ""))
     for p in parts[1:]:
         await bot.send_message(chat_id, p)
 
@@ -1674,10 +1677,10 @@ async def _generate_and_output(
                 chat_id=message.chat.id,
                 message_id=anchor_id,
                 text=ERROR_TEXT,
-                reply_markup=kb_retry()
+                reply_markup=kb_retry(gen_uuid)
             )
         except TelegramBadRequest:
-            await message.answer(ERROR_TEXT, reply_markup=kb_retry())
+            await message.answer(ERROR_TEXT, reply_markup=kb_retry(gen_uuid))
     finally:
         await state.clear()
 
@@ -2217,8 +2220,9 @@ async def handle_history_delete(cb: CallbackQuery):
     await _edit_text_or_caption(cb.message, "🗂 История запросов (обновлено):", _kb_history_list(items))
 
 async def handle_history_repeat(cb: CallbackQuery, state: FSMContext, bot: Bot):
-    """
-    Повторить запрос == отправить текст результата на доработку как свободный комментарий.
+    """Повторить запрос == снова отправить ИСХОДНЫЕ поля анкеты в executor.
+    Если у записи есть msgId — используем его (перезапись результата под тем же id).
+    Если нет — создаём новый msgId через обычный асинхронный запуск.
     """
     await _cb_ack(cb)
     user_id = cb.message.chat.id
@@ -2231,11 +2235,103 @@ async def handle_history_repeat(cb: CallbackQuery, state: FSMContext, bot: Bot):
         await _edit_text_or_caption(cb.message, "Запись не найдена или удалена.",
                                     _kb_history_list(app_db.description_list(user_id, 10)))
         return
-    # Отправляем «повторную генерацию» с комментарием = прежний результат (для доработки)
-    # Стейт очищаем, чтобы не мешали старые шаги
+    
+    fields = entry.get("fields") or {}
+    msg_uuid = (entry.get("msg_id") or "").strip()
+
+    # Всегда очищаем стейт, это отдельный запуск
     await state.clear()
-    await _edit_text_or_caption(cb.message, "🔁 Отправляю текст на доработку…")
-    await _generate_and_output(cb.message, state, bot, comment=entry["result_text"], reuse_anchor=True)
+
+    if msg_uuid:
+        # Повтор под тем же msgId (не плодим историю)
+        try:
+            await _edit_text_or_caption(cb.message, "⏳ Повторяю запрос из истории…")
+            if not BOT_PUBLIC_BASE_URL:
+                raise RuntimeError("BOT_PUBLIC_BASE_URL is not set")
+            callback_url = str(URL(BOT_PUBLIC_BASE_URL) / "api" / "v1" / "description" / "result")
+            url = f"{EXECUTOR_BASE_URL.rstrip('/')}/api/v1/description/generate"
+            payload = {
+                "fields": fields,
+                "callback_url": callback_url,
+                "callback_token": EXECUTOR_CALLBACK_TOKEN,
+                "chat_id": user_id,
+                "msg_id": cb.message.message_id,
+                "msgId": msg_uuid,
+            }
+            t = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=t) as session:
+                async with session.post(url, json=payload) as resp:
+                    if resp.status not in (200, 202):
+                        raise RuntimeError(f"Executor HTTP {resp.status}")
+            await _edit_text_or_caption(cb.message, "🛠 Генерация запущена. Результат обновится здесь.")
+        except Exception:
+            await _edit_text_or_caption(cb.message, ERROR_TEXT, kb_retry(msg_uuid))
+    else:
+        # Старые записи без msgId: запускаем как новый запрос (будет новый msgId и новая запись)
+        await _edit_text_or_caption(cb.message, "⏳ Повторяю запрос (новый идентификатор)…")
+        gen_uuid = uuid4().hex
+        try:
+            await _request_description_async(fields, chat_id=user_id, msg_id=cb.message.message_id, msg_uuid=gen_uuid)
+            await _edit_text_or_caption(cb.message, "🛠 Генерация запущена. Результат обновится здесь.")
+        except Exception:
+            await _edit_text_or_caption(cb.message, ERROR_TEXT)
+
+# ==========================
+async def handle_retry_by_msgid(cb: CallbackQuery):
+    """
+    desc_retry:{msgId} — достаём поля из БД по msgId и повторно отправляем их в executor
+    с тем же msgId (перезаписывает существующий результат под тем же идентификатором).
+    Исполнитель к БД не ходит.
+    """
+    await _cb_ack(cb)
+    user_id = cb.message.chat.id
+    try:
+        _, msg_uuid = (cb.data or "").split(":", 1)
+        msg_uuid = msg_uuid.strip()
+    except Exception:
+        return
+    if not msg_uuid:
+        await _edit_text_or_caption(cb.message, "Не нашли идентификатор запроса для повтора 😔")
+        return
+
+    # 1) Пытаемся взять «сырые» поля из EAV (options). Фолбэк — из history по msgId.
+    fields = app_db.description_options_get(msg_id=msg_uuid) or {}
+    if not fields:
+        rec = app_db.description_get_by_msgid(msg_uuid) or {}
+        fields = rec.get("fields") or {}
+    if not fields:
+        await _edit_text_or_caption(cb.message, "Не нашли параметры анкеты для этого запроса 😔")
+        return
+
+    # 2) Отправляем как обычный новый запрос, но с ТЕМ ЖЕ msgId и текущим якорем
+    try:
+        await _edit_text_or_caption(cb.message, "⏳ Повторяю запрос…")
+        if not BOT_PUBLIC_BASE_URL:
+            raise RuntimeError("BOT_PUBLIC_BASE_URL is not set")
+        callback_url = str(URL(BOT_PUBLIC_BASE_URL) / "api" / "v1" / "description" / "result")
+        url = f"{EXECUTOR_BASE_URL.rstrip('/')}/api/v1/description/generate"
+        payload = {
+            "fields": fields,
+            "callback_url": callback_url,
+            "callback_token": EXECUTOR_CALLBACK_TOKEN,
+            "chat_id": user_id,
+            "msg_id": cb.message.message_id,  # текущий якорь для замены
+            "msgId": msg_uuid,                # тот же msgId, чтобы не плодить записи
+        }
+        t = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=t) as session:
+            async with session.post(url, json=payload) as resp:
+                if resp.status not in (200, 202):
+                    try:
+                        data = await resp.json()
+                        detail = data.get("detail") or data.get("error") or str(data)
+                    except Exception:
+                        detail = await resp.text()
+                    raise RuntimeError(f"Executor HTTP {resp.status}: {detail}")
+        # оставляем сообщение «запущено» — текст заменит callback
+        await _edit_text_or_caption(cb.message, "🛠 Генерация запущена. Результат обновится здесь.")
+    except Exception:
+        await _edit_text_or_caption(cb.message, ERROR_TEXT, kb_retry(msg_uuid))
 
 # ==========================
 # Назад/Выход
@@ -2369,6 +2465,9 @@ def router(rt: Router) -> None:
     rt.callback_query.register(handle_history_item, F.data.startswith("desc_hist_item_"))
     rt.callback_query.register(handle_history_delete, F.data.startswith("desc_hist_del_"))
     rt.callback_query.register(handle_history_repeat, F.data.startswith("desc_hist_repeat_"))
+
+    # Повтор по msgId
+    rt.callback_query.register(handle_retry_by_msgid, F.data.startswith("desc_retry:"))
 
     # Назад
     rt.callback_query.register(handle_back, F.data == "desc_back")
