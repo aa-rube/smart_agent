@@ -1,6 +1,7 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\description_playbook.py
 from typing import Optional, List, Dict, Set
-from aiogram.types import CallbackQuery as _CbType
+import logging
+
 import re
 
 import aiohttp
@@ -9,7 +10,8 @@ from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
     FSInputFile, InputMediaPhoto
 )
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramAPIError
+import asyncio
 from aiogram.fsm.context import FSMContext
 from aiohttp import web
 from yarl import URL
@@ -19,6 +21,9 @@ import os
 from bot.config import EXECUTOR_BASE_URL, get_file_path
 from bot.config import EXECUTOR_CALLBACK_TOKEN, BOT_PUBLIC_BASE_URL
 from bot.states.states import DescriptionStates
+
+# module logger
+logger = logging.getLogger(__name__)
 
 # ====== Доступ / подписка  ======
 import bot.utils.database as app_db          # триал/согласия/история
@@ -86,9 +91,9 @@ def _compose_summary(d: Dict) -> str:
 
     # Шапка (сделка, тип, ветка)
     head: list[str] = []
-    if (dt := d.get("deal_type")):
+    if dt := d.get("deal_type"):
         head.append("Аренда" if dt == "rent" else "Продажа")
-    if (tp := d.get("type")):
+    if tp := d.get("type"):
         head.append(_tlabel(tp))
     if d.get("__flat_mode") and d.get("market"):
         head.append(str(d.get("market")))  # Новостройка/Вторичка
@@ -202,7 +207,7 @@ def _compose_summary(d: Dict) -> str:
 async def _with_summary(state: FSMContext, text: str) -> str:
     d = await state.get_data()
     summary = _compose_summary(d)
-    return (f"• {summary}\n\n{text}") if summary else text
+    return f"• {summary}\n\n{text}" if summary else text
 
 def _kb_add_back_exit(rows: list[list[InlineKeyboardButton]]) -> list[list[InlineKeyboardButton]]:
     """
@@ -227,12 +232,13 @@ def _format_access_text(user_id: int) -> str:
     trial_hours = trial_remaining_hours(user_id)
     # Есть активный триал — показываем дату окончания, если доступна
     if is_trial_active(user_id):
+        # Узко перехватываем типичные ошибки извлечения/преобразования данных из БД
         try:
             until_dt = app_db.get_trial_until(user_id)
-            if until_dt:
-                return f'🆓 Бесплатный доступ активен до *{until_dt.date().isoformat()}* (~{trial_hours} ч.)'
-        except Exception:
-            pass
+        except (LookupError, ValueError, TypeError):
+            until_dt = None
+        if until_dt:
+            return f'🆓 Бесплатный доступ активен до *{until_dt.date().isoformat()}* (~{trial_hours} ч.)'
         return f'🆓 Бесплатный доступ активен ещё *~{trial_hours} ч.*'
     # Нет триала — проверяем подписку
     if _is_sub_active(user_id):
@@ -245,7 +251,7 @@ def _has_access(user_id: int) -> bool:
 # ==========================
 # Безопасный ACK callback-запроса (чтобы не получить "query is too old")
 # ==========================
-async def _cb_ack(cb: _CbType, text: Optional[str] = None, show_alert: bool = False) -> None:
+async def _cb_ack(cb: CallbackQuery, text: Optional[str] = None, show_alert: bool = False) -> None:
     """
     Немедленно отвечаем на callback, а любые ошибки игнорируем.
     Так мы снимаем "песочные часы" у пользователя и избегаем TelegramBadRequest.
@@ -253,10 +259,13 @@ async def _cb_ack(cb: _CbType, text: Optional[str] = None, show_alert: bool = Fa
     try:
         await cb.answer(text=text, show_alert=show_alert, cache_time=0)
     except TelegramBadRequest:
-        # query уже протух/закрыт — просто игнорируем
+        # query уже протух/закрыт — игнорируем
         pass
-    except Exception:
-        # на всякий случай — не роняем обработчик
+    except TelegramAPIError:
+        # Прочие ошибки Telegram API (сеть, retry-after и т.п.) — игнорируем
+        pass
+    except asyncio.TimeoutError:
+        # Локальный таймаут выполнения — игнорируем
         pass
 
 # ==========================
@@ -872,7 +881,7 @@ async def _cb_description_result(request: web.Request):
         try:
             await bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=parts[0], reply_markup=kb_retry(msg_uuid or ""))
         except TelegramBadRequest:
-            sent = await bot.send_message(chat_id, parts[0], reply_markup=kb_retry(msg_uuid or ""))
+            await bot.send_message(chat_id, parts[0], reply_markup=kb_retry(msg_uuid or ""))
     for p in parts[1:]:
         await bot.send_message(chat_id, p)
 
@@ -1054,27 +1063,13 @@ def _filter_fields_for_executor(raw: Dict, data: Dict) -> Dict:
 # ==========================
 # HTTP к контроллеру
 # ==========================
-async def _request_description_text(fields: dict, *, timeout_sec: int = 70) -> str:
+def _build_callback_url() -> str:
     """
-    Шлём ВСЕ поля анкеты в executor (/api/v1/description/generate) под ключом 'fields'
-    и ждём чистый текст.
+    Возвращает абсолютный URL колбэка для executor'а.
     """
-    url = f"{EXECUTOR_BASE_URL.rstrip('/')}/api/v1/description/generate"
-    t = aiohttp.ClientTimeout(total=timeout_sec)
-    async with aiohttp.ClientSession(timeout=t) as session:
-        async with session.post(url, json={"fields": fields}) as resp:
-            if resp.status != 200:
-                try:
-                    data = await resp.json()
-                    detail = data.get("detail") or data.get("error") or str(data)
-                except Exception:
-                    detail = await resp.text()
-                raise RuntimeError(f"Executor HTTP {resp.status}: {detail}")
-            data = await resp.json()
-            txt = (data or {}).get("text", "").strip()
-            if not txt:
-                raise RuntimeError("Executor returned empty text")
-            return txt
+    if not BOT_PUBLIC_BASE_URL:
+        raise RuntimeError("BOT_PUBLIC_BASE_URL is not set")
+    return str(URL(BOT_PUBLIC_BASE_URL) / "api" / "v1" / "description" / "result")
 
 # --- Новый: асинхронная постановка задачи без ожидания результата ---
 async def _request_description_async(
@@ -1088,9 +1083,7 @@ async def _request_description_async(
     Отправляет задачу в executor и НЕ ждёт результата.
     Executor позже вызовет наш callback.
     """
-    if not BOT_PUBLIC_BASE_URL:
-        raise RuntimeError("BOT_PUBLIC_BASE_URL is not set")
-    callback_url = str(URL(BOT_PUBLIC_BASE_URL) / "api" / "v1" / "description" / "result")
+    callback_url = _build_callback_url()
 
     # Последняя линия защиты: убираем пустые значения на случай старых/сырых вызовов
     fields = {k: v for k, v in fields.items() if _is_filled(v)}
@@ -1818,9 +1811,10 @@ async def _generate_and_output(
         anchor_id = gen_msg.message_id
 
     # --- Новый режим: fire-and-forget, ответ придёт на callback и заменит это сообщение ---
+    gen_uuid = uuid4().hex
+
     try:
         # Генерируем уникальный идентификатор генерации (msgId) для связи в БД
-        gen_uuid = uuid4().hex
         await _request_description_async(fields, chat_id=message.chat.id, msg_id=anchor_id, msg_uuid=gen_uuid)
     except Exception:
         try:
@@ -1855,8 +1849,7 @@ async def handle_comment_message(message: Message, state: FSMContext, bot: Bot):
         if len(user_text) < 2:
             await message.answer("Опишите чуть подробнее, хотя бы пару символов.")
             return
-        # для country и flat — сохраняем и двигаемся дальше
-        # для country и flat — сохраняем и двигаемся дальше
+        # для country/flat — сохраняем и двигаемся дальше
         await state.update_data(**{other_key: user_text}, __awaiting_other_key=None)
         step = int(data.get("__form_step") or 0) + 1
         await state.update_data(__form_step=step)
@@ -2405,9 +2398,7 @@ async def handle_history_repeat(cb: CallbackQuery, state: FSMContext, bot: Bot):
         # Повтор под тем же msgId (не плодим историю)
         try:
             await _edit_text_or_caption(cb.message, GENERATING)
-            if not BOT_PUBLIC_BASE_URL:
-                raise RuntimeError("BOT_PUBLIC_BASE_URL is not set")
-            callback_url = str(URL(BOT_PUBLIC_BASE_URL) / "api" / "v1" / "description" / "result")
+            callback_url = _build_callback_url()
             url = f"{EXECUTOR_BASE_URL.rstrip('/')}/api/v1/description/generate"
             payload = {
                 "fields": fields,
@@ -2422,7 +2413,7 @@ async def handle_history_repeat(cb: CallbackQuery, state: FSMContext, bot: Bot):
                 async with session.post(url, json=payload) as resp:
                     if resp.status not in (200, 202):
                         raise RuntimeError(f"Executor HTTP {resp.status}")
-            await _edit_text_or_caption(cb.message, GENERATING)
+            # Сообщение останется с "GENERATING" до прихода колбэка
         except Exception:
             await _edit_text_or_caption(cb.message, ERROR_TEXT, kb_retry(msg_uuid))
     else:
@@ -2431,7 +2422,7 @@ async def handle_history_repeat(cb: CallbackQuery, state: FSMContext, bot: Bot):
         gen_uuid = uuid4().hex
         try:
             await _request_description_async(fields, chat_id=user_id, msg_id=cb.message.message_id, msg_uuid=gen_uuid)
-            await _edit_text_or_caption(cb.message, GENERATING)
+            # Сообщение останется с "GENERATING" до прихода колбэка
         except Exception:
             await _edit_text_or_caption(cb.message, ERROR_TEXT)
 
@@ -2470,10 +2461,8 @@ async def handle_retry_by_msgid(cb: CallbackQuery):
         fields = {k: v for k, v in fields.items() if _is_filled(v)}
     # 3) Отправляем как обычный новый запрос, но с ТЕМ ЖЕ msgId и текущим якорем
     try:
-        await _edit_text_or_caption(cb.message, "GENERATING")
-        if not BOT_PUBLIC_BASE_URL:
-            raise RuntimeError("BOT_PUBLIC_BASE_URL is not set")
-        callback_url = str(URL(BOT_PUBLIC_BASE_URL) / "api" / "v1" / "description" / "result")
+        await _edit_text_or_caption(cb.message, GENERATING)
+        callback_url = _build_callback_url()
         url = f"{EXECUTOR_BASE_URL.rstrip('/')}/api/v1/description/generate"
         payload = {
             "fields": fields,
@@ -2493,7 +2482,7 @@ async def handle_retry_by_msgid(cb: CallbackQuery):
                     except Exception:
                         detail = await resp.text()
                     raise RuntimeError(f"Executor HTTP {resp.status}: {detail}")
-        # оставляем сообщение «запущено» — текст заменит callback
+        # оставляем сообщение «Генерирую...» — текст заменит callback
         await _edit_text_or_caption(cb.message, "🛠 Генерация запущена. Результат обновится здесь.")
     except Exception:
         await _edit_text_or_caption(cb.message, ERROR_TEXT, kb_retry(msg_uuid))
