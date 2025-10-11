@@ -13,7 +13,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiohttp import web
 from yarl import URL
-# uuid больше не используем: msgId = telegram message_id
+from uuid import uuid4
 import os
 
 from bot.config import EXECUTOR_BASE_URL, get_file_path
@@ -86,7 +86,7 @@ def _compose_summary(d: Dict) -> str:
 
     # Шапка (сделка, тип, ветка)
     head: list[str] = []
-    if dt := d.get("deal_type"):
+    if (dt := d.get("deal_type")):
         head.append("Аренда" if dt == "rent" else "Продажа")
     if (tp := d.get("type")):
         head.append(_tlabel(tp))
@@ -796,14 +796,12 @@ def _kb_history_list(items: list[dict]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def kb_retry(msg_id: str | int) -> InlineKeyboardMarkup:
+def kb_retry(msg_id: str) -> InlineKeyboardMarkup:
     """
-    Кнопка повтора генерации. Несёт msgId = Telegram message_id.
-    По нему достаём поля из БД и повторно шлём задачу в executor.
+    Кнопка повтора генерации. Несёт msgId, чтобы по нему вытащить поля из БД и переслать в исполнителя.
     """
-    mid = str(msg_id)
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔁 Ещё раз", callback_data=f"desc_retry:{mid}")],
+        [InlineKeyboardButton(text="🔁 Ещё раз", callback_data=f"desc_retry:{msg_id}")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.descr_home")]
     ])
 
@@ -858,24 +856,23 @@ async def _cb_description_result(request: web.Request):
     # --- Ошибка от executor'а: заменить якорь на ERROR_TEXT (text -> caption -> новое) ---
     if error and not text:
         try:
-            # всегда отдаём кнопку повтора с msg_id (Telegram message_id)
-            await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=ERROR_TEXT, reply_markup=kb_retry(str(msg_id)))
+            await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=ERROR_TEXT, reply_markup=kb_retry(msg_uuid or ""))
         except TelegramBadRequest:
             try:
-                await bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=ERROR_TEXT, reply_markup=kb_retry(str(msg_id)))
+                await bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=ERROR_TEXT, reply_markup=kb_retry(msg_uuid or ""))
             except TelegramBadRequest:
-                await bot.send_message(chat_id, ERROR_TEXT, reply_markup=kb_retry(str(msg_id)))
+                await bot.send_message(chat_id, ERROR_TEXT, reply_markup=kb_retry(msg_uuid or ""))
         return web.json_response({"ok": True})
 
     # --- Успешный текст: первый чанк заменяет якорь (text -> caption -> новое), хвост — отдельными сообщениями ---
     parts = _split_for_telegram(text)
     try:
-        await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=parts[0], reply_markup=kb_retry(str(msg_id)))
+        await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=parts[0], reply_markup=kb_retry(msg_uuid or ""))
     except TelegramBadRequest:
         try:
-            await bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=parts[0], reply_markup=kb_retry(str(msg_id)))
+            await bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=parts[0], reply_markup=kb_retry(msg_uuid or ""))
         except TelegramBadRequest:
-            sent = await bot.send_message(chat_id, parts[0], reply_markup=kb_retry(str(msg_id)))
+            sent = await bot.send_message(chat_id, parts[0], reply_markup=kb_retry(msg_uuid or ""))
     for p in parts[1:]:
         await bot.send_message(chat_id, p)
 
@@ -1822,19 +1819,19 @@ async def _generate_and_output(
 
     # --- Новый режим: fire-and-forget, ответ придёт на callback и заменит это сообщение ---
     try:
-        # В качестве msgId используем сам Telegram message_id (якорь)
-        msg_key = str(anchor_id)
-        await _request_description_async(fields, chat_id=message.chat.id, msg_id=anchor_id, msg_uuid=msg_key)
+        # Генерируем уникальный идентификатор генерации (msgId) для связи в БД
+        gen_uuid = uuid4().hex
+        await _request_description_async(fields, chat_id=message.chat.id, msg_id=anchor_id, msg_uuid=gen_uuid)
     except Exception:
         try:
             await bot.edit_message_text(
                 chat_id=message.chat.id,
                 message_id=anchor_id,
                 text=ERROR_TEXT,
-                reply_markup=kb_retry(str(anchor_id))
+                reply_markup=kb_retry(gen_uuid)
             )
         except TelegramBadRequest:
-            await message.answer(ERROR_TEXT, reply_markup=kb_retry(str(anchor_id)))
+            await message.answer(ERROR_TEXT, reply_markup=kb_retry(gen_uuid))
     finally:
         await state.clear()
 
@@ -2431,8 +2428,7 @@ async def handle_history_repeat(cb: CallbackQuery, state: FSMContext, bot: Bot):
     else:
         # Старые записи без msgId: запускаем как новый запрос (будет новый msgId и новая запись)
         await _edit_text_or_caption(cb.message, GENERATING)
-        # Используем текущий message_id как msgId вместо uuid
-        gen_uuid = str(cb.message.message_id)
+        gen_uuid = uuid4().hex
         try:
             await _request_description_async(fields, chat_id=user_id, msg_id=cb.message.message_id, msg_uuid=gen_uuid)
             await _edit_text_or_caption(cb.message, GENERATING)
