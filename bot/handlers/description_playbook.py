@@ -1,6 +1,5 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\description_playbook.py
 from typing import Optional, List, Dict, Set
-import logging
 
 import re
 
@@ -21,9 +20,10 @@ import os
 from bot.config import EXECUTOR_BASE_URL, get_file_path
 from bot.config import EXECUTOR_CALLBACK_TOKEN, BOT_PUBLIC_BASE_URL
 from bot.states.states import DescriptionStates
+import bot.utils.logging_config as logging_config
 
 # module logger
-logger = logging.getLogger(__name__)
+log = logging_config.logger
 
 # ====== Доступ / подписка  ======
 import bot.utils.database as app_db          # триал/согласия/история
@@ -895,7 +895,7 @@ async def _cb_description_result(request: web.Request):
         else:
             app_db.description_add(user_id=chat_id, fields=fields, result_text=text)
     except Exception:  # noqa: BLE001 — сохраняем устойчивость колбэка, фиксируем стек
-        logger.exception("Failed to update description history (chat_id=%s, msg_id=%s, msg_uuid=%s)", chat_id, msg_id, msg_uuid)
+        log.exception("Failed to update description history (chat_id=%s, msg_id=%s, msg_uuid=%s)", chat_id, msg_id, msg_uuid)
 
     return web.json_response({"ok": True})
 

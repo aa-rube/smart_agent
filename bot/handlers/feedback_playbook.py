@@ -3,8 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Union
 
 import aiohttp
@@ -19,8 +18,10 @@ from bot.config import EXECUTOR_BASE_URL, get_file_path
 from bot.utils.database import history_add, history_list, history_get
 from bot.states.states import FeedbackStates
 from bot.utils.redis_repo import feedback_repo
+import bot.utils.logging_config as logging_config
 
-logger = logging.getLogger(__name__)
+# module logger
+log = logging_config.logger
 
 # =============================================================================
 # Доступ / подписка
@@ -31,16 +32,17 @@ from bot.utils.database import (
     is_trial_active, trial_remaining_hours
 )
 
+@dataclass
 class ReviewPayload:
     client_name: str
     agent_name: str
-    company: Optional[str]
-    city: str
-    address: Optional[str]
-    deal_type: str  # sale|buy|rent|lease|custom
-    deal_custom: Optional[str]
-    situation: str
-    style: str  # friendly|neutral|formal|brief|long
+    company: Optional[str] = None
+    city: Optional[str] = None
+    address: Optional[str] = None
+    deal_type: Optional[str] = None  # CSV: sale|buy|rent|lease|custom
+    deal_custom: Optional[str] = None
+    situation: Optional[str] = None
+    style: Optional[str] = None  # friendly|neutral|formal
 
 def _is_sub_active(user_id: int) -> bool:
     return bool(billing_db.has_saved_card(user_id))
@@ -1624,11 +1626,11 @@ async def go_menu(callback: CallbackQuery, state: FSMContext):
                 kb=kb_menu_main(),
             )
         else:
-            logger.warning("Menu image not found: %s (resolved from %s)", path, rel)
+            log.warning("Menu image not found: %s (resolved from %s)", path, rel)
             # Фолбэк на текст, если файла нет
             await ui_reply(callback, caption, kb_menu_main(), state=state)
     except Exception as e:
-        logger.exception("Failed to display menu image: %s", e)
+        log.exception("Failed to display menu image: %s", e)
         await ui_reply(callback, caption, kb_menu_main(), state=state)
     finally:
         # Безопасный ACK
