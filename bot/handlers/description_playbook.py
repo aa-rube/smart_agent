@@ -894,8 +894,8 @@ async def _cb_description_result(request: web.Request):
                 app_db.description_add(user_id=chat_id, fields=fields, result_text=text)
         else:
             app_db.description_add(user_id=chat_id, fields=fields, result_text=text)
-    except Exception:
-        pass
+    except Exception:  # noqa: BLE001 — сохраняем устойчивость колбэка, фиксируем стек
+        logger.exception("Failed to update description history (chat_id=%s, msg_id=%s, msg_uuid=%s)", chat_id, msg_id, msg_uuid)
 
     return web.json_response({"ok": True})
 
