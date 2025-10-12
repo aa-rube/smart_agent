@@ -1,7 +1,8 @@
 # smart_agent/bot/utils/database.py
+#I'm using MYSQL8+ for this proj.
 from __future__ import annotations
 
-from typing import Optional, List, Any
+from typing import Optional
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,7 @@ MSK = ZoneInfo("Europe/Moscow")
 # ──────────────────────────────────────────────────────────────────────────────
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
 
 def to_aware_utc(dt: datetime | None) -> datetime | None:
     if dt is None:
@@ -66,7 +68,6 @@ class User(Base):
     # Новые поля
     chat_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True, index=True)
     username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
-
 
     # Логи событий
     events: Mapped[list["EventLog"]] = relationship(
@@ -243,46 +244,41 @@ class EventLog(Base):
 # =========================
 def init_schema() -> None:
     Base.metadata.create_all(bind=engine)
-    # Лёгкая миграция: добавим поля, если их нет (MySQL 8+)
-    try:
-        with engine.begin() as conn:
-            conn.exec_driver_sql(
-                "ALTER TABLE users ADD COLUMN IF NOT EXISTS chat_id BIGINT NULL"
-            )
-            conn.exec_driver_sql(
-                "ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(64) NULL"
-            )
-            
-            # Миграция для review_history.case_id
-            conn.exec_driver_sql(
-                "ALTER TABLE review_history ADD COLUMN IF NOT EXISTS case_id VARCHAR(64) NULL"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS ix_review_history_case_id ON review_history (case_id)"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS ix_users_username ON users (username)"
-            )
-            # Миграция для description_history.msg_id
-            conn.exec_driver_sql(
-                "ALTER TABLE description_history ADD COLUMN IF NOT EXISTS msg_id VARCHAR(64) NULL"
-            )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS ix_description_history_msg_id ON description_history (msg_id)"
-            )
-            # Таблица description_options
-            conn.exec_driver_sql("""
-                CREATE TABLE IF NOT EXISTS description_options (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    msg_id VARCHAR(64) NOT NULL,
-                    variable VARCHAR(255) NOT NULL,
-                    value TEXT NOT NULL,
-                    INDEX ix_description_options_msg_id (msg_id)
-                )
-            """)
-    except Exception:
-        # Не падаем на старых версиях MySQL — таблица уже может быть мигрирована вручную.
-        pass
+    # Строгая миграция под MySQL 8+: никаких фолбэков на старые версии.
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS chat_id BIGINT NULL"
+        )
+        conn.exec_driver_sql(
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(64) NULL"
+        )
+        # review_history.case_id + индекс
+        conn.exec_driver_sql(
+            "ALTER TABLE review_history ADD COLUMN IF NOT EXISTS case_id VARCHAR(64) NULL"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_review_history_case_id ON review_history (case_id)"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_users_username ON users (username)"
+        )
+        # description_history.msg_id + индекс
+        conn.exec_driver_sql(
+            "ALTER TABLE description_history ADD COLUMN IF NOT EXISTS msg_id VARCHAR(64) NULL"
+        )
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_description_history_msg_id ON description_history (msg_id)"
+        )
+        # EAV-таблица для опций описаний
+        conn.exec_driver_sql("""
+CREATE TABLE IF NOT EXISTS description_options (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    msg_id VARCHAR(64) NOT NULL,
+    variable VARCHAR(255) NOT NULL,
+    value TEXT NOT NULL,
+    INDEX ix_description_options_msg_id (msg_id)
+)
+""")
 
 
 class AppRepository:
@@ -341,7 +337,6 @@ class AppRepository:
             rec = s.get(Trial, user_id)
             if not rec:
                 return None
-            # MySQL часто возвращает naive DATETIME — приводим к UTC-aware
             return to_aware_utc(rec.until_at)
 
     def is_trial_active(self, user_id: int) -> bool:
@@ -355,18 +350,19 @@ class AppRepository:
         return max(0, int((until - now_utc()).total_seconds() // 3600))
 
     def list_trial_active_user_ids(self, now: Optional[datetime] = None) -> list[int]:
-        """Все пользователи, у кого активен триал на момент now."""
+        """Все пользователи, у кого активен триал на момент now (MySQL 8+)."""
         now = to_aware_utc(now or now_utc())
         with self._session() as s:
             rows = (
                 s.query(Trial.user_id)
-                .filter(Trial.until_at > now)  # until_at может быть naive — SQL сравнение ок
+                .filter(Trial.until_at > now)
                 .all()
             )
             return [uid for (uid,) in rows]
 
     # --- history ---
-    def history_add(self, user_id: int, payload: dict, final_text: str, *, case_id: Optional[str] = None) -> ReviewHistory:
+    def history_add(self, user_id: int, payload: dict, final_text: str, *,
+                    case_id: Optional[str] = None) -> ReviewHistory:
         with self._session() as s, s.begin():
             if s.get(User, user_id) is None:
                 s.add(User(user_id=user_id))
@@ -389,7 +385,7 @@ class AppRepository:
             s.refresh(rec)
             return rec
 
-    def history_list(self, user_id: int, limit: int = 10) -> list[type[ReviewHistory]]:
+    def history_list(self, user_id: int, limit: int = 10) -> list[ReviewHistory]:
         with self._session() as s:
             q = (
                 s.query(ReviewHistory)
@@ -399,7 +395,7 @@ class AppRepository:
             )
             return list(q)
 
-    def history_get(self, user_id: int, item_id: int) -> type[ReviewHistory] | None:
+    def history_get(self, user_id: int, item_id: int) -> Optional[ReviewHistory]:
         with self._session() as s:
             rec = s.get(ReviewHistory, item_id)
             if rec is None or rec.user_id != user_id:
@@ -651,6 +647,7 @@ def is_trial_active(user_id: int) -> bool:
 def trial_remaining_hours(user_id: int) -> int:
     return _repo.trial_remaining_hours(user_id)
 
+
 def list_trial_active_user_ids(now: Optional[datetime] = None) -> list[int]:
     return _repo.list_trial_active_user_ids(now)
 
@@ -685,15 +682,19 @@ def summary_get_entry(user_id: int, entry_id: int) -> Optional[dict]:
 def description_add(*, user_id: int, fields: dict, result_text: str) -> int:
     return _repo.description_add(user_id, fields=fields, result_text=result_text)
 
+
 # v2: msgId workflow
 def description_start(*, user_id: int, msg_id: str, fields: dict) -> int:
     return _repo.description_start(user_id, msg_id=msg_id, fields=fields)
 
+
 def description_finish_by_msgid(*, msg_id: str, result_text: str, fields: Optional[dict] = None) -> bool:
     return _repo.description_finish_by_msgid(msg_id=msg_id, result_text=result_text, fields=fields)
 
+
 def description_options_save(*, msg_id: str, options: dict) -> int:
     return _repo.description_options_save(msg_id=msg_id, options=options)
+
 
 def description_options_get(*, msg_id: str) -> dict:
     return _repo.description_options_get(msg_id=msg_id)
@@ -723,3 +724,4 @@ def add_consent(user_id: int, kind: str, when: Optional[datetime] = None) -> int
 # Event log (простой интерфейс)
 def event_add(user_id: int, text: str) -> None:
     return _repo.event_add(user_id, text)
+#I'm using MYSQL8+ for this proj.

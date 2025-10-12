@@ -1445,7 +1445,6 @@ async def finalize_choice(callback: CallbackQuery, state: FSMContext):
         return
 
     final_text = variants[idx - 1]
-    payload = _payload_from_state(d)
 
     # Автосохранение уже было выполнено при генерации/дозапросе —
     # здесь не дублируем запись, чтобы не плодить копии
