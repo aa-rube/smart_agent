@@ -548,10 +548,8 @@ def kb_variant(index: int, total: int) -> InlineKeyboardMarkup:
         rows.append(nav)
     # Действия
     rows.append([InlineKeyboardButton(text="Выбрать этот", callback_data=f"pick.{index}")])
-    rows.append([
-        InlineKeyboardButton(text="Сделать короче", callback_data=f"mutate.{index}.short"),
-        InlineKeyboardButton(text="Сделать длиннее", callback_data=f"mutate.{index}.long"),
-    ])
+    # Изменение длины теперь через одно действие с выбором целевого размера
+    rows.append([InlineKeyboardButton(text="Изменить длину", callback_data=f"mutate.{index}.length")])
     rows.append([InlineKeyboardButton(text="Изменить тон", callback_data=f"mutate.{index}.style")])
     rows.append([InlineKeyboardButton(text="Ещё вариант", callback_data=f"gen.more.{index}")])
     rows.append([InlineKeyboardButton(text="Экспорт .txt", callback_data=f"export.{index}.txt")])
@@ -1128,6 +1126,76 @@ async def handle_length(callback: CallbackQuery, state: FSMContext):
     length_code = data.split(".", 1)[1]
     if length_code not in {"short", "medium", "long"}:
         return await callback.answer()
+
+    d = await state.get_data()
+
+    # === Режим «изменить длину» для конкретного варианта ===
+    mut_idx = d.get("mutating_length_idx")
+    if mut_idx:
+        # ранний ACK, чтобы не протух callback
+        await _safe_cb_answer(callback)
+        variants: List[str] = d.get("variants", [])
+        if not (1 <= mut_idx <= len(variants)):
+            await callback.answer("Не найден вариант.")
+            return
+
+        base_text = variants[mut_idx - 1]
+        cur_len = len(base_text or "")
+        # Решаем, что делать: microservice умеет 'short'/'long', а 'medium' приближаем.
+        # Пороговые значения берём из LENGTH_LIMITS.
+        target = length_code
+        op: Optional[str] = None
+        if target == "short":
+            op = "short" if cur_len > LENGTH_LIMITS["short"] else None
+        elif target == "long":
+            # считаем «длинным» всё, что > medium. Иначе — растягиваем.
+            op = "long" if cur_len <= LENGTH_LIMITS["medium"] else None
+        else:  # target == "medium"
+            if cur_len > LENGTH_LIMITS["medium"]:
+                op = "short"
+            elif cur_len < LENGTH_LIMITS["short"]:
+                op = "long"
+            else:
+                op = None  # уже средний
+
+        # Обновим глобальное пожелание длины — пригодится для дальнейших генераций/догенераций
+        await state.update_data(length=length_code)
+        await feedback_repo.set_fields(callback.from_user.id, {"length": length_code})
+
+        if op is None:
+            # Ничего делать не надо — уже близко к целевому размеру
+            await ui_reply(callback, VARIANT_HEAD_UPDATED.format(idx=mut_idx) + _split_for_telegram(base_text)[0],
+                           kb_variant(mut_idx, len(variants)), state=state)
+            await state.update_data(mutating_length_idx=None, viewer_idx=mut_idx)
+            await feedback_repo.set_fields(callback.from_user.id, {"viewer_idx": mut_idx})
+            return
+
+        await ui_reply(callback, "Меняю длину…", state=state)
+        chat_id = callback.message.chat.id
+        async def _do():
+            payload = _payload_from_state(await state.get_data())
+            # Для совместимости дополнительно передаём length_hint
+            return await _request_mutate(base_text, operation=op, style=None, payload=payload,
+                                         length_hint=LENGTH_LIMITS.get(length_code))
+        try:
+            new_text: str = await run_long_operation_with_action(
+                bot=callback.bot, chat_id=chat_id, action=ChatAction.TYPING, coro=_do()
+            )
+            variants[mut_idx - 1] = new_text
+            await state.update_data(variants=variants, mutating_length_idx=None)
+            parts = _split_for_telegram(new_text)
+            head = VARIANT_HEAD_UPDATED.format(idx=mut_idx) + parts[0]
+            total = len(variants)
+            await ui_reply(callback, head, kb_variant(mut_idx, total), state=state)
+            for p in parts[1:]:
+                await send_text(callback.message, p)
+            await state.update_data(viewer_idx=mut_idx)
+            await feedback_repo.set_fields(callback.from_user.id, {"viewer_idx": mut_idx})
+        except Exception as e:
+            await ui_reply(callback, f"{ERROR_TEXT}\n\n{e}", state=state)
+        return
+
+    # === Базовый сценарий выбора длины в основном флоу ===
     await state.update_data(length=length_code)
     await feedback_repo.set_fields(callback.from_user.id, {"length": length_code})
     d = await state.get_data()
@@ -1280,7 +1348,7 @@ async def mutate_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
         await state.clear()
         return
 
-    data = callback.data  # mutate.{index}.short|long|style
+    data = callback.data  # mutate.{index}.short|long|style|length
     try:
         _, idx_str, op = data.split(".")
         idx = int(idx_str)
@@ -1304,6 +1372,16 @@ async def mutate_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
         await _safe_cb_answer(callback)
         return
 
+    if op == "length":
+        # Режим изменения длины выбранного варианта:
+        # открываем такой же набор размеров, как в основном флоу.
+        await state.update_data(mutating_length_idx=idx)
+        await ui_reply(callback, ASK_LENGTH, kb_length(), state=state)
+        await state.set_state(FeedbackStates.waiting_length)
+        await _safe_cb_answer(callback)
+        return
+
+    # Back-compat для старых сообщений: прямые команды short/long
     operation = "short" if op == "short" else "long"
 
     await ui_reply(callback, GENERATING, state=state)  # редактируем якорь
