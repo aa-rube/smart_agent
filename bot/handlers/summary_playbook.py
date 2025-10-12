@@ -107,7 +107,7 @@ ASK_TEXT = "✍️ Пришлите сюда текст переписки (мо
 ASK_AUDIO = "🎙️ Пришлите аудио (voice или audio) длительностью до 10 минут. Затем нажмите «Сгенерировать саммари». Аудио в виде документа не принимается."
 GEN_HINT = "Готово? Нажмите «Сгенерировать саммари» ниже."
 
-GEN_RUNNING = "⏳ Обрабатываю запись… Идёт транскрибация и анализ."
+GEN_RUNNING = "⏳ Обрабатываю запись… Идёт расшифровка и анализ."
 GEN_ERROR = "⚠️ Не удалось выполнить анализ. Попробуйте ещё раз позже."
 SAVED_OK = "💾 Саммари сохранено в историю."
 
@@ -149,7 +149,7 @@ def kb_history(items: List[Dict]) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="⬅️ В начало", callback_data="nav.summary_home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-# ============= Вспомогалки =============
+# ============= Helpers =============
 async def _edit_text_or_caption(msg: Message, text: str, kb: Optional[InlineKeyboardMarkup] = None) -> None:
     try:
         await msg.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -251,9 +251,9 @@ async def _analyze(payload: dict, *, timeout_sec: int = 120) -> dict:
 def _clean_point(s: str) -> str:
     """
     Нормализуем пункты для «нормис»-UI:
-    - убираем префикс 'MISSING:' и подобные,
-    - превращаем хвост в скобках в короткое пояснение через тире,
-    - схлопываем повторяющуюся пунктуацию,
+    - убираем префикс 'MISSING:' и подобные
+    - превращаем хвост в скобках в короткое пояснение через тире
+    - схлопываем повторяющуюся пунктуацию
     - убираем финальную точку у коротких строк.
     """
     s = (s or "").strip()
@@ -277,7 +277,7 @@ def _clean_point(s: str) -> str:
 def _split_mistakes(mistakes: list[str]) -> tuple[list[str], list[str]]:
     """
     Делим «Ошибки» на:
-    - gaps: пункты, помеченные MISSING (что не уточнили),
+    - gaps: пункты, помеченные MISSING (что не уточнили)
     - errs: остальные ошибки/риски.
     """
     gaps, errs = [], []
@@ -302,7 +302,7 @@ def _bullets(items: list[str]) -> str:
 def _render_result(res: dict) -> str:
     """
     Человекочитаемый вывод:
-    - MISSING:* уходит в «Что не уточнили»,
+    - MISSING:* уходит в «Что не уточнили
     - остальное остаётся в «Ошибки и риски».
     Эмодзи ставим в КОНЕЦ заголовка, чтобы Telegram не делал их огромными.
     """
@@ -354,7 +354,7 @@ async def choose_text(callback: CallbackQuery, state: FSMContext):
     await summary_repo.set_input_text(callback.from_user.id, "", append=False)
     await _edit_text_or_caption(
         callback.message,
-        f"{ASK_TEXT}\n\n{_format_access_text(callback.from_user.id)}",
+        ASK_TEXT,
         kb_ready()
     )
     await state.set_state(SummaryStates.waiting_for_text)
@@ -377,7 +377,7 @@ async def choose_audio(callback: CallbackQuery, state: FSMContext):
     await summary_repo.set_stage(callback.from_user.id, "waiting_audio")
     await _edit_text_or_caption(
         callback.message,
-        f"{ASK_AUDIO}\n\n{_format_access_text(callback.from_user.id)}",
+        ASK_AUDIO,
         kb_ready()
     )
     await state.set_state(SummaryStates.waiting_for_audio)
