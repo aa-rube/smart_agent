@@ -116,7 +116,7 @@ ASK_DEAL_TYPE = "Выберите тип сделки."
 ASK_DEAL_CUSTOM = "Уточните тип сделки (свободный ввод)."
 ASK_SITUATION = (
     "Опишите ситуацию: что делали, сроки, сложности, итог.\n"
-    "Минимум 100 символов."
+    "Минимум 50 символов."
 )
 HINT_SITUATION = (
     "Подсказка:\n• Сроки: когда обратились / когда закрыли\n"
@@ -1047,11 +1047,11 @@ async def handle_situation_hints(callback: CallbackQuery, state: FSMContext):
 
 async def handle_situation(message: Message, state: FSMContext):
     txt = (message.text or "").strip()
-    if len(txt) < 100 or len(txt) > 4000:
+    if len(txt) < 50 or len(txt) > 4000:
         await state.update_data(situation_draft=txt)
         await feedback_repo.set_fields(message.from_user.id, {"status": "validation_error", "situation_draft": txt})
         await message.answer(
-            "Нужно 100–4000 символов. Добавьте деталей (сроки, результат, особенности).",
+            "Нужно 50–4000 символов. Добавьте деталей (сроки, результат, особенности).",
             reply_markup=kb_situation_insert_btn(txt),
         )
         return
