@@ -1479,7 +1479,13 @@ async def clone_from_final(callback: CallbackQuery, state: FSMContext):
 # History
 # =============================================================================
 async def open_history(callback: CallbackQuery, state: FSMContext):
-    items = history_list(callback.from_user.id, limit=10)
+    user_id = callback.from_user.id
+    chat_id = callback.message.chat.id
+    # 1) пробуем по user_id; 2) бэко-совместимость: если пусто — пробуем по chat_id
+    items = history_list(user_id, limit=10)
+    if (not items or len(items) == 0) and chat_id != user_id:
+        items = history_list(chat_id, limit=10)
+    
     if not items or len(items) == 0:
         await ui_reply(
             callback,
@@ -1510,7 +1516,13 @@ async def history_open_item(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         return
 
-    item = history_get(callback.from_user.id, item_id)
+    user_id = callback.from_user.id
+    chat_id = callback.message.chat.id
+    item = history_get(user_id, item_id)
+    # бэко-совместимость: возможно запись лежит под chat_id
+    if not item and chat_id != user_id:
+        item = history_get(chat_id, item_id)
+    
     if not item:
         await callback.answer("Не найдено.")
         return
@@ -1560,7 +1572,12 @@ async def history_export(callback: CallbackQuery):
     except Exception:
         await callback.answer()
         return
-    item = history_get(callback.from_user.id, item_id)
+    user_id = callback.from_user.id
+    chat_id = callback.message.chat.id
+    item = history_get(user_id, item_id)
+    if not item and chat_id != user_id:
+        item = history_get(chat_id, item_id)
+    
     if not item:
         await callback.answer("Не найдено.")
         return
@@ -1577,7 +1594,12 @@ async def history_clone(callback: CallbackQuery, state: FSMContext):
     except Exception:
         await callback.answer()
         return
-    item = history_get(callback.from_user.id, item_id)
+    user_id = callback.from_user.id
+    chat_id = callback.message.chat.id
+    item = history_get(user_id, item_id)
+    if not item and chat_id != user_id:
+        item = history_get(chat_id, item_id)
+    
     if not item:
         await callback.answer("Не найдено.")
         return
