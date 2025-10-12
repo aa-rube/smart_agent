@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import asdict, dataclass
+import uuid
 from typing import Any, Dict, List, Optional, Union
 
 import aiohttp
@@ -1212,6 +1213,19 @@ async def start_generation(callback: CallbackQuery, state: FSMContext, bot: Bot)
         await state.update_data(variants=variants)
         await feedback_repo.set_fields(callback.from_user.id, {"status": "variants_ready", "variants_json": variants})
 
+        # Присваиваем case_id (единый для набора вариантов) и автосохраняем все варианты в историю
+        d = await state.get_data()
+        case_id = d.get("case_id") or uuid.uuid4().hex
+        await state.update_data(case_id=case_id)
+        await feedback_repo.set_fields(callback.from_user.id, {"case_id": case_id})
+        
+        # Сохраняем каждый вариант как элемент коллекции кейса
+        for v in variants:
+            try:
+                history_add(callback.from_user.id, asdict(payload), v, case_id=case_id)
+            except Exception as e:
+                log.exception("history_add failed for case %s: %s", case_id, e)
+
         # Показываем только первый вариант + навигация
         total = len(variants)
         idx = 1
@@ -1337,6 +1351,17 @@ async def gen_more_variant(callback: CallbackQuery, state: FSMContext, bot: Bot)
         variants.append(new_text)
         await state.update_data(variants=variants)
         await feedback_repo.set_fields(callback.from_user.id, {"status": "variants_ready", "variants_json": variants})
+        
+        # Автосохранение нового варианта в тот же кейс (case_id)
+        case_id = d.get("case_id")
+        if not case_id:
+            case_id = uuid.uuid4().hex
+            await state.update_data(case_id=case_id)
+            await feedback_repo.set_fields(callback.from_user.id, {"case_id": case_id})
+        try:
+            history_add(callback.from_user.id, asdict(payload), new_text, case_id=case_id)
+        except Exception as e:
+            log.exception("history_add (more) failed for case %s: %s", case_id, e)
         idx = len(variants)
         total = len(variants)
         parts = _split_for_telegram(new_text)
@@ -1422,8 +1447,8 @@ async def finalize_choice(callback: CallbackQuery, state: FSMContext):
     final_text = variants[idx - 1]
     payload = _payload_from_state(d)
 
-    # save to DB history
-    history_add(callback.from_user.id, asdict(payload), final_text)
+    # Автосохранение уже было выполнено при генерации/дозапросе —
+    # здесь не дублируем запись, чтобы не плодить копии
 
     await ui_reply(callback, READY_FINAL, kb_final(), state=state)
     await state.update_data(final_text=final_text)

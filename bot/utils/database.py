@@ -1,7 +1,7 @@
 # smart_agent/bot/utils/database.py
 from __future__ import annotations
 
-from typing import Optional, List
+from typing import Optional, List, Any
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -115,6 +115,9 @@ class ReviewHistory(Base):
         index=True, nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+
+    # Идентификатор кейса (коллекции вариантов), общий для всех вариантов одного запуска
+    case_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
 
     client_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     agent_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
@@ -249,6 +252,14 @@ def init_schema() -> None:
             conn.exec_driver_sql(
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(64) NULL"
             )
+            
+            # Миграция для review_history.case_id
+            conn.exec_driver_sql(
+                "ALTER TABLE review_history ADD COLUMN IF NOT EXISTS case_id VARCHAR(64) NULL"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_review_history_case_id ON review_history (case_id)"
+            )
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS ix_users_username ON users (username)"
             )
@@ -294,13 +305,10 @@ class AppRepository:
                 ))
                 return False
             # Обновляем при изменениях
-            updated = False
             if chat_id is not None and rec.chat_id != chat_id:
                 rec.chat_id = chat_id
-                updated = True
             if username is not None and rec.username != username:
                 rec.username = username
-                updated = True
             # Коммит произойдёт по exit из контекста begin()
             return True
 
@@ -358,12 +366,13 @@ class AppRepository:
             return [uid for (uid,) in rows]
 
     # --- history ---
-    def history_add(self, user_id: int, payload: dict, final_text: str) -> ReviewHistory:
+    def history_add(self, user_id: int, payload: dict, final_text: str, *, case_id: Optional[str] = None) -> ReviewHistory:
         with self._session() as s, s.begin():
             if s.get(User, user_id) is None:
                 s.add(User(user_id=user_id))
             rec = ReviewHistory(
                 user_id=user_id,
+                case_id=case_id,
                 client_name=payload.get("client_name"),
                 agent_name=payload.get("agent_name"),
                 company=payload.get("company"),
@@ -380,7 +389,7 @@ class AppRepository:
             s.refresh(rec)
             return rec
 
-    def history_list(self, user_id: int, limit: int = 10) -> List[ReviewHistory]:
+    def history_list(self, user_id: int, limit: int = 10) -> list[type[ReviewHistory]]:
         with self._session() as s:
             q = (
                 s.query(ReviewHistory)
@@ -390,7 +399,7 @@ class AppRepository:
             )
             return list(q)
 
-    def history_get(self, user_id: int, item_id: int) -> Optional[ReviewHistory]:
+    def history_get(self, user_id: int, item_id: int) -> type[ReviewHistory] | None:
         with self._session() as s:
             rec = s.get(ReviewHistory, item_id)
             if rec is None or rec.user_id != user_id:
@@ -637,8 +646,8 @@ def list_trial_active_user_ids(now: Optional[datetime] = None) -> list[int]:
 
 
 # History
-def history_add(user_id: int, payload: dict, final_text: str) -> ReviewHistory:
-    return _repo.history_add(user_id, payload, final_text)
+def history_add(user_id: int, payload: dict, final_text: str, *, case_id: Optional[str] = None) -> ReviewHistory:
+    return _repo.history_add(user_id, payload, final_text, case_id=case_id)
 
 
 def history_list(user_id: int, limit: int = 10) -> list[ReviewHistory]:
