@@ -120,7 +120,6 @@ def kb_home() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🎧 Отправить аудио", callback_data="summary.audio"),
          InlineKeyboardButton(text="📝 Вставить текст", callback_data="summary.text")],
         [InlineKeyboardButton(text="🕘 История", callback_data="summary.history")],
-        [InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")]
     ])
 
@@ -455,7 +454,7 @@ async def reset_draft(callback: CallbackQuery, state: FSMContext):
     await callback.answer("Очищено")
 
 # --- Генерация и показ результата ---
-async def generate_summary(callback: CallbackQuery, state: FSMContext, bot: Bot):
+async def generate_summary(callback: CallbackQuery, bot: Bot):
     user_id = callback.from_user.id
     chat_id = callback.message.chat.id
     # Блокируем генерацию без доступа и показываем инфо/кнопку подписки
