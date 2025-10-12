@@ -16,7 +16,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import *
 from pathlib import Path
 from bot.config import EXECUTOR_BASE_URL, get_file_path
-from bot.utils.database import history_add, history_list, history_get
+from bot.utils.database import history_add, history_get, history_list_cases, history_get_case_variants
 from bot.states.states import FeedbackStates
 from bot.utils.redis_repo import feedback_repo
 import bot.utils.logging_config as logging_config
@@ -579,17 +579,18 @@ def kb_final() -> InlineKeyboardMarkup:
 
 
 def kb_history(items: List[Any]) -> InlineKeyboardMarkup:
+    """
+    Одна кнопка = один кейс (case_id).
+    Для записей без case_id оставляем старую модель (одна запись = одна кнопка).
+    """
     rows: List[List[InlineKeyboardButton]] = []
     for it in items[:10]:
-        # it — ORM ReviewHistory
         label = f"#{it.id} · {it.created_at.strftime('%Y-%m-%d %H:%M')} · {it.city or '—'} · {it.deal_type or '—'}"
-        rows.append([InlineKeyboardButton(text=label, callback_data=f"hist.open.{it.id}")])
-    rows.append(
-        [
-            # InlineKeyboardButton(text="Поиск", callback_data="hist.search"),
-            InlineKeyboardButton(text="⬅️ В меню", callback_data="nav.menu"),
-        ]
-    )
+        if it.case_id:
+            rows.append([InlineKeyboardButton(text=label, callback_data=f"hist.case.{it.case_id}")])
+        else:
+            rows.append([InlineKeyboardButton(text=label, callback_data=f"hist.open.{it.id}")])
+    rows.append([InlineKeyboardButton(text="⬅️ В меню", callback_data="nav.menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -784,6 +785,26 @@ def _payload_from_state(d: Dict[str, Any]) -> ReviewPayload:
         # В payload.style теперь передаём ТОН
         style=d.get("tone") or d.get("style"),
     )
+
+
+def _state_from_history_item(item) -> Dict[str, Any]:
+    """
+    Готовит словарь для state из одной записи истории ReviewHistory (как в history_clone).
+    """
+    codes = [c for c in (item.deal_type or "").split(",") if c]
+    base_codes = [c for c in codes if c != "custom"]
+    return {
+        "client_name": item.client_name,
+        "agent_name":  item.agent_name,
+        "company":     item.company,
+        "city":        item.city,
+        "address":     item.address,
+        "deal_types":  base_codes,
+        "deal_custom": item.deal_custom,
+        "situation":   item.situation,
+        # в state ключ «tone» (совместим с style)
+        "tone":        item.style,
+    }
 
 
 # =============================================================================
@@ -1503,9 +1524,9 @@ async def open_history(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     chat_id = callback.message.chat.id
     # 1) пробуем по user_id; 2) бэко-совместимость: если пусто — пробуем по chat_id
-    items = history_list(user_id, limit=10)
+    items = history_list_cases(user_id, limit=10)
     if (not items or len(items) == 0) and chat_id != user_id:
-        items = history_list(chat_id, limit=10)
+        items = history_list_cases(chat_id, limit=10)
     
     if not items or len(items) == 0:
         await ui_reply(
@@ -1548,63 +1569,52 @@ async def history_open_item(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Не найдено.")
         return
 
-    # humanize deal types
-    human_map = {code: title for code, title in DEAL_CHOICES}
-    codes = [c for c in (item.deal_type or "").split(",") if c]
-    human_list = [human_map.get(c, c) for c in codes if c]
-    if item.deal_custom:
-        human_list.append(f"Другое: {item.deal_custom}")
-    deal_line = ", ".join(human_list) if human_list else "—"
-
-    header = f"#{item.id} · {item.created_at.strftime('%Y-%m-%d %H:%M')}"
-    body = (
-        f"Клиент: {item.client_name or '—'}\n"
-        f"Агент: {item.agent_name or '—'}{(', ' + item.company) if item.company else ''}\n"
-        f"Локация: {item.city or '—'}{(', ' + item.address) if item.address else ''}\n"
-        f"Тип: {deal_line}\n"
-        f"Стиль: {item.style or '—'}\n\n"
-        f"{item.final_text}"
-    )
-    parts = _split_for_telegram(header + "\n\n" + body)
-    await ui_reply(
-        callback,
-        parts[0],
-        InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="Создать похожий", callback_data=f"hist.{item.id}.clone")],
-                [
-                    InlineKeyboardButton(text="Экспорт .txt", callback_data=f"hist.{item.id}.export.txt"),
-                ],
-                [InlineKeyboardButton(text="В историю", callback_data="hist.back")],
-            ]
-        ),
-        state=state,
-    )
-    for ptxt in parts[1:]:
-        await send_text(callback.message, ptxt)
-    await callback.answer()
+    # Открываем одиночную запись без case_id тем же интерфейсом вариантов (список из 1 элемента)
+    prefill = _state_from_history_item(item)
+    await state.update_data(**prefill, variants=[item.final_text], case_id=item.case_id, viewer_idx=1, picked_idx=None)
+    parts = _split_for_telegram(item.final_text)
+    head = VARIANT_HEAD.format(idx=1) + parts[0]
+    await ui_reply(callback, head, kb_variant(1, 1), state=state)
+    for p in parts[1:]:
+        await send_text(callback.message, p)
+    await state.set_state(FeedbackStates.browsing_variants)
+    await _safe_cb_answer(callback)
 
 
-async def history_export(callback: CallbackQuery):
-    # hist.{id}.export.{fmt}
+async def history_open_case(callback: CallbackQuery, state: FSMContext, bot: Optional[Bot] = None):
+    # hist.case.{case_id}
     try:
-        _, id_str, _, fmt = callback.data.split(".")
-        item_id = int(id_str)
+        _, _, case_id = callback.data.split(".", 2)
     except Exception:
         await callback.answer()
         return
+
     user_id = callback.from_user.id
     chat_id = callback.message.chat.id
-    item = history_get(user_id, item_id)
-    if not item and chat_id != user_id:
-        item = history_get(chat_id, item_id)
-    
-    if not item:
+    items = history_get_case_variants(user_id, case_id)
+    if (not items or len(items) == 0) and chat_id != user_id:
+        items = history_get_case_variants(chat_id, case_id)
+    if not items:
         await callback.answer("Не найдено.")
         return
-    buf = BufferedInputFile(item.final_text.encode("utf-8"), filename=f"review_{item.id}.{fmt}")
-    await callback.message.answer_document(buf)
-    await callback.answer()
+
+    # Подготавливаем state из первой записи кейса и показываем первый вариант с общей клавиатурой
+    first = items[0]
+    prefill = _state_from_history_item(first)
+    variants = [it.final_text for it in items]
+    await state.update_data(**prefill, variants=variants, case_id=first.case_id, viewer_idx=1, picked_idx=None)
+
+    parts = _split_for_telegram(variants[0])
+    head = VARIANT_HEAD.format(idx=1) + parts[0]
+    total = len(variants)
+    await ui_reply(callback, head, kb_variant(1, total), state=state, bot=bot or callback.bot)
+    for p in parts[1:]:
+        await send_text(callback.message, p)
+    await state.set_state(FeedbackStates.browsing_variants)
+    await _safe_cb_answer(callback)
+
+
+
 
 
 async def history_clone(callback: CallbackQuery, state: FSMContext):
@@ -1742,7 +1752,8 @@ def router(rt: Router) -> None:
     # history
     rt.callback_query.register(open_history, F.data == "hist.open")
     rt.callback_query.register(history_open_item, F.data.startswith("hist.open."))
-    rt.callback_query.register(history_export, F.data.contains(".export."))
+    rt.callback_query.register(history_open_case, F.data.startswith("hist.case."))
+    # rt.callback_query.register(history_export, F.data.contains(".export."))
     rt.callback_query.register(history_clone, F.data.contains(".clone"))
     rt.callback_query.register(history_back, F.data == "hist.back")
 

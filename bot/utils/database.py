@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import (
-    create_engine, String, Integer, BigInteger, ForeignKey, DateTime, Text
+    create_engine, String, Integer, BigInteger, ForeignKey, DateTime, Text, func
 )
 from sqlalchemy.orm import (
     DeclarativeBase, Mapped, mapped_column, relationship,
@@ -365,12 +365,64 @@ class AppRepository:
             )
             return list(q)
 
+    def history_list_cases(self, user_id: int, limit: int = 10) -> list[ReviewHistory]:
+        """
+        Возвращает по ОДНОЙ «представляющей» записи на кейс (case_id) + одиночные записи без case_id,
+        упорядочено по времени (последние сверху).
+        """
+        with self._session() as s:
+            # последние кейсы (есть case_id)
+            sub = (
+                s.query(
+                    ReviewHistory.case_id.label("cid"),
+                    func.max(ReviewHistory.id).label("max_id"),
+                )
+                .filter(ReviewHistory.user_id == user_id, ReviewHistory.case_id.isnot(None))
+                .group_by(ReviewHistory.case_id)
+                .order_by(func.max(ReviewHistory.id).desc())
+                .limit(limit)
+                .subquery()
+            )
+            case_rows = []
+            if sub is not None:
+                case_rows = (
+                    s.query(ReviewHistory)
+                    .join(sub, ReviewHistory.id == sub.c.max_id)
+                    .order_by(ReviewHistory.id.desc())
+                    .all()
+                )
+            # одиночные записи без case_id (добавим если не хватило лимита)
+            need_more = max(0, limit - len(case_rows))
+            single_rows: list[ReviewHistory] = []
+            if need_more > 0:
+                single_rows = (
+                    s.query(ReviewHistory)
+                    .filter(ReviewHistory.user_id == user_id, ReviewHistory.case_id.is_(None))
+                    .order_by(ReviewHistory.id.desc())
+                    .limit(need_more)
+                    .all()
+                )
+            # совместный список: сначала кейсы по дате, затем одиночки
+            return list(case_rows) + list(single_rows)
+
     def history_get(self, user_id: int, item_id: int) -> Optional[ReviewHistory]:
         with self._session() as s:
             rec = s.get(ReviewHistory, item_id)
             if rec is None or rec.user_id != user_id:
                 return None
             return rec
+
+    def history_get_case_variants(self, user_id: int, case_id: str) -> list[ReviewHistory]:
+        """Все варианты конкретного кейса по case_id, в порядке возрастания id (1,2,3...)."""
+        if not case_id:
+            return []
+        with self._session() as s:
+            q = (
+                s.query(ReviewHistory)
+                .filter(ReviewHistory.user_id == user_id, ReviewHistory.case_id == case_id)
+                .order_by(ReviewHistory.id.asc())
+            )
+            return list(q)
 
     # --- summary ---
     def summary_add_entry(self, user_id: int, *, source_type: str, options: dict, payload: dict,
@@ -633,6 +685,14 @@ def history_list(user_id: int, limit: int = 10) -> list[ReviewHistory]:
 
 def history_get(user_id: int, item_id: int) -> Optional[ReviewHistory]:
     return _repo.history_get(user_id, item_id)
+
+
+def history_list_cases(user_id: int, limit: int = 10) -> list[ReviewHistory]:
+    return _repo.history_list_cases(user_id, limit)
+
+
+def history_get_case_variants(user_id: int, case_id: str) -> list[ReviewHistory]:
+    return _repo.history_get_case_variants(user_id, case_id)
 
 
 # Summary
