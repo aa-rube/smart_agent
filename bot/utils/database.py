@@ -243,42 +243,12 @@ class EventLog(Base):
 #       Repository
 # =========================
 def init_schema() -> None:
+    """
+    Инициализация схемы БД.
+    Опираемся на SQLAlchemy `Base.metadata.create_all`, без сырых ALTER/CREATE INDEX.
+    Все необходимые таблицы/индексы должны быть созданы миграциями либо заранее.
+    """
     Base.metadata.create_all(bind=engine)
-    # Строгая миграция под MySQL 8+: никаких фолбэков на старые версии.
-    with engine.begin() as conn:
-        conn.exec_driver_sql(
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS chat_id BIGINT NULL"
-        )
-        conn.exec_driver_sql(
-            "ALTER TABLE users ADD COLUMN IF NOT EXISTS username VARCHAR(64) NULL"
-        )
-        # review_history.case_id + индекс
-        conn.exec_driver_sql(
-            "ALTER TABLE review_history ADD COLUMN IF NOT EXISTS case_id VARCHAR(64) NULL"
-        )
-        conn.exec_driver_sql(
-            "CREATE INDEX IF NOT EXISTS ix_review_history_case_id ON review_history (case_id)"
-        )
-        conn.exec_driver_sql(
-            "CREATE INDEX IF NOT EXISTS ix_users_username ON users (username)"
-        )
-        # description_history.msg_id + индекс
-        conn.exec_driver_sql(
-            "ALTER TABLE description_history ADD COLUMN IF NOT EXISTS msg_id VARCHAR(64) NULL"
-        )
-        conn.exec_driver_sql(
-            "CREATE INDEX IF NOT EXISTS ix_description_history_msg_id ON description_history (msg_id)"
-        )
-        # EAV-таблица для опций описаний
-        conn.exec_driver_sql("""
-CREATE TABLE IF NOT EXISTS description_options (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    msg_id VARCHAR(64) NOT NULL,
-    variable VARCHAR(255) NOT NULL,
-    value TEXT NOT NULL,
-    INDEX ix_description_options_msg_id (msg_id)
-)
-""")
 
 
 class AppRepository:
