@@ -1096,7 +1096,11 @@ async def handle_tone(callback: CallbackQuery, state: FSMContext, bot: Optional[
             chat_id = callback.message.chat.id
             async def _do():
                 payload = _payload_from_state(await state.get_data())
-                return await _request_mutate(base_text, operation="style", style=tone, payload=payload)
+                # сохраняем текущую целевую длину, чтобы стиль не «схлопывал» текст в medium
+                cur_len = (await state.get_data()).get("length")
+                return await _request_mutate(
+                    base_text, operation="style", style=tone, payload=payload, length=cur_len
+                )
             try:
                 new_text: str = await run_long_operation_with_action(
                     bot=bot or callback.bot, chat_id=chat_id, action=ChatAction.TYPING, coro=_do()
@@ -1184,7 +1188,8 @@ async def handle_length(callback: CallbackQuery, state: FSMContext):
                 operation=op,
                 style=None,
                 payload=payload,
-                length_hint=target_hint,
+                length=target,           # <-- важно! (short|medium|long)
+                length_hint=target_hint, # (опц.) бэко-совместимость
             )
         try:
             new_text: str = await run_long_operation_with_action(
@@ -1292,14 +1297,20 @@ async def start_generation(callback: CallbackQuery, state: FSMContext, bot: Bot)
     chat_id = callback.message.chat.id
 
     async def _do():
-        # передаём пожелание по длине
-        length_hint = _length_limit((await state.get_data()).get("length"))
+        # передаём категорию длины (short|medium|long) — это понимает исполнитель
+        length_code = (await state.get_data()).get("length")
+        length_hint = _length_limit(length_code)  # оставим для обратной совместимости
         # Redis: сохраняем запрос перед отправкой
         await feedback_repo.set_fields(
             callback.from_user.id,
             {"status": "generating", "payload": asdict(payload), "length_hint": length_hint},
         )
-        return await _request_generate(payload, num_variants=3, length_hint=length_hint)
+        return await _request_generate(
+            payload,
+            num_variants=3,
+            length=length_code,         # <-- важно!
+            length_hint=length_hint     # (опц.) бэко-совместимость
+        )
 
     try:
         variants: List[str] = await run_long_operation_with_action(
@@ -1444,8 +1455,14 @@ async def gen_more_variant(callback: CallbackQuery, state: FSMContext, bot: Bot)
     chat_id = callback.message.chat.id
 
     async def _do():
-        length_hint = _length_limit((await state.get_data()).get("length"))
-        lst = await _request_generate(payload, num_variants=1, length_hint=length_hint)
+        length_code = (await state.get_data()).get("length")
+        length_hint = _length_limit(length_code)
+        lst = await _request_generate(
+            payload,
+            num_variants=1,
+            length=length_code,         # <-- важно!
+            length_hint=length_hint
+        )
         return lst[0]
 
     try:
