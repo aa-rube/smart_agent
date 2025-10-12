@@ -1,6 +1,5 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\executor\prompt_factory.py
-import random
-from typing import Optional, Dict, Any, List, Tuple, Set
+from typing import Optional, Dict, Any, List, Tuple
 
 from executor.ai_config import *
 
@@ -9,9 +8,7 @@ from executor.ai_config import *
 #OPEN AI - ОТРАБОТКА ВОЗРАЖЕНИЙ КЛИЕНТОВ
 def build_objection_request(
     question: str,
-    model: Optional[str] = None,
-    temperature: float = 0.3,
-    max_tokens: int = 700) -> Dict[str, Any]:
+    model: Optional[str] = None) -> Dict[str, Any]:
     """
     Единственное место, где формируется payload для OpenAI Chat Completion.
     """
@@ -93,8 +90,8 @@ def _length_target_tokens(key: Optional[str]) -> int:
 def build_feedback_generate_request(*,
                                     fields: Dict[str, Optional[str]],
                                     num_variants: int = 3,
-                                    model: Optional[str] = None,
-                                    temperature: float = 0.6) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+                                    model: Optional[str] = None
+                                    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Сборка payload для генерации черновиков.
     Возвращает (payload для OpenAI, debug_info).
@@ -105,7 +102,6 @@ def build_feedback_generate_request(*,
 
     tone_label   = _tone_label(tone_key)
     length_hint  = _length_hint(length_key)
-    max_tokens   = _length_target_tokens(length_key)
     deal_human   = _humanize_deal(fields.get("deal_type"), fields.get("deal_custom"))
 
     system_prompt = FEEDBACK_PROMPT_SYSTEM_RU
@@ -147,8 +143,8 @@ def build_feedback_mutate_request(*,
                                   tone: Optional[str],
                                   length: Optional[str],
                                   context: Dict[str, Optional[str]],
-                                  model: Optional[str] = None,
-                                  temperature: float = 0.5) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+                                  model: Optional[str] = None
+                                  ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Сборка payload для мутации текста.
     """
@@ -157,12 +153,10 @@ def build_feedback_mutate_request(*,
 
     tone_label  = _tone_label(tone_key)
     length_hint = _length_hint(length_key)
-    max_tokens  = _length_target_tokens(length_key)
     deal_human  = _humanize_deal(context.get("deal_type"), context.get("deal_custom"))
 
     system_prompt = FEEDBACK_MUTATE_SYSTEM_RU
 
-    instruction = ""
     if operation == "short":
         instruction = f"Сократи текст до {length_hint} без потери смысла, сохранив структуру и читабельность."
     elif operation == "long":
@@ -219,8 +213,6 @@ def build_summary_analyze_request(
     transcript_text: str,
     model: str,
     prefer_language: Optional[str] = None,
-    temperature: float = 0.2,
-    max_tokens: int = 900,
 ) -> Tuple[Dict[str, Any], str]:
     """
     Собирает payload для Chat Completions в JSON-формате.
