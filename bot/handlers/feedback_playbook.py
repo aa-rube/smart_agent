@@ -144,10 +144,7 @@ BTN_CANCEL = "Закрыть"
 BTN_BACK = "⬅️ Назад"
 BTN_NEXT = "Дальше"
 BTN_SKIP = "Пропустить"
-GENERATING = "Генерирую варианты…"
-MUTATING = "Меняю вариант…"
-MUTATING_STYLE = "Меняю стиль…"
-ONE_MORE = "Ещё вариант…"
+GENERATING = "⏳ Генерирую…"
 ERROR_TEXT = "Не удалось получить текст от сервиса. Попробуйте еще раз."
 READY_FINAL = (
     "Черновик готов. Отправьте клиенту и опубликуйте при согласии.\n"
@@ -558,7 +555,7 @@ def kb_variant(index: int, total: int) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="Изменить тон", callback_data=f"mutate.{index}.style")])
     rows.append([InlineKeyboardButton(text="Ещё вариант", callback_data=f"gen.more.{index}")])
     rows.append([InlineKeyboardButton(text="Экспорт .txt", callback_data=f"export.{index}.txt")])
-    rows.append([InlineKeyboardButton(text="В меню", callback_data="nav.menu")])
+    rows.append([InlineKeyboardButton(text="⬅️ В меню", callback_data="nav.menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -576,7 +573,7 @@ def kb_final() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="Экспорт .txt", callback_data="export.final.txt"),
         ],
         [InlineKeyboardButton(text="Создать похожий", callback_data="clone.from.final")],
-        [InlineKeyboardButton(text="В меню", callback_data="nav.menu")],
+        [InlineKeyboardButton(text="⬅️ В меню", callback_data="nav.menu")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -590,7 +587,7 @@ def kb_history(items: List[Any]) -> InlineKeyboardMarkup:
     rows.append(
         [
             # InlineKeyboardButton(text="Поиск", callback_data="hist.search"),
-            InlineKeyboardButton(text="В меню", callback_data="nav.menu"),
+            InlineKeyboardButton(text="⬅️ В меню", callback_data="nav.menu"),
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -1288,7 +1285,7 @@ async def mutate_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
 
     operation = "short" if op == "short" else "long"
 
-    await ui_reply(callback, MUTATING, state=state)  # редактируем якорь
+    await ui_reply(callback, GENERATING, state=state)  # редактируем якорь
     await feedback_repo.set_fields(callback.from_user.id, {"status": "mutating", "operation": operation, "idx": idx})
     chat_id = callback.message.chat.id
 
@@ -1334,7 +1331,7 @@ async def gen_more_variant(callback: CallbackQuery, state: FSMContext, bot: Bot)
     d = await state.get_data()
     payload = _payload_from_state(d)
 
-    await ui_reply(callback, ONE_MORE, state=state)
+    await ui_reply(callback, GENERATING, state=state)
     await feedback_repo.set_fields(callback.from_user.id, {"status": "generating_more"})
     chat_id = callback.message.chat.id
 
