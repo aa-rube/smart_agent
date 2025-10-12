@@ -48,9 +48,9 @@ FEEDBACK_TONES = {
 
 # Ключ -> подсказка для длины (в символах, ориентир для модели/редактора)
 FEEDBACK_LENGTH_HINTS = {
-    "short":  "От 100 до ≈250 знаков",
-    "medium": "0т 400 до ≈450 знаков",
-    "long":   "От 1000 до ≈1200 знаков",
+    "short":  "от ~120 до ~250 знаков",
+    "medium": "от ~350 до ~450 знаков",
+    "long":   "от ~900 до ~1200 знаков",
 }
 
 # --- SYSTEM-промпт и шаблоны сообщений для генерации/мутаций ---
@@ -314,12 +314,15 @@ def _build_generate_payload(*, fields: Dict[str, Optional[str]], num_variants: i
     )
 
     use_model = (model or FEEDBACK_MODEL).strip()
+    target_tokens = _length_target_tokens(length_key)
     payload: Dict[str, Any] = {
         "model": use_model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
         ],
+        "n": num_variants,          # <-- реально попросим несколько вариантов
+        "max_tokens": target_tokens # <-- даём модели «пространство» для нужной длины
     }
     debug = {
         "tone": tone_label,
@@ -379,6 +382,7 @@ def _build_mutate_payload(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
         ],
+        "max_tokens": target_tokens  # <-- позволяем «развернуть» текст при long
     }
     debug = {
         "operation": operation,
