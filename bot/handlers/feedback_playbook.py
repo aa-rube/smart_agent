@@ -556,9 +556,8 @@ def kb_variant(index: int, total: int) -> InlineKeyboardMarkup:
     ])
     rows.append([InlineKeyboardButton(text="Изменить тон", callback_data=f"mutate.{index}.style")])
     rows.append([InlineKeyboardButton(text="Ещё вариант", callback_data=f"gen.more.{index}")])
-    rows.append([
-        InlineKeyboardButton(text="Экспорт .txt", callback_data=f"export.{index}.txt"),
-    ])
+    rows.append([InlineKeyboardButton(text="Экспорт .txt", callback_data=f"export.{index}.txt")])
+    rows.append([InlineKeyboardButton(text="В меню", callback_data="nav.menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
