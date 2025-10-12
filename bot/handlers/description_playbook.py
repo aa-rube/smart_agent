@@ -873,6 +873,27 @@ async def _cb_description_result(request: web.Request):
                 await bot.send_message(chat_id, ERROR_TEXT, reply_markup=kb_retry(msg_uuid or ""))
         return web.json_response({"ok": True})
 
+    # --- Пустой результат трактуем как ошибку (не сохраняем и не показываем пустые записи) ---
+    if not text:
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg_id,
+                text=ERROR_TEXT,
+                reply_markup=kb_retry(msg_uuid or "")
+            )
+        except TelegramBadRequest:
+            try:
+                await bot.edit_message_caption(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    caption=ERROR_TEXT,
+                    reply_markup=kb_retry(msg_uuid or "")
+                )
+            except TelegramBadRequest:
+                await bot.send_message(chat_id, ERROR_TEXT, reply_markup=kb_retry(msg_uuid or ""))
+        return web.json_response({"ok": True})
+
     # --- Успешный текст: первый чанк заменяет якорь (text -> caption -> новое), хвост — отдельными сообщениями ---
     parts = _split_for_telegram(text)
     try:
@@ -889,11 +910,12 @@ async def _cb_description_result(request: web.Request):
     try:
         if msg_uuid:
             updated = app_db.description_finish_by_msgid(msg_id=msg_uuid, result_text=text, fields=fields)
-            if not updated:
-                # На всякий случай — если стартовой записи не было
+            if not updated and text:
+                # На всякий случай — если стартовой записи не было (дублируем только непустой текст)
                 app_db.description_add(user_id=chat_id, fields=fields, result_text=text)
         else:
-            app_db.description_add(user_id=chat_id, fields=fields, result_text=text)
+            if text:
+                app_db.description_add(user_id=chat_id, fields=fields, result_text=text)
     except Exception:  # noqa: BLE001 — сохраняем устойчивость колбэка, фиксируем стек
         log.exception("Failed to update description history (chat_id=%s, msg_id=%s, msg_uuid=%s)", chat_id, msg_id, msg_uuid)
 
