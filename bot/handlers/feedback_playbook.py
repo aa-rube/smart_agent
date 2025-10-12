@@ -173,6 +173,12 @@ LENGTH_LIMITS = {"short": 250, "medium": 450, "long": 1200}
 def _length_limit(code: Optional[str]) -> Optional[int]:
     return LENGTH_LIMITS.get(code or "")
 
+# Точки «прицеливания» для мутаций: к какому объёму стремиться
+# Короткий — чуть ниже порога, Средний — середина диапазона, Длинный — заметно длиннее среднего
+LENGTH_TARGETS = {"short": 220, "medium": 380, "long": 900}
+def _length_target(code: Optional[str]) -> Optional[int]:
+    return LENGTH_TARGETS.get(code or "")
+
 # Чекбоксы
 CHECK_OFF = "⬜"
 CHECK_ON  = "✅"
@@ -1141,31 +1147,30 @@ async def handle_length(callback: CallbackQuery, state: FSMContext):
 
         base_text = variants[mut_idx - 1]
         cur_len = len(base_text or "")
-        # Решаем, что делать: microservice умеет 'short'/'long', а 'medium' приближаем.
-        # Пороговые значения берём из LENGTH_LIMITS.
+
+        # Явное соответствие выбору пользователя
         target = length_code
-        op: Optional[str] = None
+        target_hint = _length_target(target) or _length_limit(target)
+
+        # Для medium выбираем направление к целевой точке (около 380) с толерансом в 30 символов
+        op: Optional[str]
         if target == "short":
-            op = "short" if cur_len > LENGTH_LIMITS["short"] else None
+            op = "short"
         elif target == "long":
-            # Считаем «длинным» всё, что > medium. Иначе — растягиваем.
-            op = "long" if cur_len <= LENGTH_LIMITS["medium"] else None
+            op = "long"
         else:  # target == "medium"
-            if cur_len > LENGTH_LIMITS["medium"]:
-                op = "short"
-            elif cur_len < LENGTH_LIMITS["short"]:
-                op = "long"
+            medium_target = _length_target("medium") or 380
+            if abs(cur_len - medium_target) <= 30:
+                op = None  # уже близко — не трогаем
             else:
-                op = None  # уже средний
+                op = "long" if cur_len < medium_target else "short"
 
         # Обновим глобальное пожелание длины — пригодится для дальнейших генераций/догенераций
         await state.update_data(length=length_code)
         await feedback_repo.set_fields(callback.from_user.id, {"length": length_code})
 
         if op is None:
-            # Ничего делать не надо — уже близко к целевому размеру
-            await ui_reply(callback, VARIANT_HEAD_UPDATED.format(idx=mut_idx) + _split_for_telegram(base_text)[0],
-                           kb_variant(mut_idx, len(variants)), state=state)
+            # Ничего менять не требуется — оставим как есть, без «обновлён»
             await state.update_data(mutating_length_idx=None, viewer_idx=mut_idx)
             await feedback_repo.set_fields(callback.from_user.id, {"viewer_idx": mut_idx})
             return None
@@ -1174,9 +1179,13 @@ async def handle_length(callback: CallbackQuery, state: FSMContext):
         chat_id = callback.message.chat.id
         async def _do():
             payload = _payload_from_state(await state.get_data())
-            # Для совместимости дополнительно передаём length_hint
-            return await _request_mutate(base_text, operation=op, style=None, payload=payload,
-                                         length_hint=LENGTH_LIMITS.get(length_code))
+            return await _request_mutate(
+                base_text,
+                operation=op,
+                style=None,
+                payload=payload,
+                length_hint=target_hint,
+            )
         try:
             new_text: str = await run_long_operation_with_action(
                 bot=callback.bot, chat_id=chat_id, action=ChatAction.TYPING, coro=_do()
