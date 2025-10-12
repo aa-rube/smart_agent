@@ -125,7 +125,7 @@ def kb_home() -> InlineKeyboardMarkup:
 
 def kb_back_home() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ В начало", callback_data="nav.summary_home")]
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.summary_home")]
     ])
 
 def kb_ready() -> InlineKeyboardMarkup:
