@@ -314,7 +314,6 @@ def _build_generate_payload(*, fields: Dict[str, Optional[str]], num_variants: i
     )
 
     use_model = (model or FEEDBACK_MODEL).strip()
-    target_tokens = _length_target_tokens(length_key)
     payload: Dict[str, Any] = {
         "model": use_model,
         "messages": [
@@ -322,7 +321,6 @@ def _build_generate_payload(*, fields: Dict[str, Optional[str]], num_variants: i
             {"role": "user", "content": user_message},
         ],
         "n": num_variants,          # <-- реально попросим несколько вариантов
-        "max_tokens": target_tokens # <-- даём модели «пространство» для нужной длины
     }
     debug = {
         "tone": tone_label,
@@ -375,14 +373,12 @@ def _build_mutate_payload(
     )
 
     use_model = (model or FEEDBACK_MODEL).strip()
-    target_tokens = _length_target_tokens(length)
     payload: Dict[str, Any] = {
         "model": use_model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
-        ],
-        "max_tokens": target_tokens  # <-- позволяем «развернуть» текст при long
+        ]
     }
     debug = {
         "operation": operation,
