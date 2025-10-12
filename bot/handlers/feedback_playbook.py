@@ -1170,7 +1170,7 @@ async def handle_length(callback: CallbackQuery, state: FSMContext):
             await feedback_repo.set_fields(callback.from_user.id, {"viewer_idx": mut_idx})
             return None
 
-        await ui_reply(callback, "Меняю длину…", state=state)
+        await ui_reply(callback, GENERATING, state=state)
         chat_id = callback.message.chat.id
         async def _do():
             payload = _payload_from_state(await state.get_data())
