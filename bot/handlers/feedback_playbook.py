@@ -428,11 +428,11 @@ def kb_deal_types_ms(d: Dict[str, Any]) -> InlineKeyboardMarkup:
     """
     Мультивыбор типов сделки с чекбоксами.
     Кнопки:
-      - deal.toggle.<code>  — переключить чекбокс
-      - deal.custom         — ввести/изменить «Другое…»
-      - deal.custom.clear   — очистить «Другое»
-      - deal.clear          — снять все галочки
-      - deal.next           — продолжить
+      - deal.toggle.<code> — переключить чекбокс
+      - deal.custom — ввести/изменить «Другое…»
+      - deal.custom.clear — очистить «Другое»
+      - deal.clear — снять все галочки
+      - deal.next — продолжить
     """
     selected = set(_ensure_deal_types(d))
     rows: List[List[InlineKeyboardButton]] = []
@@ -1137,7 +1137,7 @@ async def handle_length(callback: CallbackQuery, state: FSMContext):
         variants: List[str] = d.get("variants", [])
         if not (1 <= mut_idx <= len(variants)):
             await callback.answer("Не найден вариант.")
-            return
+            return None
 
         base_text = variants[mut_idx - 1]
         cur_len = len(base_text or "")
@@ -1148,7 +1148,7 @@ async def handle_length(callback: CallbackQuery, state: FSMContext):
         if target == "short":
             op = "short" if cur_len > LENGTH_LIMITS["short"] else None
         elif target == "long":
-            # считаем «длинным» всё, что > medium. Иначе — растягиваем.
+            # Считаем «длинным» всё, что > medium. Иначе — растягиваем.
             op = "long" if cur_len <= LENGTH_LIMITS["medium"] else None
         else:  # target == "medium"
             if cur_len > LENGTH_LIMITS["medium"]:
@@ -1168,7 +1168,7 @@ async def handle_length(callback: CallbackQuery, state: FSMContext):
                            kb_variant(mut_idx, len(variants)), state=state)
             await state.update_data(mutating_length_idx=None, viewer_idx=mut_idx)
             await feedback_repo.set_fields(callback.from_user.id, {"viewer_idx": mut_idx})
-            return
+            return None
 
         await ui_reply(callback, "Меняю длину…", state=state)
         chat_id = callback.message.chat.id
@@ -1193,7 +1193,7 @@ async def handle_length(callback: CallbackQuery, state: FSMContext):
             await feedback_repo.set_fields(callback.from_user.id, {"viewer_idx": mut_idx})
         except Exception as e:
             await ui_reply(callback, f"{ERROR_TEXT}\n\n{e}", state=state)
-        return
+        return None
 
     # === Базовый сценарий выбора длины в основном флоу ===
     await state.update_data(length=length_code)
