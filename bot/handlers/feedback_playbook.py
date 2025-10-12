@@ -738,8 +738,7 @@ def _shorten(s: str, n: int) -> str:
 
 
 def _summary_text(d: Dict[str, Any]) -> str:
-    lines = [SUMMARY_TITLE, ""]
-    lines.append(f"• Клиент: {d.get('client_name')}")
+    lines = [SUMMARY_TITLE, "", f"• Клиент: {d.get('client_name')}"]
     agent = d.get("agent_name")
     company = d.get("company")
     lines.append(f"• Агент/компания: {agent}, {company}" if company else f"• Агент: {agent}")
@@ -1117,6 +1116,7 @@ async def handle_length(callback: CallbackQuery, state: FSMContext):
     await state.set_state(FeedbackStates.showing_summary)
     await callback.answer()
     await feedback_repo.set_stage(callback.from_user.id, "summary")
+    return None
 
 
 async def open_edit_menu(callback: CallbackQuery, state: FSMContext):
@@ -1549,7 +1549,7 @@ async def history_open_item(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-async def history_export(callback: CallbackQuery, state: FSMContext):
+async def history_export(callback: CallbackQuery):
     # hist.{id}.export.{fmt}
     try:
         _, id_str, _, fmt = callback.data.split(".")
