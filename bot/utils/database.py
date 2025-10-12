@@ -451,11 +451,15 @@ class AppRepository:
         with self._session() as s, s.begin():
             if s.get(User, user_id) is None:
                 s.add(User(user_id=user_id))
+            # Не сохраняем пустые/пробельные результаты
+            trimmed = (result_text or "").strip()
+            if not trimmed:
+                return 0
             rec = DescriptionHistory(
                 user_id=user_id,
                 msg_id=None,
                 fields_json=json.dumps(fields or {}, ensure_ascii=False),
-                result_text=result_text or "",
+                result_text=trimmed,
             )
             s.add(rec)
             s.flush()
@@ -545,10 +549,16 @@ class AppRepository:
             )
             items: list[dict] = []
             for rec in q:
+                # Пропускаем пустые/пробельные результаты (не показываем «пустые» кнопки)
+                preview_src = (rec.result_text or "")
+                # Схлопываем все пробелы/переводы строк до одного пробела
+                preview_clean = " ".join(preview_src.split())
+                if not preview_clean:
+                    continue
                 items.append({
                     "id": rec.id,
                     "created_at": rec.created_at.isoformat(timespec="seconds"),
-                    "preview": (rec.result_text or "").replace("\n", " ")[:60],
+                    "preview": preview_clean[:60],
                 })
             return items
 
