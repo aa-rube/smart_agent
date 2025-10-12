@@ -1472,6 +1472,9 @@ async def clone_from_final(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+
+
+
 # =============================================================================
 # History
 # =============================================================================
@@ -1482,7 +1485,7 @@ async def open_history(callback: CallbackQuery, state: FSMContext):
             callback,
             HISTORY_EMPTY,
             InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="В меню", callback_data="nav.menu")]]
+                inline_keyboard=[[InlineKeyboardButton(text="⬅️Назад", callback_data="nav.menu")]]
             ),
             state=state,
         )
