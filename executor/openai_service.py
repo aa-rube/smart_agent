@@ -6,11 +6,9 @@ from openai import OpenAI
 import json, re
 
 from executor.config import OPENAI_API_KEY
-from executor.ai_config import OBJECTION_MODEL, FEEDBACK_MODEL, SUMMARY_MODEL, WHISPER_MODEL
+from executor.ai_config import OBJECTION_MODEL, SUMMARY_MODEL, WHISPER_MODEL
 from executor.prompt_factory import (
     build_objection_request,
-    build_feedback_generate_request,
-    build_feedback_mutate_request,
     build_summary_analyze_request,
 )
 
@@ -147,54 +145,6 @@ def send_objection_generate_request(question: str, allow_fallback: bool = OPENAI
         allow_fallback=allow_fallback
     )
 
-
-
-# -------- NEW: FEEDBACK / REVIEW --------
-def send_feedback_generate_request(payload_fields: Dict[str, Any],
-                                   num_variants: int = 3,
-                                   allow_fallback: bool = OPENAI_FALLBACK) -> Tuple[List[str], str, Dict[str, Any]]:
-    """
-    Возвращает (variants, model_used, debug_message_dict).
-    """
-    payload, debug_msg = build_feedback_generate_request(
-        fields=payload_fields,
-        num_variants=num_variants,
-        model=FEEDBACK_MODEL
-    )
-    texts, used_model = _send_with_fallback_list(
-        payload,
-        default_model=FEEDBACK_MODEL,
-        allow_fallback=allow_fallback
-    )
-    return texts, used_model, debug_msg
-
-
-def send_feedback_mutate_request(*,
-                                 base_text: str,
-                                 operation: str,
-                                 style: Optional[str],
-                                 tone: Optional[str],
-                                 length: Optional[str],
-                                 context: Dict[str, Any] | None = None,
-                                 allow_fallback: bool = OPENAI_FALLBACK) -> Tuple[str, str, Dict[str, Any]]:
-    """
-    Возвращает (new_text, model_used, debug_message_dict).
-    """
-    payload, debug_msg = build_feedback_mutate_request(
-        base_text=base_text,
-        operation=operation,
-        style=style,
-        tone=tone,
-        length=length,
-        context=context or {},
-        model=FEEDBACK_MODEL,
-    )
-    text, used_model = _send_with_fallback(
-        payload,
-        default_model=FEEDBACK_MODEL,
-        allow_fallback=allow_fallback
-    )
-    return text, used_model, debug_msg
 
 
 # smart_agent/executor/openai_service.py
