@@ -109,7 +109,7 @@ GEN_HINT = "Готово? Нажмите «Анализировать диало
 
 GEN_RUNNING = "⏳ Обрабатываю запись… Идёт расшифровка и анализ."
 GEN_ERROR = "⚠️ Не удалось выполнить анализ. Попробуйте ещё раз позже."
-SAVED_OK = "💾 Анализ диалога сохранено в историю."
+SAVED_OK = "💾 Анализ диалога сохранён в историю."
 
 HISTORY_TITLE = "🕘 История последних диалогов"
 HISTORY_EMPTY = "История пуста."
@@ -144,7 +144,9 @@ def kb_after_result() -> InlineKeyboardMarkup:
 def kb_history(items: List[Dict]) -> InlineKeyboardMarkup:
     rows = []
     for it in items:
-        label = f"#{it['id']} • {it['created_at'][5:16]} • {it['source_type']}"
+        # "YYYY-MM-DDTHH:MM:SS" -> "MM-DD HH:MM"
+        dt = it['created_at'].replace("T", " ")
+        label = f"#{it['id']} • {dt[5:16]} • {it['source_type']}"
         rows.append([InlineKeyboardButton(text=label, callback_data=f"summary.history.open:{it['id']}")])
     rows.append([InlineKeyboardButton(text="⬅️ В начало", callback_data="nav.summary_home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -204,6 +206,20 @@ def _split(text: str, limit: int = 3800) -> List[str]:
     if chunk:
         parts.append("".join(chunk))
     return parts
+
+def _escape_md(s: str) -> str:
+    """
+    Экранируем спецсимволы Telegram Markdown (legacy) в ДИНАМИЧЕСКОМ тексте,
+    чтобы избежать ошибки "can't parse entities".
+    Экранируем только содержимое, разметку заголовков оставляем как есть.
+    """
+    if not s:
+        return s
+    # порядок важен: сперва экранируем обратный слеш
+    s = s.replace("\\", "\\\\")
+    for ch in ("*", "_", "`", "["):
+        s = s.replace(ch, f"\\{ch}")
+    return s
 
 async def _save_tg_file_locally(bot: Bot, file_id: str, rel_path: str) -> str:
     file = await bot.get_file(file_id)
@@ -297,7 +313,10 @@ def _split_mistakes(mistakes: list[str]) -> tuple[list[str], list[str]]:
 
 def _bullets(items: list[str]) -> str:
     items = [i for i in (items or []) if i and i != "—"]
-    return "\n".join(f"• {i}" for i in items) if items else "—"
+    if not items:
+        return "—"
+    safe = [_escape_md(i) for i in items]
+    return "\n".join(f"• {i}" for i in safe)
 
 def _render_result(res: dict) -> str:
     """
@@ -306,7 +325,7 @@ def _render_result(res: dict) -> str:
     - остальное остаётся в «Ошибки и риски».
     Эмодзи ставим в КОНЕЦ заголовка, чтобы Telegram не делал их огромными.
     """
-    summary   = (res.get("summary") or "—").strip() or "—"
+    summary   = _escape_md((res.get("summary") or "—").strip() or "—")
     strengths = [_clean_point(x) for x in (res.get("strengths") or [])]
     decisions = [_clean_point(x) for x in (res.get("decisions") or [])]
     gaps, errs = _split_mistakes(res.get("mistakes") or [])
