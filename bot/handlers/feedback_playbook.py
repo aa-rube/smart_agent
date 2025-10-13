@@ -157,7 +157,6 @@ MAIN_MENU_TITLE = ('''
 🎯 Жми «Создать отзыв»
 '''
 )
-PICKED_TEMPLATE = "Вы выбрали вариант {idx}. Готово к выдаче?"
 RETURN_TO_VARIANTS = "Вернитесь к вариантам выше или запросите ещё один."
 VARIANT_HEAD = "Вариант {idx}\n\n"
 VARIANT_HEAD_UPDATED = "Вариант {idx} (обновлён)\n\n"
@@ -553,11 +552,9 @@ def kb_variant(index: int, total: int) -> InlineKeyboardMarkup:
     if nav:
         rows.append(nav)
     # Действия
-    rows.append([InlineKeyboardButton(text="Выбрать этот", callback_data=f"pick.{index}")])
     # Изменение длины теперь через одно действие с выбором целевого размера
     rows.append([InlineKeyboardButton(text="Изменить длину", callback_data=f"mutate.{index}.length")])
     rows.append([InlineKeyboardButton(text="Изменить тон", callback_data=f"mutate.{index}.style")])
-    rows.append([InlineKeyboardButton(text="Ещё вариант", callback_data=f"gen.more.{index}")])
     rows.append([InlineKeyboardButton(text="Экспорт .txt", callback_data=f"export.{index}.txt")])
     rows.append([InlineKeyboardButton(text="⬅️ В меню", callback_data="nav.menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -1525,33 +1522,6 @@ async def view_variant(callback: CallbackQuery, state: FSMContext, bot: Optional
     await _safe_cb_answer(callback)
 
 
-async def pick_variant(callback: CallbackQuery, state: FSMContext):
-    data = callback.data
-    try:
-        _, idx_str = data.split(".")
-        idx = int(idx_str)
-    except Exception:
-        await callback.answer()
-        return
-
-    d = await state.get_data()
-    variants: List[str] = d.get("variants", [])
-    if idx < 1 or idx > len(variants):
-        await callback.answer("Не найден вариант.")
-        return
-
-    await state.update_data(picked_idx=idx)
-    await ui_reply(callback, PICKED_TEMPLATE.format(idx=idx),
-                   InlineKeyboardMarkup(
-                       inline_keyboard=[
-                           [InlineKeyboardButton(text="Готово", callback_data="done.final")],
-                           [InlineKeyboardButton(text="Вернуться к вариантам", callback_data="gen.back")],
-                       ]
-                   ),
-                   state=state)
-    await callback.answer()
-
-
 async def back_to_variants(callback: CallbackQuery, state: FSMContext):
     await ui_reply(callback, RETURN_TO_VARIANTS, kb_variants_common(), state=state)
     await state.set_state(FeedbackStates.browsing_variants)
@@ -1844,7 +1814,6 @@ def router(rt: Router) -> None:
     # mutations & view
     rt.callback_query.register(mutate_variant, F.data.startswith("mutate."))
     rt.callback_query.register(view_variant, F.data.startswith("view."))
-    # убрали регистрацию pick/back/finalize/export/clone — кнопок больше нет
 
     # history
     rt.callback_query.register(open_history, F.data == "hist.open")
