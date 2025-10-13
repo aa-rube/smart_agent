@@ -207,6 +207,47 @@ def _split(text: str, limit: int = 3800) -> List[str]:
         parts.append("".join(chunk))
     return parts
 
+async def _edit_text_or_send_new(
+    bot: Bot,
+    msg: Message,
+    text: str,
+    kb: Optional[InlineKeyboardMarkup] = None,
+    *,
+    try_plain_fallback: bool = True,
+) -> None:
+    """
+    Надёжная замена текста в текущем сообщении.
+    Порядок попыток:
+      1) edit_text(parse_mode="Markdown")
+      2) (опция) edit_text(parse_mode=None) — plain text без разметки
+      3) удаляем исходное сообщение и отправляем новое (plain, если Markdown не прошёл)
+    Это устраняет ситуацию, когда _edit_text_or_caption ловит исключение и
+    в финале меняет только reply_markup, оставляя старый текст.
+    """
+    # 1) пробуем с Markdown
+    try:
+        await msg.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        return
+    except TelegramBadRequest:
+        pass
+    # 2) пробуем plain текст (без разметки)
+    if try_plain_fallback:
+        try:
+            await msg.edit_text(text, reply_markup=kb)
+            return
+        except TelegramBadRequest:
+            pass
+    # 3) удаляем и шлём новое сообщение
+    try:
+        await msg.delete()
+    except TelegramBadRequest:
+        pass
+    # При повторной отправке: если markdown ранее ломался — отправим plain
+    try:
+        await bot.send_message(chat_id=msg.chat.id, text=text, reply_markup=kb, parse_mode="Markdown")
+    except TelegramBadRequest:
+        await bot.send_message(chat_id=msg.chat.id, text=text, reply_markup=kb)
+
 def _escape_md(s: str) -> str:
     """
     Экранируем спецсимволы Telegram Markdown (legacy) в ДИНАМИЧЕСКОМ тексте,
@@ -531,7 +572,7 @@ async def open_history(callback: CallbackQuery):
     await _edit_text_or_caption(callback.message, HISTORY_TITLE, kb_history(items))
     await callback.answer()
 
-async def open_history_item(callback: CallbackQuery):
+async def open_history_item(callback: CallbackQuery, bot: Bot):
     _, sid = callback.data.split(":", 1)
     try:
         hid = int(sid)
@@ -542,7 +583,8 @@ async def open_history_item(callback: CallbackQuery):
         await callback.answer("Запись не найдена", show_alert=True); return
     txt = _render_result(rec.get("result") or {})
     parts = _split(f"*Запись #{rec['id']}*\n{txt}")
-    await _edit_text_or_caption(callback.message, parts[0], kb_back_home())
+    # Надёжно подменяем текст (с фолбэком на новое сообщение при необходимости)
+    await _edit_text_or_send_new(bot, callback.message, parts[0], kb_back_home())
     for p in parts[1:]:
         await callback.message.answer(p, parse_mode="Markdown")
     await callback.answer()
