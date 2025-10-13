@@ -157,7 +157,7 @@ MAIN_MENU_TITLE = ('''
 🎯 Жми «Создать отзыв»
 '''
 )
-RETURN_TO_VARIANTS = "Вернитесь к вариантам выше или запросите ещё один."
+
 VARIANT_HEAD = "Вариант {idx}\n\n"
 VARIANT_HEAD_UPDATED = "Вариант {idx} (обновлён)\n\n"
 
@@ -166,8 +166,6 @@ DEFAULT_CITIES = ["Москва", "Санкт-Петербург"]
 # лимит длины inline-запроса в Telegram (приблизительно)
 INLINE_QUERY_MAXLEN = 256
 
-# длины
-LENGTH_CHOICES = [("short", "Короткий ≤250"), ("medium", "Средний ≤450"), ("long", "Развернутый ≤1200")]
 LENGTH_LIMITS = {"short": 250, "medium": 450, "long": 1200}
 def _length_limit(code: Optional[str]) -> Optional[int]:
     return LENGTH_LIMITS.get(code or "")
@@ -189,7 +187,7 @@ DEAL_CHOICES = [
     ("rent", "Аренда"),
     ("mortgage", "Ипотека"),
     ("social_mortgage", "Гос. поддержка"),
-    ("maternity_capital", "Мат. капитал)")
+    ("maternity_capital", "Мат. капитал")
 ]
 
 # =============================================================================
@@ -559,13 +557,6 @@ def kb_variant(index: int, total: int) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton(text="⬅️ В меню", callback_data="nav.menu")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
-
-def kb_variants_common() -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text="Показать все поля", callback_data="summary.show")],
-        [InlineKeyboardButton(text=BTN_CANCEL, callback_data="nav.feedback_home")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def kb_final() -> InlineKeyboardMarkup:
@@ -1522,33 +1513,10 @@ async def view_variant(callback: CallbackQuery, state: FSMContext, bot: Optional
     await _safe_cb_answer(callback)
 
 
-async def back_to_variants(callback: CallbackQuery, state: FSMContext):
-    await ui_reply(callback, RETURN_TO_VARIANTS, kb_variants_common(), state=state)
-    await state.set_state(FeedbackStates.browsing_variants)
-    await callback.answer()
 
 
-async def finalize_choice(callback: CallbackQuery, state: FSMContext):
-    d = await state.get_data()
-    idx = d.get("picked_idx")
-    variants: List[str] = d.get("variants", [])
-    if not idx or idx < 1 or idx > len(variants):
-        await callback.answer("Сначала выберите вариант.")
-        return
 
-    final_text = variants[idx - 1]
 
-    # Автосохранение уже было выполнено при генерации/дозапросе —
-    # здесь не дублируем запись, чтобы не плодить копии
-
-    await ui_reply(callback, READY_FINAL, kb_final(), state=state)
-    await state.update_data(final_text=final_text)
-    await callback.answer()
-    await feedback_repo.set_fields(
-        callback.from_user.id,
-        {"status": "finalized", "final_idx": idx, "final_text": final_text},
-    )
-    await feedback_repo.finish(callback.from_user.id)
 
 
 async def export_text(callback: CallbackQuery, state: FSMContext):
@@ -1694,7 +1662,11 @@ async def history_open_case(callback: CallbackQuery, state: FSMContext, bot: Opt
 async def history_clone(callback: CallbackQuery, state: FSMContext):
     # hist.{id}.clone → prefill and go to summary
     try:
-        _, id_str, _ = callback.data.split(".")
+        # ожидаем строго: hist.{id}.clone
+        prefix, id_str, suffix = callback.data.split(".")
+        if prefix != "hist" or suffix != "clone":
+            await callback.answer()
+            return
         item_id = int(id_str)
     except Exception:
         await callback.answer()
@@ -1819,9 +1791,14 @@ def router(rt: Router) -> None:
     rt.callback_query.register(open_history, F.data == "hist.open")
     rt.callback_query.register(history_open_item, F.data.startswith("hist.open."))
     rt.callback_query.register(history_open_case, F.data.startswith("hist.case."))
-    # rt.callback_query.register(history_export, F.data.contains(".export."))
-    rt.callback_query.register(history_clone, F.data.contains(".clone"))
+    # экспорт вариантов/финала
+    rt.callback_query.register(export_text, F.data.startswith("export."))
+    # клон записи из истории (точечный фильтр на hist.*.clone)
+    rt.callback_query.register(history_clone, F.data.startswith("hist.") & F.data.contains(".clone"))
     rt.callback_query.register(history_back, F.data == "hist.back")
+
+    # клон из экрана финала
+    rt.callback_query.register(clone_from_final, F.data == "clone.from.final")
 
     # TEXT INPUTS — обязательно через StateFilter(...)
     rt.message.register(handle_client_name, StateFilter(FeedbackStates.waiting_client), F.text)
