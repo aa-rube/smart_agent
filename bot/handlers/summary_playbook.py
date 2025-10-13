@@ -367,7 +367,7 @@ async def handle_text(message: Message, state: FSMContext):
     draft = await summary_repo.get_draft(user_id)
     new_txt = (draft.get("input") or {}).get("text", "") if (draft.get("input") or {}).get("type") == "text" else ""
     await message.answer(
-        f"Получено ~{len(new_txt)} символов.\n\n{GEN_HINT}\n\n{_format_access_text(user_id)}",
+        f"Получено ~{len(new_txt)} символов.\n\n{GEN_HINT}",
         reply_markup=kb_ready()
     )
     await state.set_state(SummaryStates.ready_to_generate)
@@ -419,7 +419,7 @@ async def handle_audio(message: Message, state: FSMContext, bot: Bot):
 
     await summary_repo.set_input_audio(user_id, local_path=local, telegram_meta=tg_meta)
     await message.answer(
-        f"Файл получен: `{os.path.basename(local)}`\n\n{GEN_HINT}\n\n{_format_access_text(user_id)}",
+        f"Файл получен: `{os.path.basename(local)}`\n\n{GEN_HINT}",
         reply_markup=kb_ready(),
         parse_mode="Markdown"
     )
