@@ -352,10 +352,11 @@ async def choose_text(callback: CallbackQuery, state: FSMContext):
     # фиксируем стадию и тип входа
     await summary_repo.set_stage(callback.from_user.id, "waiting_text")
     await summary_repo.set_input_text(callback.from_user.id, "", append=False)
+    # Кнопки «Анализировать/Очистить» не показываем до первого фрагмента
     await _edit_text_or_caption(
         callback.message,
         ASK_TEXT,
-        kb_ready()
+        kb_back_home()
     )
     await state.set_state(SummaryStates.waiting_for_text)
     await callback.answer()
