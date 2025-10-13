@@ -376,10 +376,11 @@ async def handle_text(message: Message, state: FSMContext):
 # --- Аудио поток ---
 async def choose_audio(callback: CallbackQuery, state: FSMContext):
     await summary_repo.set_stage(callback.from_user.id, "waiting_audio")
+    # Кнопки «Анализировать/Очистить» не показываем до первого фрагмента
     await _edit_text_or_caption(
         callback.message,
         ASK_AUDIO,
-        kb_ready()
+        kb_back_home()
     )
     await state.set_state(SummaryStates.waiting_for_audio)
     await callback.answer()
@@ -426,28 +427,7 @@ async def handle_audio(message: Message, state: FSMContext, bot: Bot):
     )
     await state.set_state(SummaryStates.ready_to_generate)
 
-# --- Кнопки «готово/сброс/добавить» ---
-async def add_more(callback: CallbackQuery, state: FSMContext):
-    draft = await summary_repo.get_draft(callback.from_user.id)
-    typ = (draft.get("input") or {}).get("type")
-    if typ == "text":
-        await _edit_text_or_caption(
-            callback.message,
-            f"Добавьте ещё текст и снова нажмите «Сгенерировать саммари».\n\n{_format_access_text(callback.from_user.id)}",
-            kb_ready()
-        )
-        await state.set_state(SummaryStates.waiting_for_text)
-    elif typ == "audio":
-        await _edit_text_or_caption(
-            callback.message,
-            f"Пришлите ещё один аудио-файл и снова нажмите «Сгенерировать саммари».\n\n{_format_access_text(callback.from_user.id)}",
-            kb_ready()
-        )
-        await state.set_state(SummaryStates.waiting_for_audio)
-    else:
-        await _edit_text_or_caption(callback.message, home_text(callback.from_user.id), kb_home())
-    await callback.answer()
-
+# --- Кнопки «готово/сброс» ---
 async def reset_draft(callback: CallbackQuery, state: FSMContext):
     await summary_repo.clear(callback.from_user.id)
     await state.clear()
@@ -468,6 +448,16 @@ async def generate_summary(callback: CallbackQuery, bot: Bot):
         return
 
     payload = await _build_payload(user_id, chat_id)
+
+    # 1) Не ждём долгую операцию — сразу отвечаем на колбэк, чтобы он не протух
+    try:
+        await callback.answer("Запустил анализ")
+    except Exception:
+        # Если Telegram уже ответили/истёк таймаут — пропускаем без падения
+        pass
+
+    # 2) Мгновенно меняем текущий месседж на «Анализирую…»
+    await _edit_text_or_caption(callback.message, GEN_RUNNING)
 
     async def _do():
         return await _analyze(payload)
@@ -490,9 +480,8 @@ async def generate_summary(callback: CallbackQuery, bot: Bot):
         await summary_repo.set_last_result(user_id, res)
         await summary_repo.set_last_payload(user_id, payload)
     except Exception as e:
+        # Показываем ошибку и возвращаем кнопки для повтора/очистки
         await _edit_text_or_caption(callback.message, f"{GEN_ERROR}\n\n`{e}`", kb_ready())
-    finally:
-        await callback.answer()
 
 async def save_to_history(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -556,9 +545,8 @@ def router(rt: Router) -> None:
         F.content_type.in_({ContentType.VOICE, ContentType.AUDIO, ContentType.DOCUMENT})
     )
 
-    # готовность/сброс/добавление
+    # готовность/сброс
     rt.callback_query.register(generate_summary, F.data == "summary.generate")
-    rt.callback_query.register(add_more, F.data == "summary.add_more")
     rt.callback_query.register(reset_draft, F.data == "summary.reset")
 
     # история
