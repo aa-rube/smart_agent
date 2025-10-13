@@ -161,10 +161,6 @@ PICKED_TEMPLATE = "Вы выбрали вариант {idx}. Готово к в�
 RETURN_TO_VARIANTS = "Вернитесь к вариантам выше или запросите ещё один."
 VARIANT_HEAD = "Вариант {idx}\n\n"
 VARIANT_HEAD_UPDATED = "Вариант {idx} (обновлён)\n\n"
-VARIANTS_SAVED_INFO = (
-    "💾 Все варианты автоматически сохранены в «Истории». "
-    "К ним всегда можно вернуться из меню."
-)
 
 DEFAULT_CITIES = ["Москва", "Санкт-Петербург"]
 
@@ -1344,8 +1340,6 @@ async def start_generation(callback: CallbackQuery, state: FSMContext, bot: Bot)
         await ui_reply(callback, head, kb_variant(idx, total), state=state, bot=bot)
         for p in parts[1:]:
             await send_text(callback.message, p)
-        # Информируем, что все варианты сохранены и доступны в «Истории»
-        await send_text(callback.message, VARIANTS_SAVED_INFO)
         # Позиция зрителя и якорь в Redis
         anchor_id = (await state.get_data()).get("anchor_id")
         await state.update_data(viewer_idx=idx)
@@ -1430,7 +1424,6 @@ async def mutate_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
         await ui_reply(callback, head, kb_variant(idx, total), state=state, bot=bot)
         for p in parts[1:]:
             await send_text(callback.message, p)
-        await send_text(callback.message, VARIANTS_SAVED_INFO)
         # если редактировали текущий — фиксируем viewer_idx
         await state.update_data(viewer_idx=idx)
         await feedback_repo.set_fields(callback.from_user.id, {"viewer_idx": idx})
@@ -1527,7 +1520,6 @@ async def view_variant(callback: CallbackQuery, state: FSMContext, bot: Optional
     await ui_reply(callback, head, kb_variant(idx, total), state=state, bot=bot or callback.bot)
     for p in parts[1:]:
         await send_text(callback.message, p)
-    await send_text(callback.message, VARIANTS_SAVED_INFO)
     await state.update_data(viewer_idx=idx)
     await feedback_repo.set_fields(callback.from_user.id, {"viewer_idx": idx})
     await _safe_cb_answer(callback)
@@ -1689,7 +1681,6 @@ async def history_open_item(callback: CallbackQuery, state: FSMContext):
     await ui_reply(callback, head, kb_variant(1, 1), state=state)
     for p in parts[1:]:
         await send_text(callback.message, p)
-    await send_text(callback.message, VARIANTS_SAVED_INFO)
     await state.set_state(FeedbackStates.browsing_variants)
     await _safe_cb_answer(callback)
 
@@ -1723,7 +1714,6 @@ async def history_open_case(callback: CallbackQuery, state: FSMContext, bot: Opt
     await ui_reply(callback, head, kb_variant(1, total), state=state, bot=bot or callback.bot)
     for p in parts[1:]:
         await send_text(callback.message, p)
-    await send_text(callback.message, VARIANTS_SAVED_INFO)
     await state.set_state(FeedbackStates.browsing_variants)
     await _safe_cb_answer(callback)
 
