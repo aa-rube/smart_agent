@@ -2,6 +2,7 @@
 import uuid
 from typing import Optional, Dict
 
+from yookassa.domain.exceptions.bad_request_error import BadRequestError
 from yookassa.domain.exceptions.forbidden_error import ForbiddenError
 from yookassa import Configuration, Payment
 from bot.config import YOUMONEY_SHOP_ID, YOUMONEY_SECRET_KEY
@@ -19,11 +20,14 @@ def create_pay_ex(
     metadata: Optional[Dict[str, str]] = None,
     return_url: str = "https://t.me/realtornetworkai_bot",
     save_payment_method: bool = False,
-    payment_method_type: Optional[str] = None,  # "bank_card" | "sbp" | None (умный выбор)
+    payment_method_type: Optional[str] = None,  # "bank_card" | "sbp" | None (умный выбор провайдера)
 ) -> str:
     """
     Создает платёж YooKassa и возвращает confirmation_url.
     amount_rub: строка с 2 знаками после запятой (например, "2500.00")
+    payment_method_type: если указан, в тело добавляется payment_method_data = {"type": ...}
+      - "bank_card" — для оплаты картой (с привязкой при save_payment_method=True)
+      - "sbp"       — для оплаты через СБП (возможность привязки/автосписаний зависит от банка и настроек магазина)
     """
     md = {"user_id": str(user_id)}
     if metadata:
@@ -48,8 +52,8 @@ def create_pay_ex(
         "capture": True,
         "save_payment_method": bool(save_payment_method),
     }
-    # Явно фиксируем тип способа, если передан (например, "sbp" для СБП)
     if payment_method_type:
+        # Явно фиксируем тип способа оплаты (например, "sbp")
         body["payment_method_data"] = {"type": payment_method_type}
 
     try:

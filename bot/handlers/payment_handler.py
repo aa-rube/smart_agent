@@ -12,6 +12,7 @@ from aiogram.types import (
 )
 from aiogram.filters import Command
 
+from yookassa.domain.exceptions.forbidden_error import ForbiddenError
 from bot.config import get_file_path
 from bot.utils import youmoney
 import bot.utils.database as app_db
@@ -66,8 +67,9 @@ PAY_TEXT = (
 # ──────────────────────────────────────────────────────────────────────────────
 # Храним state чекбокса в памяти: само согласие юридически фиксируем в app_db.add_consent
 _CONSENT_FLAG: dict[int, bool] = {}
-_LAST_PAY_URL_CARD: dict[int, str] = {}   # ссылка на оплату картой (с привязкой — автопродление)
-_LAST_PAY_URL_SBP: dict[int, str]  = {}   # ссылка на оплату через СБП (с привязкой — автопродление)
+# Раздельные ссылки под разные способы (карта/СБП)
+_LAST_PAY_URL_CARD: dict[int, str] = {}
+_LAST_PAY_URL_SBP: dict[int, str] = {}
 _LAST_PAY_HEADER: dict[int, str] = {}
 
 
@@ -307,59 +309,69 @@ async def choose_rate(cb: CallbackQuery) -> None:
 
     pay_url_card: Optional[str] = None
     pay_url_sbp: Optional[str] = None
+    sbp_unavailable_reason: Optional[str] = None
 
     if plan.get("recurring"):
         first_amount = plan.get("trial_amount", "1.00")
         base_meta = {
             **meta,
-            "phase": "trial",
-            "is_recurring": "1",
             "trial_hours": str(plan.get("trial_hours", 72)),
             "plan_amount": plan["amount"],
         }
-        # 1) Карта с привязкой (основной путь автопродления)
+        # 1) Карта с привязкой — основной надёжный путь автопродления
         try:
             pay_url_card = youmoney.create_pay_ex(
                 user_id=user_id,
                 amount_rub=first_amount,
                 description=f"{description} (пробный период)",
-                metadata=base_meta,
+                metadata={**base_meta, "phase": "trial", "is_recurring": "1"},
                 save_payment_method=True,
                 payment_method_type="bank_card",
             )
         except Exception as e:
-            logger.error("Card recurring not allowed, fallback to tokenless trial: %s", e)
-            meta_fallback = dict(base_meta, is_recurring="0", phase="trial_tokenless")
-            pay_url_card = youmoney.create_pay_ex(
-                user_id=user_id,
-                amount_rub=first_amount,
-                description=f"{description} (пробный период)",
-                metadata=meta_fallback,
-                save_payment_method=False,
-                payment_method_type="bank_card",
-            )
-        # 2) СБП с привязкой (доступно не у всех банков)
+            logger.error("Card recurring not allowed, fallback to tokenless card trial: %s", e)
+            try:
+                pay_url_card = youmoney.create_pay_ex(
+                    user_id=user_id,
+                    amount_rub=first_amount,
+                    description=f"{description} (пробный период)",
+                    metadata={**base_meta, "phase": "trial_tokenless", "is_recurring": "0"},
+                    save_payment_method=False,
+                    payment_method_type="bank_card",
+                )
+            except Exception as e2:
+                logger.error("Card tokenless also failed: %s", e2)
+                pay_url_card = None
+
+        # 2) СБП: сперва пытаемся с сохранением (если магазин/банк умеет), иначе — разовый
         try:
             pay_url_sbp = youmoney.create_pay_ex(
                 user_id=user_id,
                 amount_rub=first_amount,
                 description=f"{description} (пробный период, СБП)",
-                metadata=base_meta,
+                metadata={**base_meta, "phase": "trial", "is_recurring": "1"},
                 save_payment_method=True,
                 payment_method_type="sbp",
             )
-        except Exception as e:
-            # Если магазин/настройка не допускает СБП-привязку — даём разовый СБП без автопродления
+        except ForbiddenError as e:
             logger.error("SBP recurring not allowed, fallback to SBP tokenless trial: %s", e)
-            meta_fallback_sbp = dict(base_meta, is_recurring="0", phase="trial_tokenless")
-            pay_url_sbp = youmoney.create_pay_ex(
-                user_id=user_id,
-                amount_rub=first_amount,
-                description=f"{description} (пробный период, СБП)",
-                metadata=meta_fallback_sbp,
-                save_payment_method=False,
-                payment_method_type="sbp",
-            )
+            try:
+                pay_url_sbp = youmoney.create_pay_ex(
+                    user_id=user_id,
+                    amount_rub=first_amount,
+                    description=f"{description} (пробный период, СБП)",
+                    metadata={**base_meta, "phase": "trial_tokenless", "is_recurring": "0"},
+                    save_payment_method=False,
+                    payment_method_type="sbp",
+                )
+            except Exception as e2:
+                sbp_unavailable_reason = f"СБП недоступна для магазина: {e2}"
+                logger.error("SBP tokenless also failed: %s", e2)
+                pay_url_sbp = None
+        except Exception as e:
+            sbp_unavailable_reason = f"СБП недоступна для магазина: {e}"
+            logger.error("SBP flow failed: %s", e)
+            pay_url_sbp = None
     else:
         # сейчас все планы рекуррентные; на всякий — разовый платёж картой
         pay_url_card = youmoney.create_pay_ex(
@@ -376,6 +388,11 @@ async def choose_rate(cb: CallbackQuery) -> None:
     _LAST_PAY_URL_SBP[user_id] = pay_url_sbp or ""
     _LAST_PAY_HEADER[user_id] = description
 
+    if sbp_unavailable_reason:
+        try:
+            await cb.answer("СБП пока недоступна для этого магазина. Выберите оплату картой или свяжитесь с поддержкой.", show_alert=True)
+        except Exception:
+            pass
 
     await _edit_safe(
         cb,
