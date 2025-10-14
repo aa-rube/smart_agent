@@ -1299,8 +1299,7 @@ async def handle_area(cb: CallbackQuery, state: FSMContext):
     # - land (земля/участок): только площадь, коммуникации, локация, особенности — НЕТ этажности/этажей/кухни/комнат/года
     if obj_type == "flat":
         form_keys: List[str] = [
-            # новый первый шаг: класс объекта
-            "object_class",
+            # Класс квартиры теперь спрашиваем раньше (сразу после выбора рынка «новостройка/вторичка»)
             "total_area",
             "floors_total",
             "floor",
@@ -2171,10 +2170,11 @@ async def handle_enum_select(cb: CallbackQuery, state: FSMContext):
             include_mortgage=is_sale,
             include_legal=(is_sale and code != "new"),
         )
+        # Требование: для квартиры сразу после «новостройка/вторичка» спрашиваем КЛАСС
         if code == "new":
-            new_keys = ["market", "completion_term", "sale_method"] + after
+            new_keys = ["market", "object_class", "completion_term", "sale_method"] + after
         else:
-            new_keys = ["market"] + after
+            new_keys = ["market", "object_class"] + after
         await state.update_data(__form_keys=new_keys)
 
     # Ветка «Загородная»: ветвление после выбора типа объекта
