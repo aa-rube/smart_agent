@@ -137,6 +137,29 @@ DESCRIPTION_AREA = {
     "out": "За городом",
 }
 
+# ------------------ Класс объекта (новое поле) ------------------
+# Карта кодов для общего "класса объекта": квартира/дом (не участки, не коммерция)
+DESCRIPTION_OBJECT_CLASS = {
+    "econom":  "Эконом",
+    "comfort": "Комфорт",
+    "elite":   "Элитное жилье",
+}
+
+# Отдельные абзацы, которые подмешиваем в user-role промпт при наличии object_class
+# (пока рыбы-заглушки — понятный текст, чтобы видно было смысл вставки)
+OBJECT_CLASS_PARAGRAPH_ECONOM_RU = (
+    "Абзац о классе 'Эконом': опишите базовые материалы, доступную инфраструктуру, "
+    "рациональность планировок и ожидания по бюджету."
+)
+OBJECT_CLASS_PARAGRAPH_COMFORT_RU = (
+    "Абзац о классе 'Комфорт': подчеркните баланс цены и качества, улучшенные общие зоны, "
+    "сервис и удобства для ежедневной жизни."
+)
+OBJECT_CLASS_PARAGRAPH_ELITE_RU = (
+    "Абзац о классе 'Элитное жилье': отметьте приватность, премиальные материалы, "
+    "статусную локацию, сервис и качество архитектуры."
+)
+
 
 # ------------------ Специализированные USER-TEMPLATE по типам ------------------
 # Квартира — ПРОДАЖА
@@ -193,6 +216,10 @@ DESCRIPTION_USER_TEMPLATE_FLAT_SALE_RU = """
 — Локация: {location}; (текст) адрес/ориентиры: {flat_location_text}; (текст) инфраструктура: {flat_infrastructure_text}; общая зона: {area_label}.
 4) Условия сделки: сделка {deal_label}, способ продажи {sale_method}, срок передачи/сдачи {completion_term}, ипотека {mortgage_ok}, юр.особенности: {flat_legal_text}.
 5) Свободный комментарий с нюансами: {comment}
+
+Дополнительно (если применимо):
+— Класс объекта (общий): {object_class_label}
+— Отдельный абзац для учёта этого класса в тексте: {object_class_paragraph}
 """
 
 # Квартира — АРЕНДА
@@ -230,6 +257,8 @@ DESCRIPTION_USER_TEMPLATE_FLAT_RENT_RU = """
 — Комментарий: {comment}
 — (Текст) Локация: {flat_location_text}
 — (Текст) Инфраструктура: {flat_infrastructure_text}
+
+Отдельный абзац для учёта класса объекта в повествовании: {object_class_paragraph}
 """
 
 # Загородная недвижимость
@@ -250,6 +279,7 @@ DESCRIPTION_USER_TEMPLATE_COUNTRY_RU = """
 
 Данные анкеты (используй только по смыслу, без вывода «—»):
 — Тип: {type_label}
+— Класс объекта (общий): {object_class_label}
 — Расположение (общее): {area_label}
 — Локация (район/трасса/ориентиры): {location}
 — Площадь дома (если есть): {total_area} м²
@@ -258,6 +288,8 @@ DESCRIPTION_USER_TEMPLATE_COUNTRY_RU = """
 — Коммуникации: {utilities}
 — Особенности: {amenities}
 — Комментарий: {comment}
+
+Добавь в текст отдельный абзац, учитывающий класс объекта: {object_class_paragraph}
 """
 
 # Коммерческая недвижимость
@@ -534,6 +566,32 @@ def _first_nonempty(*xs: Any) -> Any:
             return x
     return None
 
+# Приводим значение object_class к внутреннему коду (econom/comfort/elite) по ключу или по метке.
+def _normalize_object_class_key(v: Optional[str]) -> Optional[str]:
+    if not v:
+        return None
+    s = str(v).strip().lower()
+    # прямое совпадение по ключам
+    if s in DESCRIPTION_OBJECT_CLASS:
+        return s
+    # попытка сопоставить по значениям-лейблам
+    for k, lbl in DESCRIPTION_OBJECT_CLASS.items():
+        if s == str(lbl).strip().lower():
+            return k
+    return None
+
+# Возвращает человекочитаемый лейбл и абзац-рыбу под указанный класс
+def _object_class_paragraph(v: Optional[str]) -> tuple[str, str]:
+    code = _normalize_object_class_key(v)
+    if code == "econom":
+        return (DESCRIPTION_OBJECT_CLASS["econom"], OBJECT_CLASS_PARAGRAPH_ECONOM_RU)
+    if code == "comfort":
+        return (DESCRIPTION_OBJECT_CLASS["comfort"], OBJECT_CLASS_PARAGRAPH_COMFORT_RU)
+    if code == "elite":
+        return (DESCRIPTION_OBJECT_CLASS["elite"], OBJECT_CLASS_PARAGRAPH_ELITE_RU)
+    # по умолчанию — нет данных
+    return ("—", "—")
+
 
 # Нормализация бота-алиасов: поддерживаем и новые и старые ключи
 def _normalize_fields(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -545,6 +603,7 @@ def _normalize_fields(raw: Dict[str, Any]) -> Dict[str, Any]:
         "in_complex": raw.get("in_complex"),
         "area": raw.get("area"),
         "comment": raw.get("comment"),
+        "object_class": raw.get("object_class"),  # новое поле: общий класс объекта (эконом/комфорт/элитное)
 
         # плоскость анкеты
         "total_area": _first_nonempty(raw.get("total_area")),
@@ -739,6 +798,11 @@ def compose_description_user_message(fields: Dict[str, Any]) -> str:
 
     deal_label = {"sale": "Продажа", "rent": "Аренда"}.get(str(fields.get("deal_type") or "").strip(), "—")
 
+    # Определяем, следует ли учитывать object_class (квартира/дом/загород; не участки/коммерция)
+    t_lc = str(t_key or "").strip().lower()
+    apply_object_class = t_lc in {"flat", "house", "country", "zagorod"}
+    oc_label, oc_paragraph = _object_class_paragraph(fields.get("object_class")) if apply_object_class else ("—", "—")
+
     # Выбираем USER-TEMPLATE согласно типу/сделке
     user_template = _select_description_user_template(fields)
 
@@ -748,6 +812,9 @@ def compose_description_user_message(fields: Dict[str, Any]) -> str:
         "apt_class_label": _label(DESCRIPTION_CLASSES, c_key) if c_key else "—",
         "in_complex_label": _label(DESCRIPTION_COMPLEX, x_key),
         "area_label": _label(DESCRIPTION_AREA, a_key),
+        # новый общий класс (метка) и абзац
+        "object_class_label": oc_label,
+        "object_class_paragraph": oc_paragraph,
 
         "location": _safe(fields.get("location")),
         "total_area": _safe(fields.get("total_area")),
