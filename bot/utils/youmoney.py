@@ -20,14 +20,14 @@ def create_pay_ex(
     metadata: Optional[Dict[str, str]] = None,
     return_url: str = "https://t.me/realtornetworkai_bot",
     save_payment_method: bool = False,
-    payment_method_type: Optional[str] = None,  # "bank_card" | "sbp" | None (умный выбор провайдера)
+    # Явно указать тип метода оплаты. Поддерживаем 'bank_card' и 'sbp'.
+    # Если None — даём провайдеру предложить все доступные способы.
+    payment_method_type: Optional[str] = None,
 ) -> str:
     """
     Создает платёж YooKassa и возвращает confirmation_url.
     amount_rub: строка с 2 знаками после запятой (например, "2500.00")
-    payment_method_type: если указан, в тело добавляется payment_method_data = {"type": ...}
-      - "bank_card" — для оплаты картой (с привязкой при save_payment_method=True)
-      - "sbp"       — для оплаты через СБП (возможность привязки/автосписаний зависит от банка и настроек магазина)
+    payment_method_type: 'bank_card' | 'sbp' | None
     """
     md = {"user_id": str(user_id)}
     if metadata:
@@ -52,9 +52,11 @@ def create_pay_ex(
         "capture": True,
         "save_payment_method": bool(save_payment_method),
     }
-    if payment_method_type:
-        # Явно фиксируем тип способа оплаты (например, "sbp")
-        body["payment_method_data"] = {"type": payment_method_type}
+    # Принудительно ограничиваем способ оплаты, если явно попросили
+    if payment_method_type in ("bank_card", "sbp"):
+        body["payment_method_data"] = {
+            "type": payment_method_type
+        }
 
     try:
         payment = Payment.create(body, uuid.uuid4())

@@ -72,6 +72,9 @@ _LAST_PAY_URL_CARD: dict[int, str] = {}
 _LAST_PAY_URL_SBP: dict[int, str] = {}
 _LAST_PAY_HEADER: dict[int, str] = {}
 
+# Буфер выбранного тарифа до подтверждения согласия (генерацию ссылок откладываем):
+_PENDING_SELECTION: dict[int, Dict[str, str]] = {}
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # TIME HELPERS
@@ -275,6 +278,89 @@ def _compute_next_time_from_months(months: int) -> datetime:
         return datetime.now(timezone.utc) + timedelta(days=30 * months)
 
 
+def _create_links_for_selection(user_id: int) -> tuple[Optional[str], Optional[str]]:
+    """
+    Генерирует ссылки оплаты (карта/СБП) для ранее выбранного тарифа в _PENDING_SELECTION[user_id].
+    Возвращает (pay_url_card, pay_url_sbp). Ошибки логируются и дают None.
+    Логику фолбэков (403/400) обрабатываем внутри.
+    """
+    sel = _PENDING_SELECTION.get(user_id) or {}
+    code = sel.get("code")
+    description = sel.get("description") or "Оплата подписки"
+    plan = _plan_by_code(code) if code else None
+
+    if not plan:
+        return (None, None)
+
+    pay_url_card: Optional[str] = None
+    pay_url_sbp: Optional[str] = None
+
+    meta_base = {
+        "user_id": str(user_id),
+        "plan_code": code,
+        "months": str(plan["months"]),
+        "v": "2",
+        "trial_hours": str(plan.get("trial_hours", 72)),
+        "plan_amount": plan["amount"],
+    }
+    first_amount = plan.get("trial_amount", "1.00")
+
+    # 1) Карта: пробуем с сохранением (автопродление), иначе — без
+    try:
+        pay_url_card = youmoney.create_pay_ex(
+            user_id=user_id,
+            amount_rub=first_amount,
+            description=f"{description} (пробный период)",
+            metadata={**meta_base, "phase": "trial", "is_recurring": "1"},
+            save_payment_method=True,
+            payment_method_type="bank_card",
+        )
+    except Exception as e:
+        logger.error("Card recurring not allowed, fallback to tokenless card trial: %s", e)
+        try:
+            pay_url_card = youmoney.create_pay_ex(
+                user_id=user_id,
+                amount_rub=first_amount,
+                description=f"{description} (пробный период)",
+                metadata={**meta_base, "phase": "trial_tokenless", "is_recurring": "0"},
+                save_payment_method=False,
+                payment_method_type="bank_card",
+            )
+        except Exception as e2:
+            logger.error("Card tokenless also failed: %s", e2)
+            pay_url_card = None
+
+    # 2) СБП: сперва пытаемся с сохранением (если магазин/банк умеет), иначе — разовый СБП
+    try:
+        pay_url_sbp = youmoney.create_pay_ex(
+            user_id=user_id,
+            amount_rub=first_amount,
+            description=f"{description} (пробный период, СБП)",
+            metadata={**meta_base, "phase": "trial", "is_recurring": "1"},
+            save_payment_method=True,
+            payment_method_type="sbp",
+        )
+    except ForbiddenError as e:
+        logger.error("SBP recurring not allowed, fallback to SBP tokenless trial: %s", e)
+        try:
+            pay_url_sbp = youmoney.create_pay_ex(
+                user_id=user_id,
+                amount_rub=first_amount,
+                description=f"{description} (пробный период, СБП)",
+                metadata={**meta_base, "phase": "trial_tokenless", "is_recurring": "0"},
+                save_payment_method=False,
+                payment_method_type="sbp",
+            )
+        except Exception as e2:
+            logger.error("SBP tokenless also failed: %s", e2)
+            pay_url_sbp = None
+    except Exception as e:
+        logger.error("SBP flow failed: %s", e)
+        pay_url_sbp = None
+
+    return (pay_url_card, pay_url_sbp)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # PUBLIC: Показ тарифов / выбор тарифа / ссылка на оплату
 # ──────────────────────────────────────────────────────────────────────────────
@@ -300,107 +386,39 @@ async def choose_rate(cb: CallbackQuery) -> None:
         return
 
     description = f"Подписка на {plan['label']}"
-    meta = {
-        "user_id": str(user_id),
-        "plan_code": code,
-        "months": str(plan["months"]),
-        "v": "2",  # версия схемы метаданных
-    }
+    # Сохраняем выбор тарифа — ссылки пока не создаём
+    _PENDING_SELECTION[user_id] = {"code": code, "description": description}
 
-    pay_url_card: Optional[str] = None
-    pay_url_sbp: Optional[str] = None
-    sbp_unavailable_reason: Optional[str] = None
-
-    if plan.get("recurring"):
-        first_amount = plan.get("trial_amount", "1.00")
-        base_meta = {
-            **meta,
-            "trial_hours": str(plan.get("trial_hours", 72)),
-            "plan_amount": plan["amount"],
-        }
-        # 1) Карта с привязкой — основной надёжный путь автопродления
+    # Инициализируем состояние чекбокса.
+    # 1) Из памяти; 2) если нет — попытка гидратации из БД (если реализовано app_db.has_consent)
+    consent = _CONSENT_FLAG.get(user_id, False)
+    if not consent:
         try:
-            pay_url_card = youmoney.create_pay_ex(
-                user_id=user_id,
-                amount_rub=first_amount,
-                description=f"{description} (пробный период)",
-                metadata={**base_meta, "phase": "trial", "is_recurring": "1"},
-                save_payment_method=True,
-                payment_method_type="bank_card",
-            )
-        except Exception as e:
-            logger.error("Card recurring not allowed, fallback to tokenless card trial: %s", e)
-            try:
-                pay_url_card = youmoney.create_pay_ex(
-                    user_id=user_id,
-                    amount_rub=first_amount,
-                    description=f"{description} (пробный период)",
-                    metadata={**base_meta, "phase": "trial_tokenless", "is_recurring": "0"},
-                    save_payment_method=False,
-                    payment_method_type="bank_card",
-                )
-            except Exception as e2:
-                logger.error("Card tokenless also failed: %s", e2)
-                pay_url_card = None
-
-        # 2) СБП: сперва пытаемся с сохранением (если магазин/банк умеет), иначе — разовый
-        try:
-            pay_url_sbp = youmoney.create_pay_ex(
-                user_id=user_id,
-                amount_rub=first_amount,
-                description=f"{description} (пробный период, СБП)",
-                metadata={**base_meta, "phase": "trial", "is_recurring": "1"},
-                save_payment_method=True,
-                payment_method_type="sbp",
-            )
-        except ForbiddenError as e:
-            logger.error("SBP recurring not allowed, fallback to SBP tokenless trial: %s", e)
-            try:
-                pay_url_sbp = youmoney.create_pay_ex(
-                    user_id=user_id,
-                    amount_rub=first_amount,
-                    description=f"{description} (пробный период, СБП)",
-                    metadata={**base_meta, "phase": "trial_tokenless", "is_recurring": "0"},
-                    save_payment_method=False,
-                    payment_method_type="sbp",
-                )
-            except Exception as e2:
-                sbp_unavailable_reason = f"СБП недоступна для магазина: {e2}"
-                logger.error("SBP tokenless also failed: %s", e2)
-                pay_url_sbp = None
-        except Exception as e:
-            sbp_unavailable_reason = f"СБП недоступна для магазина: {e}"
-            logger.error("SBP flow failed: %s", e)
-            pay_url_sbp = None
-    else:
-        # сейчас все планы рекуррентные; на всякий — разовый платёж картой
-        pay_url_card = youmoney.create_pay_ex(
-            user_id=user_id,
-            amount_rub=plan["amount"],
-            description=description,
-            metadata=meta,
-            payment_method_type="bank_card",
-        )
-
-    # Инициализируем состояние чекбокса (по умолчанию не отмечен)
-    _CONSENT_FLAG[user_id] = _CONSENT_FLAG.get(user_id, False)
-    _LAST_PAY_URL_CARD[user_id] = pay_url_card or ""
-    _LAST_PAY_URL_SBP[user_id] = pay_url_sbp or ""
-    _LAST_PAY_HEADER[user_id] = description
-
-    if sbp_unavailable_reason:
-        try:
-            logger.error("СБП пока недоступна для этого магазина. Выберите оплату картой или свяжитесь с поддержкой.")
+            if hasattr(app_db, "has_consent"):
+                consent = bool(app_db.has_consent(user_id, kind="tos"))
         except Exception:
             pass
+    _CONSENT_FLAG[user_id] = consent
+
+    # Если согласие уже сохранено — ссылки генерим сразу, иначе — сбрасываем
+    pay_url_card: Optional[str] = None
+    pay_url_sbp: Optional[str] = None
+    if consent:
+        pay_url_card, pay_url_sbp = _create_links_for_selection(user_id)
+        _LAST_PAY_URL_CARD[user_id] = pay_url_card or ""
+        _LAST_PAY_URL_SBP[user_id]  = pay_url_sbp or ""
+    else:
+        _LAST_PAY_URL_CARD[user_id] = ""
+        _LAST_PAY_URL_SBP[user_id]  = ""
+    _LAST_PAY_HEADER[user_id] = description
 
     await _edit_safe(
         cb,
         f"{description}\n\n{PRE_PAY_TEXT}",
         kb_pay_with_consent(
-            consent=_CONSENT_FLAG[user_id],
-            pay_url_card=None,
-            pay_url_sbp=None,
+            consent=consent,
+            pay_url_card=(pay_url_card if consent else None),
+            pay_url_sbp=(pay_url_sbp if consent else None),
         ),
     )
 
@@ -422,18 +440,25 @@ async def toggle_tos(cb: CallbackQuery) -> None:
 
     header = _LAST_PAY_HEADER.get(user_id, "Оплата подписки")
     text = f"{header}\n\n{PAY_TEXT if new_state else PRE_PAY_TEXT}"
-    pay_url_card = _LAST_PAY_URL_CARD.get(user_id) or None
-    pay_url_sbp  = _LAST_PAY_URL_SBP.get(user_id) or None
+    pay_url_card: Optional[str]
+    pay_url_sbp: Optional[str]
 
-    await _edit_safe(
-        cb,
-        text,
-        kb_pay_with_consent(
-            consent=new_state,
-            pay_url_card=(pay_url_card if new_state else None),
-            pay_url_sbp=(pay_url_sbp if new_state else None),
-        )
-    )
+    if new_state:
+        # Создаём ссылки ТОЛЬКО сейчас — после согласия
+        pay_url_card, pay_url_sbp = _create_links_for_selection(user_id)
+        _LAST_PAY_URL_CARD[user_id] = pay_url_card or ""
+        _LAST_PAY_URL_SBP[user_id]  = pay_url_sbp or ""
+    else:
+        # Снятие согласия — чистим ссылки и скрываем кнопки
+        _LAST_PAY_URL_CARD[user_id] = ""
+        _LAST_PAY_URL_SBP[user_id]  = ""
+        pay_url_card, pay_url_sbp = None, None
+
+    await _edit_safe(cb, text, kb_pay_with_consent(
+        consent=new_state,
+        pay_url_card=(pay_url_card if new_state else None),
+        pay_url_sbp=(pay_url_sbp if new_state else None),
+    ))
 
 
 async def need_tos(cb: CallbackQuery) -> None:
