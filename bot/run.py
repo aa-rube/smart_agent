@@ -3,7 +3,6 @@ import asyncio
 import logging
 import signal
 from contextlib import suppress
-import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage

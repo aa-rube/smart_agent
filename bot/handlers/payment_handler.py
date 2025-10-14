@@ -50,7 +50,7 @@ RATES_TEXT = ('''
 PRE_PAY_TEXT = (
     "📦 Что даёт подписка:\n"
     " — Доступ ко всем инструментам на выбранный срок\n"
-    " — Доступ ко всем инструментам\n"
+    " — Автопродление при оплате картой или через СБП с привязкой (зависит от банка)\n"
     "Нажимая «Я ознакомлен и согласен», вы принимаете "
     "<a href=\"https://setrealtora.ru/agreement\">условия</a>."
 )
@@ -66,7 +66,8 @@ PAY_TEXT = (
 # ──────────────────────────────────────────────────────────────────────────────
 # Храним state чекбокса в памяти: само согласие юридически фиксируем в app_db.add_consent
 _CONSENT_FLAG: dict[int, bool] = {}
-_LAST_PAY_URL: dict[int, str] = {}
+_LAST_PAY_URL_CARD: dict[int, str] = {}   # ссылка на оплату картой (с привязкой — автопродление)
+_LAST_PAY_URL_SBP: dict[int, str]  = {}   # ссылка на оплату через СБП (с привязкой — автопродление)
 _LAST_PAY_HEADER: dict[int, str] = {}
 
 
@@ -170,12 +171,17 @@ def kb_cancel_confirm() -> InlineKeyboardMarkup:
     ])
 
 
-def kb_pay_with_consent(*, consent: bool, pay_url: Optional[str]) -> InlineKeyboardMarkup:
+def kb_pay_with_consent(*, consent: bool, pay_url_card: Optional[str], pay_url_sbp: Optional[str]) -> InlineKeyboardMarkup:
     check = "✅ Я ознакомлен и согласен" if consent else "⬜️ Я ознакомлен и согласен"
     rows: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton(text=check, callback_data="tos:toggle")]]
-    if consent and pay_url:
-        rows.append([InlineKeyboardButton(text="Оформить подписку", url=pay_url)])
-
+    if consent:
+        btns: List[InlineKeyboardButton] = []
+        if pay_url_card:
+            btns.append(InlineKeyboardButton(text="💳 Оформить подписку (карта)", url=pay_url_card))
+        if pay_url_sbp:
+            btns.append(InlineKeyboardButton(text="🏦 Оформить подписку через СБП", url=pay_url_sbp))
+        if btns:
+            rows.append(btns)
     rows.append([InlineKeyboardButton(text="⬅️ Выбрать другой тариф", callback_data="show_rates")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -299,54 +305,86 @@ async def choose_rate(cb: CallbackQuery) -> None:
         "v": "2",  # версия схемы метаданных
     }
 
+    pay_url_card: Optional[str] = None
+    pay_url_sbp: Optional[str] = None
+
     if plan.get("recurring"):
         first_amount = plan.get("trial_amount", "1.00")
-        meta.update({
+        base_meta = {
+            **meta,
             "phase": "trial",
             "is_recurring": "1",
             "trial_hours": str(plan.get("trial_hours", 72)),
             "plan_amount": plan["amount"],
-        })
+        }
+        # 1) Карта с привязкой (основной путь автопродления)
         try:
-            pay_url = youmoney.create_pay_ex(
+            pay_url_card = youmoney.create_pay_ex(
                 user_id=user_id,
                 amount_rub=first_amount,
                 description=f"{description} (пробный период)",
-                metadata=meta,
+                metadata=base_meta,
                 save_payment_method=True,
+                payment_method_type="bank_card",
             )
         except Exception as e:
-            # Fallback: магазин не умеет рекуррентные платежи — делаем без токена
-            logger.error("Recurring not allowed, fallback to tokenless trial: %s", e)
-            meta_fallback = dict(meta)
-            meta_fallback["is_recurring"] = "0"
-            meta_fallback["phase"] = "trial_tokenless"
-            pay_url = youmoney.create_pay_ex(
+            logger.error("Card recurring not allowed, fallback to tokenless trial: %s", e)
+            meta_fallback = dict(base_meta, is_recurring="0", phase="trial_tokenless")
+            pay_url_card = youmoney.create_pay_ex(
                 user_id=user_id,
                 amount_rub=first_amount,
                 description=f"{description} (пробный период)",
                 metadata=meta_fallback,
                 save_payment_method=False,
+                payment_method_type="bank_card",
+            )
+        # 2) СБП с привязкой (доступно не у всех банков)
+        try:
+            pay_url_sbp = youmoney.create_pay_ex(
+                user_id=user_id,
+                amount_rub=first_amount,
+                description=f"{description} (пробный период, СБП)",
+                metadata=base_meta,
+                save_payment_method=True,
+                payment_method_type="sbp",
+            )
+        except Exception as e:
+            # Если магазин/настройка не допускает СБП-привязку — даём разовый СБП без автопродления
+            logger.error("SBP recurring not allowed, fallback to SBP tokenless trial: %s", e)
+            meta_fallback_sbp = dict(base_meta, is_recurring="0", phase="trial_tokenless")
+            pay_url_sbp = youmoney.create_pay_ex(
+                user_id=user_id,
+                amount_rub=first_amount,
+                description=f"{description} (пробный период, СБП)",
+                metadata=meta_fallback_sbp,
+                save_payment_method=False,
+                payment_method_type="sbp",
             )
     else:
-        # сейчас все планы рекуррентные
-        pay_url = youmoney.create_pay_ex(
+        # сейчас все планы рекуррентные; на всякий — разовый платёж картой
+        pay_url_card = youmoney.create_pay_ex(
             user_id=user_id,
             amount_rub=plan["amount"],
             description=description,
             metadata=meta,
+            payment_method_type="bank_card",
         )
 
     # Инициализируем состояние чекбокса (по умолчанию не отмечен)
     _CONSENT_FLAG[user_id] = _CONSENT_FLAG.get(user_id, False)
-    _LAST_PAY_URL[user_id] = pay_url or ""
+    _LAST_PAY_URL_CARD[user_id] = pay_url_card or ""
+    _LAST_PAY_URL_SBP[user_id] = pay_url_sbp or ""
     _LAST_PAY_HEADER[user_id] = description
 
 
     await _edit_safe(
         cb,
         f"{description}\n\n{PRE_PAY_TEXT}",
-        kb_pay_with_consent(consent=_CONSENT_FLAG[user_id], pay_url=None),
+        kb_pay_with_consent(
+            consent=_CONSENT_FLAG[user_id],
+            pay_url_card=None,
+            pay_url_sbp=None,
+        ),
     )
 
 
@@ -367,12 +405,17 @@ async def toggle_tos(cb: CallbackQuery) -> None:
 
     header = _LAST_PAY_HEADER.get(user_id, "Оплата подписки")
     text = f"{header}\n\n{PAY_TEXT if new_state else PRE_PAY_TEXT}"
-    pay_url = _LAST_PAY_URL.get(user_id) or None
+    pay_url_card = _LAST_PAY_URL_CARD.get(user_id) or None
+    pay_url_sbp  = _LAST_PAY_URL_SBP.get(user_id) or None
 
     await _edit_safe(
         cb,
         text,
-        kb_pay_with_consent(consent=new_state, pay_url=(pay_url if new_state else None))
+        kb_pay_with_consent(
+            consent=new_state,
+            pay_url_card=(pay_url_card if new_state else None),
+            pay_url_sbp=(pay_url_sbp if new_state else None),
+        )
     )
 
 
