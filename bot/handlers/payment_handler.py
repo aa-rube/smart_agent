@@ -390,7 +390,7 @@ async def choose_rate(cb: CallbackQuery) -> None:
 
     if sbp_unavailable_reason:
         try:
-            await cb.answer("СБП пока недоступна для этого магазина. Выберите оплату картой или свяжитесь с поддержкой.", show_alert=True)
+            logger.error("СБП пока недоступна для этого магазина. Выберите оплату картой или свяжитесь с поддержкой.")
         except Exception:
             pass
 
