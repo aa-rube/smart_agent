@@ -127,6 +127,7 @@ def _compose_summary(d: Dict) -> str:
 
     # Квартира — доп. Атрибуты
     if d.get("__flat_mode"):
+        _add(body, "Класс", d.get("object_class"))
         _add(body, "Срок сдачи", d.get("completion_term"))
         _add(body, "Способ продажи", d.get("sale_method"))
         _add(body, "Ипотека", d.get("mortgage_ok"))
@@ -144,6 +145,9 @@ def _compose_summary(d: Dict) -> str:
 
     # Загородная — дом/участок и мультивыборы
     if d.get("__country_mode"):
+        # Класс применим только к домам
+        if d.get("country_object_type") and "участ" not in str(d.get("country_object_type")).lower():
+            _add(body, "Класс", d.get("object_class"))
         _add(body, "Площадь дома", d.get("country_house_area_m2"))
         _add(body, "Участок", d.get("country_plot_area_sotki"))
         _add(body, "Дистанция", d.get("country_distance_km"))
@@ -297,6 +301,9 @@ ASK_FREE_COMMENT         = "1️⃣4️⃣ При желании добавьт�
 GENERATING = "⏳ Генерирую описание… это займёт до минуты."
 ERROR_TEXT = "😔 Не получилось сгенерировать описание. Попробуйте ещё раз."
 
+# Новый общий вопрос для класса объекта (квартира/дом), не применяется к участкам и коммерческой
+ASK_OBJECT_CLASS = "Выберите класс объекта недвижимости:"
+
 COUNTRY_ASK_AREA = "Где расположен загородный объект?"
 
 SUB_FREE = """
@@ -427,6 +434,12 @@ FLAT_ENUMS: dict[str, list[tuple[str, str]]] = {
         ("<=2.5", "≤ 2.5"), ("2.6-2.8", "2.6–2.8"),
         ("2.9-3.1", "2.9–3.1"), (">=3.2", "3.2+"),
     ],
+    # Новый общий класс для квартиры/дома
+    "object_class": [
+        ("econom",  "Эконом"),
+        ("comfort", "Комфорт"),
+        ("elite",   "Элитное жилье"),
+    ],
 }
 
 # ==========================
@@ -487,6 +500,12 @@ COUNTRY_ENUMS: dict[str, list[tuple[str, str]]] = {
     # Земельный участок
     "country_land_category_plot": [
         ("izhs","ИЖС"), ("snt","СНТ"), ("dnp","ДНП"), ("fh","ФХ"), ("lph","ЛПХ"),
+    ],
+    # Тот же класс для загородных ДОМов (не для участков)
+    "object_class": [
+        ("econom",  "Эконом"),
+        ("comfort", "Комфорт"),
+        ("elite",   "Элитное жилье"),
     ],
 }
 
@@ -1031,6 +1050,7 @@ def _filter_fields_for_executor(raw: Dict, data: Dict) -> Dict:
     common = {"deal_type", "type", "area", "comment", "form_header"}
 
     flat_keys = common | {
+        "object_class",
         "apt_class","in_complex",
         "total_area","floors_total","floor","kitchen_area","rooms",
         "year_or_condition","utilities","features",
@@ -1041,6 +1061,7 @@ def _filter_fields_for_executor(raw: Dict, data: Dict) -> Dict:
         "location_exact"
     }
     country_keys = common | {
+        "object_class",
         "country_object_type","country_house_area_m2","country_plot_area_sotki",
         "country_distance_km","country_floors","country_rooms",
         "country_land_category_house","country_renovation","country_toilet",
@@ -1278,6 +1299,8 @@ async def handle_area(cb: CallbackQuery, state: FSMContext):
     # - land (земля/участок): только площадь, коммуникации, локация, особенности — НЕТ этажности/этажей/кухни/комнат/года
     if obj_type == "flat":
         form_keys: List[str] = [
+            # новый первый шаг: класс объекта
+            "object_class",
             "total_area",
             "floors_total",
             "floor",
@@ -1290,6 +1313,8 @@ async def handle_area(cb: CallbackQuery, state: FSMContext):
         ]
     elif obj_type == "house":
         form_keys = [
+            # новый первый шаг: класс дома
+            "object_class",
             "total_area",
             "floors_total",
             "kitchen_area",
@@ -1329,7 +1354,10 @@ async def handle_area(cb: CallbackQuery, state: FSMContext):
         await _edit_text_or_caption(cb.message, await _with_summary(state, ASK_FORM_APT_COND), kb_apt_condition())
     else:
         # текстовый шаг: добавить кнопку «Назад»
-        await _edit_text_or_caption(cb.message, await _with_summary(state, _form_prompt_for_key(first_key)), _kb_back_only())
+        if first_key == "object_class":
+            await _edit_text_or_caption(cb.message, await _with_summary(state, ASK_OBJECT_CLASS), _kb_enum("object_class"))
+        else:
+            await _edit_text_or_caption(cb.message, await _with_summary(state, _form_prompt_for_key(first_key)), _kb_back_only())
     await state.set_state(DescriptionStates.waiting_for_comment)  # используем существующий стейт как «анкета»
 
 # ==========================
@@ -1358,6 +1386,7 @@ def _flat_after_market_keys(*, include_mortgage: bool, include_legal: bool) -> l
 
 def _flat_prompt_for_key(key: str) -> str:
     return {
+        "object_class":      ASK_OBJECT_CLASS,
         "market":            FLAT_ASK_MARKET,
         "completion_term":   FLAT_ASK_COMPLETION_TERM,
         "sale_method":       FLAT_ASK_SALE_METHOD,
@@ -1412,6 +1441,7 @@ async def _ask_next_flat_step(msg: Message, state: FSMContext, *, new: bool = Fa
 
     # Поля с кнопками (перечисления)
     enum_keys = {
+        "object_class",
         "market", "completion_term", "sale_method", "rooms", "mortgage_ok",
         "bathroom_type", "windows", "house_type", "lift", "parking",
         "renovation", "layout", "balcony"
@@ -1477,6 +1507,7 @@ async def _ask_next_commercial_step(msg: Message, state: FSMContext, *, new: boo
 
 def _country_prompt_for_key(key: str) -> str:
     return {
+        "object_class":              ASK_OBJECT_CLASS,
         "country_object_type":        COUNTRY_ASK_OBJECT_TYPE,
         "country_house_area_m2":      COUNTRY_ASK_HOUSE_AREA,
         "country_plot_area_sotki":    COUNTRY_ASK_PLOT_AREA,
@@ -1556,6 +1587,7 @@ def _normalize_list(val: str) -> str:
 
 def _form_prompt_for_key(key: str) -> str:
     return {
+        "object_class":     ASK_OBJECT_CLASS,
         "total_area":       ASK_FORM_TOTAL_AREA,
         "land_area":        COMM_ASK_LAND_AREA,
         "floors_total":     ASK_FORM_FLOORS_TOTAL,
@@ -1643,6 +1675,18 @@ def _validate_and_store(key: str, text: str, data: Dict) -> Optional[str]:
         return None
     if key == "features":
         data["features"] = _normalize_list(t)
+        return None
+    if key == "object_class":
+        # Допускаем ввод текста; нормализуем к известным меткам при совпадении
+        norm = t.lower()
+        if norm in {"эконом","econom"}:
+            data["object_class"] = "Эконом"; return None
+        if norm in {"комфорт","comfort"}:
+            data["object_class"] = "Комфорт"; return None
+        if norm in {"элитное жилье","элитное жильё","elite","элитное"}:
+            data["object_class"] = "Элитное жилье"; return None
+        # иначе сохраняем как есть (но лучше выбирать кнопкой)
+        data["object_class"] = t
         return None
     # новые обязательные текстовые поля (квартира)
     if key == "flat_location_text":
@@ -1755,6 +1799,8 @@ async def _generate_and_output(
         "in_complex": data.get("in_complex"),
         "area":       data.get("area"),
         "comment":    (comment or "").strip(),
+        # Новый общий класс объекта (квартира/дом)
+        "object_class":       data.get("object_class"),
         # Новые структурированные поля анкеты
         "total_area":        data.get("total_area"),
         "floors_total":      data.get("floors_total"),
@@ -2275,6 +2321,16 @@ async def handle_country_area(cb: CallbackQuery, state: FSMContext):
         await state.update_data(area="city")
     else:
         return
+    # Если это дом (а не участок), вставим шаг object_class сразу после выбранного типа
+    data = await state.get_data()
+    keys: list[str] = data.get("__form_keys") or []
+    step: int = int(data.get("__form_step") or 0)
+    obj_lbl = (data.get("country_object_type") or "").lower()
+    if "участ" not in obj_lbl:
+        if keys and keys[0] == "country_object_type" and "object_class" not in keys:
+            keys = [keys[0], "object_class"] + keys[1:]
+            # оставляем __form_step == 1, чтобы следующим спросить object_class
+            await state.update_data(__form_keys=keys)
     # Переходим к следующему шагу анкеты
     await _ask_next_country_step(cb.message, state)
 
