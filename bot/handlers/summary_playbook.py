@@ -117,8 +117,8 @@ HISTORY_EMPTY = "История пуста."
 # ============= Клавиатуры =============
 def kb_home() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎧 Отправить аудио", callback_data="summary.audio"),
-         InlineKeyboardButton(text="📝 Вставить текст", callback_data="summary.text")],
+        [InlineKeyboardButton(text="🎧 Аудио", callback_data="summary.audio"),
+         InlineKeyboardButton(text="📝 Текст", callback_data="summary.text")],
         [InlineKeyboardButton(text="🕘 История", callback_data="summary.history")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.ai_tools")]
     ])
