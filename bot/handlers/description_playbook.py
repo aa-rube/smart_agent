@@ -25,6 +25,11 @@ import bot.utils.logging_config as logging_config
 # module logger
 log = logging_config.logger
 
+# ====== Глобальный флаг показа резюме анкеты ======
+# True  — показывать краткое резюме заполненных полей над каждым шагом.
+# False — полностью отключить резюме для всех флоу.
+SUMMARY_ENABLED: bool = False
+
 # ====== Доступ / подписка  ======
 import bot.utils.database as app_db          # триал/согласия/история
 import bot.utils.billing_db as billing_db     # карты/подписки/лог платежей
@@ -209,6 +214,8 @@ def _compose_summary(d: Dict) -> str:
     return head_str or body_str or ""
 
 async def _with_summary(state: FSMContext, text: str) -> str:
+    if not SUMMARY_ENABLED:
+        return text
     d = await state.get_data()
     summary = _compose_summary(d)
     return f"• {summary}\n\n{text}" if summary else text
