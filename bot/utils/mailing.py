@@ -22,6 +22,16 @@ MSK = ZoneInfo("Europe/Moscow")
 
 CHUNK_SIZE = 10  # Telegram ограничивает медиа-группу 10 элементами
 
+# ──────────────────────────────────────────────────────────────────────────────
+# ГРУППОВОЙ РЕЖИМ ТОЛЬКО ДЛЯ "СООБЩЕНИЙ ИЗ БД" (run_mailing_scheduler/broadcast)
+# ──────────────────────────────────────────────────────────────────────────────
+# False → рассылка по пользователям (индивидуально) — поведение по умолчанию.
+# True  → не рассылаем индивидуально, а публикуем ОДИН раз в общий чат GROUP_CHAT_ID.
+MAILING_DB_TO_GROUP: bool = False
+
+# Укажите реальный chat_id группы/канала
+GROUP_CHAT_ID: int = -1002948172022
+
 
 def _chunk(items: List[Any], n: int = CHUNK_SIZE) -> List[List[Any]]:
     return [items[i : i + n] for i in range(0, len(items), n)]
@@ -130,7 +140,18 @@ async def broadcast(bot: Bot, mailing: Dict[str, Any], user_ids: List[int]) -> N
     """
     Отправляет одну запись сразу списку пользователей.
     Ошибки по отдельным пользователям логируем в stdout, остальные не блокируем.
+    В групповом режиме (MAILING_DB_TO_GROUP=True) — отправляем ОДИН раз в GROUP_CHAT_ID.
     """
+    # Групповой режим: публикуем один раз и выходим
+    if MAILING_DB_TO_GROUP:
+        try:
+            # используем существующую маршрутизацию по типу контента
+            await send_to_user(bot, GROUP_CHAT_ID, mailing)
+        except Exception as e:
+            print(f"[mailing] send error to group {GROUP_CHAT_ID}: {e}")
+        return
+
+    # Индивидуальный режим: как было
     for uid in user_ids:
         try:
             await send_to_user(bot, int(uid), mailing)
@@ -197,24 +218,29 @@ async def run_mailing_scheduler(bot: Bot) -> None:
     if not pending:
         return
 
-    # Получатели = активный триал ИЛИ активная подписка (next_charge_at в будущем)
+    # Если включён режим "в общий чат", список получателей не нужен.
+    if MAILING_DB_TO_GROUP:
+        for m in pending:
+            await broadcast(bot, m, user_ids=[])  # broadcast сам отправит в GROUP_CHAT_ID
+            adb.mark_mailing_completed(m["id"])
+            logging.info("[mailing] completed (group) id=%s → posted to %s", m["id"], GROUP_CHAT_ID)
+        return
+
+    # Индивидуальный режим: как было — собираем реципиентов
     now_utc = datetime.now(timezone.utc)
     user_ids = _collect_recipients(now_utc)
-    logging.info(
-        "[mailing] recipients total=%s",
-        len(user_ids),
-    )
+    logging.info("[mailing] recipients total=%s", len(user_ids))
 
     if not user_ids:
         for m in pending:
             adb.mark_mailing_completed(m["id"])
-            logging.info("[mailing] no recipients → mark completed id=%s", m["id"])
+            logging.info("[mailing] no recipients (individual mode) → mark completed id=%s", m["id"])
         return
 
     for m in pending:
         await broadcast(bot, m, user_ids)
         adb.mark_mailing_completed(m["id"])
-        logging.info("[mailing] completed id=%s", m["id"])
+        logging.info("[mailing] completed (individual) id=%s", m["id"])
 
 
 def _collect_recipients(now_utc: datetime) -> List[int]:
