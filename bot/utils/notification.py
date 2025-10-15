@@ -24,6 +24,8 @@ _BEFORE_AFTER_IMG_REL_DESIGN = "img/bot/before_after_design.png"  # универ
 _BEFORE_AFTER_IMG_REL_PLANS = "img/bot/before_after_plans.png"
 # Постоянная ссылка на канал с контентом (для онбординга trial D1)
 CONTENT_CHANNEL_URL = "https://t.me/+mYYhx7MVkXQ5ODBi"
+# Временное окно (часы), в которое разрешена отправка шага после достижения порога
+_SEND_WINDOW_HOURS = 12.0
 # ──────────────────────────────────────────────────────────────────────────────
 # Тексты (обновлённые)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -150,6 +152,13 @@ def _hours_since(dt: Optional[datetime], now: Optional[datetime] = None) -> floa
     else:
         dt = dt.astimezone(timezone.utc)
     return (now - dt).total_seconds() / 3600.0
+
+def _within_window(hours_since_baseline: float, threshold_h: float, window_h: float = _SEND_WINDOW_HOURS) -> bool:
+    """
+    True, если с момента baseline прошло >= threshold_h и < threshold_h + window_h.
+    Используем как второй щит от «повторных» пушей при исчезновении Redis-ключа.
+    """
+    return (hours_since_baseline >= threshold_h) and (hours_since_baseline < (threshold_h + window_h))
 
 async def _send_text_once(bot: Bot, user_id: int, key: str, text: str,
                           *, ttl: int = _ANTI_SPAM_TTL_SEC, disable_preview: bool = False) -> bool:
@@ -388,19 +397,19 @@ async def run_unsubscribed_nurture(bot: Bot) -> None:
         if h < 0:
             continue
 
-        if h >= 24:
+        if _within_window(h, 24):
             if await _send_unsub_d1_with_post(bot, uid):
                 sent["d1"] += 1
-        if h >= 48:
+        if _within_window(h, 48):
             if await _send_text_once(bot, uid, f"notif:unsub:{uid}:d2", TXT_UNSUB_D2):
                 sent["d2"] += 1
-        if h >= 72:
+        if _within_window(h, 72):
             # D3: «Генератор интерьеров» → отправляем «design»
             if await _send_text_with_image_once(
                 bot, uid, f"notif:unsub:{uid}:d3", TXT_UNSUB_D3, image_rel_path=_BEFORE_AFTER_IMG_REL_DESIGN
             ):
                 sent["d3"] += 1
-        if h >= 96:
+        if _within_window(h, 96):
             if await _send_text_once(bot, uid, f"notif:unsub:{uid}:d4", TXT_UNSUB_D4):
                 sent["d4"] += 1
 
@@ -432,16 +441,16 @@ async def run_trial_onboarding(bot: Bot) -> None:
         if h < 0:
             continue
 
-        if h >= 1:
+        if _within_window(h, 1):
             if await _send_text_once(bot, uid, f"notif:trial:{uid}:d1:onboard", TXT_TRIAL_D1_ONBOARD):
                 sent["d1_onboard"] += 1
-        if h >= 24:
+        if _within_window(h, 24):
             # D1_2: «планировки» → отправляем «plan»
             if await _send_text_with_image_once(
                 bot, uid, f"notif:trial:{uid}:d1:2", TXT_TRIAL_D1_2, image_rel_path=_BEFORE_AFTER_IMG_REL_PLANS
             ):
                 sent["d1_2"] += 1
-        if h >= 48:
+        if _within_window(h, 48):
             # D2_1: «генератор интерьеров» → отправляем «design»
             if await _send_text_with_image_once(
                 bot, uid, f"notif:trial:{uid}:d2:1", TXT_TRIAL_D2_1, image_rel_path=_BEFORE_AFTER_IMG_REL_DESIGN
@@ -449,7 +458,7 @@ async def run_trial_onboarding(bot: Bot) -> None:
                 sent["d2_1"] += 1
             if await _send_text_once(bot, uid, f"notif:trial:{uid}:d2:2", TXT_TRIAL_D2_2):
                 sent["d2_2"] += 1
-        if h >= 72:
+        if _within_window(h, 72):
             if await _send_trial_d3_pay_once(bot, uid):
                 sent["d3_pay"] += 1
 
@@ -500,22 +509,22 @@ async def run_paid_lifecycle(bot: Bot) -> None:
         if h < 0:
             continue
 
-        if h >= 72:
+        if _within_window(h, 72):
             # D3: «дизайн интерьера» → отправляем «design»
             if await _send_text_with_image_once(
                 bot, uid, f"notif:paid:{uid}:d3", TXT_PAID_D3, image_rel_path=_BEFORE_AFTER_IMG_REL_DESIGN
             ):
                 sent["d3"] += 1
-        if h >= 120:
+        if _within_window(h, 120):
             if await _send_text_once(bot, uid, f"notif:paid:{uid}:d5", TXT_PAID_D5):
                 sent["d5"] += 1
-        if h >= 168:
+        if _within_window(h, 168):
             # D7: «планировки» → отправляем «plan»
             if await _send_text_with_image_once(
                 bot, uid, f"notif:paid:{uid}:d7", TXT_PAID_D7, image_rel_path=_BEFORE_AFTER_IMG_REL_PLANS
             ):
                 sent["d7"] += 1
-        if h >= 240:
+        if _within_window(h, 240):
             if await _send_text_once(bot, uid, f"notif:paid:{uid}:d10", TXT_PAID_D10):
                 sent["d10"] += 1
 
