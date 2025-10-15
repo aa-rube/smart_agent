@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import logging
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 from aiogram import Bot
+from aiogram.types import FSInputFile
 from zoneinfo import ZoneInfo
 from sqlalchemy import func
 
@@ -13,9 +16,11 @@ from bot.utils import database as app_db
 from bot.utils import billing_db
 from bot.utils.mailing import send_last_published_to_chat  # обёртка на "последний пост"
 from bot.utils.redis_repo import set_nx_with_ttl
+from bot.config import get_file_path
 
 MSK = ZoneInfo("Europe/Moscow")
 _ANTI_SPAM_TTL_SEC = 14 * 24 * 3600  # 14 дней
+_BEFORE_AFTER_IMG_REL = "img/bot/before_after.png"  # универсальная заглушка «было-стало»
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Тексты (обновлённые)
@@ -95,6 +100,41 @@ TXT_PAID_PRE_RENEW = (
 # Утилиты
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _format_amount(amount_value: str | None, amount_currency: str | None) -> str:
+    """
+    Нормализует цену из БД: '2490.00' -> '2490 ₽'; '990' -> '990 ₽'.
+    Для не-RUB подставляем код валюты.
+    """
+    if not amount_value:
+        return ""
+    try:
+        d = Decimal(str(amount_value))
+        s = f"{d:.2f}".rstrip("0").rstrip(".")
+    except (InvalidOperation, ValueError, TypeError):
+        s = str(amount_value)
+    cur = (amount_currency or "").upper()
+    sym = "₽" if cur in ("RUB", "RUR") else (cur or "")
+    return f"{s} {sym}".strip()
+
+
+def _tariff_name(plan_code: str | None, interval_months: int | None) -> str:
+    """
+    Преобразует код плана в человекочитаемое имя.
+    """
+    code = (plan_code or "").lower()
+    mapping = {
+        "1m": "месячный",
+        "3m": "3 месяца",
+        "6m": "6 месяцев",
+        "12m": "12 месяцев",
+    }
+    if code in mapping:
+        return mapping[code]
+    if interval_months and interval_months > 0:
+        return f"{interval_months} мес."
+    return plan_code or "тариф"
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -160,6 +200,156 @@ async def _send_unsub_d1_with_post(bot: Bot, user_id: int) -> bool:
 
     return ok
 
+
+async def _send_image_from_assets(bot: Bot, user_id: int, rel_path: str) -> bool:
+    """
+    Пытается отправить фото из каталога данных проекта.
+    Возвращает True при успехе, иначе False (например, если файла нет).
+    """
+    try:
+        abs_path = get_file_path(rel_path)
+    except Exception:
+        abs_path = rel_path
+    if not abs_path or not Path(abs_path).exists():
+        logging.warning("[notif] image not found: %s (resolved=%s)", rel_path, abs_path)
+        return False
+    try:
+        await bot.send_photo(user_id, FSInputFile(abs_path))
+        return True
+    except Exception as e:
+        logging.warning("[notif] send_photo to %s failed: %s", user_id, e)
+        return False
+
+
+async def _send_text_with_image_once(
+    bot: Bot,
+    user_id: int,
+    key: str,
+    text: str,
+    image_rel_path: str = _BEFORE_AFTER_IMG_REL,
+    *,
+    ttl: int = _ANTI_SPAM_TTL_SEC,
+) -> bool:
+    """
+    Ставит антиспам-метку и, если шаг ещё не отправляли, шлёт:
+      1) текст БЕЗ строки-плейсхолдера "/пример контента было-стало/"
+      2) следом картинку (before/after) как отдельным сообщением
+    """
+    try:
+        need_send = await set_nx_with_ttl(key, "1", ttl)
+    except Exception:
+        logging.exception("[notif] redis setnx failed for key=%s", key)
+        need_send = False
+    if not need_send:
+        return False
+
+    clean = text.replace("/пример контента было-стало/", "").strip()
+    try:
+        if clean:
+            await bot.send_message(user_id, clean)
+    except Exception as e:
+        logging.warning("[notif] send text w/ image to %s failed: %s", user_id, e)
+    await _send_image_from_assets(bot, user_id, image_rel_path)
+    return True
+
+
+def _compose_trial_d3_text(
+    *,
+    plan_code: str | None,
+    interval_months: int | None,
+    amount_value: str | None,
+    amount_currency: str | None,
+    next_charge_at: datetime | None,
+    now: Optional[datetime] = None,
+) -> str:
+    """
+    Собирает текст для шага Trial D3 (дожим к оплате) с реальным тарифом и ценой.
+    Если next_charge_at попадает на «завтра» по МСК — используем слово «Завтра», иначе указываем дату.
+    """
+    now = now or _utcnow()
+    nca = billing_db.to_aware_utc(next_charge_at) if next_charge_at else None
+    plan = _tariff_name(plan_code, interval_months)
+    price = _format_amount(amount_value, amount_currency)
+
+    if nca:
+        msk_now = now.astimezone(MSK)
+        msk_nca = nca.astimezone(MSK)
+        is_tomorrow = (msk_nca.date() == (msk_now + timedelta(days=1)).date())
+        when = "Завтра" if is_tomorrow else msk_nca.strftime("%d.%m")
+        return (
+            f"👉 Спасибо, что активно тестировал «Инструменты Риэлтора». "
+            f"{when} ты перейдёшь на тариф {plan} за {price} и сможешь пользоваться всеми инструментами без ограничений!"
+        )
+    # Фоллбэк, если даты нет — без «завтра», но с планом и ценой (если они есть)
+    if price:
+        return (
+            f"👉 Спасибо, что активно тестировал «Инструменты Риэлтора». "
+            f"Скоро ты перейдёшь на тариф {plan} за {price} и сможешь пользоваться всеми инструментами без ограничений!"
+        )
+    return (
+        "👉 Спасибо, что активно тестировал «Инструменты Риэлтора». "
+        "Скоро ты перейдёшь на оплачиваемый тариф и сможешь пользоваться всеми инструментами без ограничений!"
+    )
+
+
+async def _send_trial_d3_pay_once(bot: Bot, user_id: int) -> bool:
+    """
+    Идемпотентный отправитель D3-pay для триала с реальными параметрами подписки.
+    Берём ближайшую (по next_charge_at) активную подписку пользователя.
+    """
+    key = f"notif:trial:{user_id}:d3:pay"
+    try:
+        need_send = await set_nx_with_ttl(key, "1", _ANTI_SPAM_TTL_SEC)
+    except Exception:
+        logging.exception("[notif] redis setnx failed for key=%s", key)
+        need_send = False
+    if not need_send:
+        return False
+
+    now = _utcnow()
+    # ищем ближайшую активную подписку с будущим next_charge_at
+    Session = billing_db.SessionLocal
+    plan_code = None
+    interval_months = None
+    amount_value = None
+    amount_currency = None
+    next_charge_at = None
+    with Session() as s:
+        rec = (
+            s.query(
+                billing_db.Subscription.plan_code,
+                billing_db.Subscription.interval_months,
+                billing_db.Subscription.amount_value,
+                billing_db.Subscription.amount_currency,
+                billing_db.Subscription.next_charge_at,
+            )
+            .filter(
+                billing_db.Subscription.user_id == user_id,
+                billing_db.Subscription.status == "active",
+                billing_db.Subscription.next_charge_at != None,  # noqa: E711
+                billing_db.Subscription.next_charge_at > now,
+            )
+            .order_by(billing_db.Subscription.next_charge_at.asc())
+            .first()
+        )
+        if rec:
+            (plan_code, interval_months, amount_value, amount_currency, next_charge_at) = rec
+
+    text = _compose_trial_d3_text(
+        plan_code=plan_code,
+        interval_months=interval_months,
+        amount_value=amount_value,
+        amount_currency=amount_currency,
+        next_charge_at=next_charge_at,
+        now=now,
+    )
+    try:
+        await bot.send_message(user_id, text)
+        return True
+    except Exception as e:
+        logging.warning("[notif] trial d3 pay send to %s failed: %s", user_id, e)
+        return False
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 1) «Взаимодействовал, но не подписался»
 # baseline = минимальный app_db.EventLog.created_at; исключаем активные trial/paid
@@ -195,7 +385,7 @@ async def run_unsubscribed_nurture(bot: Bot) -> None:
             if await _send_text_once(bot, uid, f"notif:unsub:{uid}:d2", TXT_UNSUB_D2):
                 sent["d2"] += 1
         if h >= 72:
-            if await _send_text_once(bot, uid, f"notif:unsub:{uid}:d3", TXT_UNSUB_D3):
+            if await _send_text_with_image_once(bot, uid, f"notif:unsub:{uid}:d3", TXT_UNSUB_D3):
                 sent["d3"] += 1
         if h >= 96:
             if await _send_text_once(bot, uid, f"notif:unsub:{uid}:d4", TXT_UNSUB_D4):
@@ -233,15 +423,15 @@ async def run_trial_onboarding(bot: Bot) -> None:
             if await _send_text_once(bot, uid, f"notif:trial:{uid}:d1:onboard", TXT_TRIAL_D1_ONBOARD):
                 sent["d1_onboard"] += 1
         if h >= 24:
-            if await _send_text_once(bot, uid, f"notif:trial:{uid}:d1:2", TXT_TRIAL_D1_2):
+            if await _send_text_with_image_once(bot, uid, f"notif:trial:{uid}:d1:2", TXT_TRIAL_D1_2):
                 sent["d1_2"] += 1
         if h >= 48:
-            if await _send_text_once(bot, uid, f"notif:trial:{uid}:d2:1", TXT_TRIAL_D2_1):
+            if await _send_text_with_image_once(bot, uid, f"notif:trial:{uid}:d2:1", TXT_TRIAL_D2_1):
                 sent["d2_1"] += 1
             if await _send_text_once(bot, uid, f"notif:trial:{uid}:d2:2", TXT_TRIAL_D2_2):
                 sent["d2_2"] += 1
         if h >= 72:
-            if await _send_text_once(bot, uid, f"notif:trial:{uid}:d3:pay", TXT_TRIAL_D3_PAY):
+            if await _send_trial_d3_pay_once(bot, uid):
                 sent["d3_pay"] += 1
 
     logging.info("[notif][trial] done: %s", sent)
@@ -292,13 +482,13 @@ async def run_paid_lifecycle(bot: Bot) -> None:
             continue
 
         if h >= 72:
-            if await _send_text_once(bot, uid, f"notif:paid:{uid}:d3", TXT_PAID_D3):
+            if await _send_text_with_image_once(bot, uid, f"notif:paid:{uid}:d3", TXT_PAID_D3):
                 sent["d3"] += 1
         if h >= 120:
             if await _send_text_once(bot, uid, f"notif:paid:{uid}:d5", TXT_PAID_D5):
                 sent["d5"] += 1
         if h >= 168:
-            if await _send_text_once(bot, uid, f"notif:paid:{uid}:d7", TXT_PAID_D7):
+            if await _send_text_with_image_once(bot, uid, f"notif:paid:{uid}:d7", TXT_PAID_D7):
                 sent["d7"] += 1
         if h >= 240:
             if await _send_text_once(bot, uid, f"notif:paid:{uid}:d10", TXT_PAID_D10):
