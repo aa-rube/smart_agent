@@ -23,7 +23,6 @@ from bot.handlers.subscribe_partner_manager import ensure_partner_subs, PARTNER_
 from bot.handlers.payment_handler import show_rates as show_rates_handler
 import bot.utils.database as app_db
 import bot.utils.billing_db as billing_db
-from bot.utils.mailing import send_last_3_published_to_user
 from aiogram.types import User as TgUser
 
 
@@ -40,16 +39,7 @@ ai_tools_text = ('''
 *Инструменты PRO* - все, что нужно для работы с клиентами и объектами недвижимости.'''
 )
 
-smm_description = ('''
-Готовый контент для риэлторов и агентств недвижимости. 
-Мемы, видео, сторис и профессиональные комментарии к новостям рынка.
-📲 Каждый день в 09:00 по МСК ты получаешь новый пост - тебе остается только выложить в свои соцсети.
-Никакого ИИ - все создает маркетолог с опытом в недвижимости.
-✅ 30 постов и рассылок в месяц
-✅ Контент для WhatsApp, Telegram, ВКонтакте, Instagram, YouTube, TikTok
-💼 Экономь время и получай больше заявок!
-🎁Подпишись на 3 дня за 1 рубль!'''
-)
+
 
 HELP = "🆘 Нажмите на кнопку, чтобы обратиться в поддержку 👇"
 
@@ -107,12 +97,7 @@ ai_tools_inline = InlineKeyboardMarkup(
     ]
 )
 
-get_smm_subscribe_inline = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="🏡 Смотреть примеры постов", callback_data="show_rates")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")]
-    ]
-)
+
 
 def back_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
@@ -318,57 +303,7 @@ async def check_subscribe_retry(callback: CallbackQuery, bot: Bot) -> None:
     await _replace_with_menu_with_logo(callback)
 
 
-async def smm_content(callback: CallbackQuery) -> None:
-    await init_user(callback)
-    user_id = callback.from_user.id
 
-    # Короткая проверка доступа: активный триал ИЛИ есть привязанная (не удалённая) карта
-    # (без сложных выборок и дат, «1 раз — да/нет»)
-    try:
-        has_access = app_db.is_trial_active(user_id) or billing_db.has_saved_card(user_id)
-    except Exception as e:
-        logging.warning("Access check failed for %s: %s", user_id, e)
-        has_access = False
-
-    if has_access:
-        # ── ПРОСЬБА: «либо-либо» → шлём пост вместо экрана SMM ──
-        # 1) удаляем исходное сообщение (кнопку)
-        try:
-            await callback.message.delete()
-        except TelegramBadRequest:
-            pass
-        except Exception as e:
-            logging.warning("Failed to delete triggering message for %s: %s", user_id, e)
-
-        # 2) отправляем 3 последних уже опубликованных поста (по факту публикации, без учёта mailing_on)
-        try:
-            await send_last_3_published_to_user(callback.bot, user_id)
-        except Exception as e:
-            logging.warning("Failed to send last 3 published mailings to %s: %s", user_id, e)
-
-        # 3) короткое сообщение с кнопкой «Назад»
-        try:
-            await callback.bot.send_message(
-                chat_id=user_id,
-                text="Чтобы вернуться в главное меню, нажмите «Назад».",
-                reply_markup=back_kb(),
-            )
-        except Exception as e:
-            logging.warning("Failed to send back prompt to %s: %s", user_id, e)
-
-        try:
-            await callback.answer()
-        except Exception:
-            pass
-        return
-
-    # ── нет доступа → обычный экран SMM ──
-    await _edit_or_replace_with_photo_cb(
-        callback,
-        image_rel_path="img/bot/smm.png",
-        caption=smm_description,
-        kb=get_smm_subscribe_inline
-    )
 
 
 # =============================================================================
@@ -395,4 +330,4 @@ def router(rt: Router) -> None:
     # callbacks
     rt.callback_query.register(ai_tools, F.data == "nav.ai_tools")
     rt.callback_query.register(check_subscribe_retry, F.data == "start_retry")
-    rt.callback_query.register(smm_content, F.data == "smm_content")
+

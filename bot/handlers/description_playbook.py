@@ -1177,7 +1177,7 @@ async def start_description_flow(cb: CallbackQuery, state: FSMContext, bot: Bot)
     user_id = cb.message.chat.id
     # Контроль доступа (как в plans/design)
     if not _has_access(user_id):
-        # Сообщение об отсутствии доступа идентично подходу в plans.py
+        # Сообщение об отсутствии доступа идентично подходу в plans_playbook.py
         if not _is_sub_active(user_id):
             await _edit_text_or_caption(cb.message, SUB_FREE, SUBSCRIBE_KB)
         else:
@@ -1776,7 +1776,7 @@ async def _generate_and_output(
     # Повторный контроль доступа перед генерацией (на случай, если стейт «завис»)
     user_id = message.chat.id
     if not _has_access(user_id):
-        # Тексты как в plans.py
+        # Тексты как в plans_playbook.py
         text = SUB_FREE if not _is_sub_active(user_id) else SUB_PAY
         try:
             await message.edit_text(text, reply_markup=SUBSCRIBE_KB)

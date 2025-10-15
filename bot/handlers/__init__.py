@@ -4,7 +4,7 @@ from . import (
     handler_manager,
     # подключаем миддлвары логирования
     design,
-    plans,
+    plans_playbook,
     admin,
     subscribe_partner_manager,
     objection_playbook,
@@ -12,6 +12,7 @@ from . import (
     feedback_playbook,
     summary_playbook,
     payment_handler,
+    smm_playbook,
 )
 
 from .clicklog_mw import CallbackClickLogger, MessageLogger
@@ -33,15 +34,18 @@ def register_routers(rt: Router):
     # Приоритет 2: Основные команды + универсальный обработчик команд
     handler_manager.router(rt)
 
-    # Приоритет 3: Команды платежей
+    # Приоритет 3: SMM функциональность
+    smm_playbook.router(rt)
+
+    # Приоритет 4: Команды платежей
     payment_handler.router(rt)
 
-    # Приоритет 4: Остальные обработчики
+    # Приоритет 5: Остальные обработчики
     # Проверка подписки (кнопка «✅ Проверить подписку») - partners.check
     subscribe_partner_manager.router(rt)
     description_playbook.router(rt)
     feedback_playbook.router(rt)
     design.router(rt)
-    plans.router(rt)
+    plans_playbook.router(rt)
     objection_playbook.router(rt)
     summary_playbook.router(rt)

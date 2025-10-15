@@ -17,7 +17,6 @@ from bot.config import get_file_path
 from bot.utils import youmoney
 import bot.utils.database as app_db
 import bot.utils.billing_db as billing_db
-from bot.utils.mailing import send_last_published_to_user
 from bot.utils.redis_repo import yookassa_dedup, invalidate_payment_ok_cache
 
 logger = logging.getLogger(__name__)
@@ -35,17 +34,16 @@ TARIFFS: Dict[str, Dict] = {
     "12m": {"label": "12 месяцев", "months": 12, "amount": "19900.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
 }
 
++RATES_TEXT = ('''
+🎁 Хочешь получить полный доступ ко всем инструментам без ограничений?
+Оформи пробный доступ на 3 дня всего за 1 ₽,
+а далее выбери удобный абонемент:
 
-RATES_TEXT = ('''
-🎁 Хочешь смотреть контент для соцсетей риэлтора без ограничений?
-Оформи пробный доступ на 3 дня ко всем нашим Инструментам всего за 1 ₽
-А дальше выбери удобный абонемент:
-    
-    
 1 месяц — 2 490 ₽
 3 месяца — <s>7 470 ₽</s> => 6 490 ₽
 6 месяцев — <s>14 940 ₽</s> => 11 490 ₽ 🔥
-12 месяцев — <s>29 880 ₽</s> => 19 990 ₽'''
+12 месяцев — <s>29 880 ₽</s> => 19 990 ₽
+'''
 )
 
 PRE_PAY_TEXT = (
@@ -685,8 +683,7 @@ async def _notify_after_payment(bot: Bot, user_id: int, code: str, until_date_is
                 f"🔖 Тариф: *{TARIFFS.get(code, {}).get('label', code)}*\n"
                 f"📅 Доступ активен до: *{until_date_iso}*\n\n"
                 "Что дальше:\n"
-                "• Каждый день в 09:00 (МСК) вы получаете новый пост.\n"
-                "• Свежий пример уже отправили в этот чат — загляните ниже. 😊\n\n"
+                "• Откройте главное меню и выберите нужный инструмент.\n\n"
                 "Полезные инструменты:\n"
                 "• 🛋️ Генератор дизайна интерьера — быстрые визуализации комнат.\n"
                 "• 📐 Генератор планировок — скетч или реализм по вашему плану.\n"
@@ -700,12 +697,12 @@ async def _notify_after_payment(bot: Bot, user_id: int, code: str, until_date_is
             await _send_menu_with_logo(bot, user_id)
         except Exception as e:
             logger.warning("Failed to send main menu after payment for user %s: %s", user_id, e)
-        # Финт ушами: сразу после активации кидаем пользователю ближайший
-        # уже отправленный пост (publish_at <= now). ВАЖНО: не следующий.
+        # Онбординг SMM (текст про 09:00 + 3 последних примера) теперь в smm_playbook
         try:
-            await send_last_published_to_user(bot, user_id)
+            from bot.handlers import smm_playbook as _smm
+            await _smm.send_onboarding_after_payment(bot, user_id)
         except Exception as e:
-            logger.warning("Failed to send last published mailing to %s: %s", user_id, e)
+            logger.warning("Failed to send SMM onboarding after payment for user %s: %s", user_id, e)
     except Exception as e:
         logger.warning("Failed to notify user %s after payment: %s", user_id, e)
 

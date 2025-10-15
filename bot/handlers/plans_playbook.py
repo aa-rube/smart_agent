@@ -1,4 +1,4 @@
-# smart_agent/bot/handlers/plans.py
+# smart_agent/bot/handlers/plans_playbook.py
 from __future__ import annotations
 import logging
 
@@ -17,36 +17,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.enums.chat_action import ChatAction
 from aiogram.exceptions import TelegramBadRequest
 
-from bot.config import get_file_path, EXECUTOR_BASE_URL
+from bot.config import get_file_path
 from bot.states.states import FloorPlanStates
 from bot.utils.chat_actions import run_long_operation_with_action
 from bot.utils.file_utils import safe_remove
 from bot.utils.redis_repo import quota_repo
 
 LOG = logging.getLogger(__name__)
-
-
-def _save_data_url_to_file(data_url: str, user_id: int) -> str:
-    """
-    data:image/png;base64,... -> сохраняем во временный файл и возвращаем путь.
-    """
-    m = re.match(r"^data:(?P<mime>[^;]+);base64,(?P<data>.+)$", data_url)
-    if not m:
-        raise ValueError("Unsupported data URL")
-    
-    mime = (m.group("mime") or "image/png").lower()
-    raw = base64.b64decode(m.group("data"))
-    ext = "png"
-    if mime.endswith(("jpeg", "jpg")):
-        ext = "jpg"
-    elif mime.endswith("webp"):
-        ext = "webp"
-    
-    tmp = tempfile.NamedTemporaryFile(prefix=f"fp_{user_id}_", suffix=f".{ext}", delete=False)
-    tmp.write(raw)
-    tmp.flush(); tmp.close()
-    return tmp.name
-
 
 # ===========================
 # Тексты
@@ -118,6 +95,29 @@ def kb_result_back() -> InlineKeyboardMarkup:
 # ===========================
 GEN_LIMIT_PER_DAY = 500          # попыток на пользователя
 GEN_WINDOW_SEC    = 86400      # 24 часа
+
+
+# ===========================
+# Сохранение изображений
+# ===========================
+def _save_data_url_to_file(data_url: str, user_id: int) -> str:
+    m = re.match(r"^data:(?P<mime>[^;]+);base64,(?P<data>.+)$", data_url)
+    if not m:
+        raise ValueError("Unsupported data URL")
+
+    mime = (m.group("mime") or "image/png").lower()
+    raw = base64.b64decode(m.group("data"))
+    ext = "png"
+    if mime.endswith(("jpeg", "jpg")):
+        ext = "jpg"
+    elif mime.endswith("webp"):
+        ext = "webp"
+
+    tmp = tempfile.NamedTemporaryFile(prefix=f"fp_{user_id}_", suffix=f".{ext}", delete=False)
+    tmp.write(raw)
+    tmp.flush()
+    tmp.close()
+    return tmp.name
 
 
 # ===========================
