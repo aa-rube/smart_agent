@@ -37,27 +37,18 @@ frst_text = (
 )
 
 ai_tools_text = ('''
-Выбирай, что нужно прямо сейчас 👇'''
+*Инструменты PRO* - все, что нужно для работы с клиентами и объектами недвижимости.'''
 )
 
 smm_description = ('''
-📲 *Наша SMM-команда* ежедневно готовит контент для твоих соцсетей.
-
-Никакого ИИ - только опытные маркетологи с практикой в недвижимости.
-
-🕗 Каждый день в *09:00 по МСК* мы отправляем тебе новый пост.
-
-Тебе остается только *скопировать → вставить* в свои соцсети.
-
-За месяц ты получаешь 👇
-✅ 30 готовых тем для постов и рассылок.
-✅ Тексты и картинки для *ВКонтакте, Telegram, Instagram, Одноклассников.*
-✅ Сторис и истории для *WhatsApp, Telegram, ВК, Instagram.*
-✅ Короткие видео для *WhatsApp, Reels, Shorts, TikTok, ВК*.
-
-💼 Всё создано, чтобы ты экономил время и получал больше заявок из соцсетей.
-🔐 Доступ только для подписчиков.
-*Оформи подписку всего за 1 рубль* и пользуйся всеми инструментами риэлтора без ограничений!'''
+Готовый контент для риэлторов и агентств недвижимости. 
+Мемы, видео, сторис и профессиональные комментарии к новостям рынка.
+📲 Каждый день в 09:00 по МСК ты получаешь новый пост - тебе остается только выложить в свои соцсети.
+Никакого ИИ - все создает маркетолог с опытом в недвижимости.
+✅ 30 постов и рассылок в месяц
+✅ Контент для WhatsApp, Telegram, ВКонтакте, Instagram, YouTube, TikTok
+💼 Экономь время и получай больше заявок!
+🎁Подпишись на 3 дня за 1 рубль!'''
 )
 
 HELP = "🆘 Нажмите на кнопку, чтобы обратиться в поддержку 👇"
@@ -67,17 +58,43 @@ get_subscribe = 'Похоже, ещё не на все каналы подпис
 # =============================================================================
 # Клавиатуры
 # =============================================================================
+# Базовая (статичная) клавиатура — оставляем для совместимости,
+# но главный экран ниже будет использовать динамический билдер.
 frst_kb_inline = InlineKeyboardMarkup(
     inline_keyboard=[
-        [InlineKeyboardButton(text="🏡 Контент для соцсетей риелтора", callback_data="smm_content")],
-        [InlineKeyboardButton(text="🧠 Продвинутые инструменты", callback_data="nav.ai_tools")],
+        [InlineKeyboardButton(text="🏡 Готовые посты для соцсетей", callback_data="smm_content")],
+        [InlineKeyboardButton(text="📐 Обрисовщик планировок", callback_data="floor_plan")],
         [InlineKeyboardButton(text="🎨 Редизайн квартиры", callback_data="nav.design_home")],
-        [InlineKeyboardButton(text="📐 Обрисовка планировок", callback_data="floor_plan")],
+        [InlineKeyboardButton(text="Инструменты PRO-риэлтора", callback_data="nav.ai_tools")],
         [InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")],
         [InlineKeyboardButton(text="Наше сообщество", url=PARTNER_URL)],
         [InlineKeyboardButton(text="Тех. поддержка", url="https://t.me/dashaadminrealtor")],
     ]
 )
+
+def build_main_menu_kb(user_id: int) -> InlineKeyboardMarkup:
+    """
+    Главная клавиатура с динамическим названием кнопки SMM:
+    — если есть активный триал или привязанная карта → «🏡 Смотреть примеры постов»
+    — иначе → «🏡 Готовые посты для соцсетей»
+    """
+    try:
+        has_access = app_db.is_trial_active(user_id) or billing_db.has_saved_card(user_id)
+    except Exception as e:
+        logging.warning("Access check failed for %s: %s", user_id, e)
+        has_access = False
+    first_btn_text = "🏡 Смотреть примеры постов" if has_access else "🏡 Готовые посты для соцсетей"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=first_btn_text, callback_data="smm_content")],
+            [InlineKeyboardButton(text="📐 Обрисовщик планировок", callback_data="floor_plan")],
+            [InlineKeyboardButton(text="🎨 Редизайн квартиры", callback_data="nav.design_home")],
+            [InlineKeyboardButton(text="Инструменты PRO-риэлтора", callback_data="nav.ai_tools")],
+            [InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")],
+            [InlineKeyboardButton(text="Наше сообщество", url=PARTNER_URL)],
+            [InlineKeyboardButton(text="Тех. поддержка", url="https://t.me/dashaadminrealtor")],
+        ]
+    )
 
 ai_tools_inline = InlineKeyboardMarkup(
     inline_keyboard=[
@@ -159,13 +176,14 @@ async def send_menu_with_logo(bot: Bot, chat_id: int) -> None:
     """
     logo_rel = "img/bot/logo.png"  # путь внутри DATA_DIR
     logo_path = get_file_path(logo_rel)
+    kb = build_main_menu_kb(chat_id)
     if Path(logo_path).exists():
         try:
             await bot.send_photo(
                 chat_id=chat_id,
                 photo=FSInputFile(logo_path),
                 caption=frst_text,
-                reply_markup=frst_kb_inline,
+                reply_markup=kb,
             )
             return
         except Exception as e:
@@ -173,7 +191,7 @@ async def send_menu_with_logo(bot: Bot, chat_id: int) -> None:
     else:
         logging.warning("Logo not found: %s (resolved from %s)", logo_path, logo_rel)
 
-    await bot.send_message(chat_id=chat_id, text=frst_text, reply_markup=frst_kb_inline)
+    await bot.send_message(chat_id=chat_id, text=frst_text, reply_markup=kb)
 
 
 async def _replace_with_menu_with_logo(callback: CallbackQuery) -> None:
@@ -186,24 +204,25 @@ async def _replace_with_menu_with_logo(callback: CallbackQuery) -> None:
     """
     logo_rel = "img/bot/logo.png"
     logo_path = get_file_path(logo_rel)
+    kb = build_main_menu_kb(callback.from_user.id)
 
     # Путь к картинке существует — пробуем заменить медиа
     if Path(logo_path).exists():
         try:
             media = InputMediaPhoto(media=FSInputFile(logo_path), caption=frst_text)
-            await callback.message.edit_media(media=media, reply_markup=frst_kb_inline)
+            await callback.message.edit_media(media=media, reply_markup=kb)
             await callback.answer()
             return
         except TelegramBadRequest:
             # Сообщение могло быть не медийным — пробуем обновить подпись
             try:
-                await callback.message.edit_caption(caption=frst_text, reply_markup=frst_kb_inline)
+                await callback.message.edit_caption(caption=frst_text, reply_markup=kb)
                 await callback.answer()
                 return
             except TelegramBadRequest:
                 # Как минимум заменим текст и клавиатуру
                 try:
-                    await callback.message.edit_text(frst_text, reply_markup=frst_kb_inline)
+                    await callback.message.edit_text(frst_text, reply_markup=kb)
                     await callback.answer()
                     return
                 except TelegramBadRequest:
