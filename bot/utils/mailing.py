@@ -173,6 +173,14 @@ async def send_last_published_to_user(bot: Bot, user_id: int) -> None:
         logging.warning("[mailing] failed to send last published to %s: %s", user_id, e)
 
 
+async def send_last_published_to_chat(bot: Bot, chat_id: int) -> None:
+    """
+    Синоним для send_last_published_to_user, но с неймингом под любые chat_id.
+    Нужен для сценарных уведомлений (notification.py).
+    """
+    await send_last_published_to_user(bot, chat_id)
+
+
 async def send_last_3_published_to_user(bot: Bot, user_id: int) -> bool:
     """
     Отправляет пользователю последние 3 поста, у которых publish_at <= now (МСК),

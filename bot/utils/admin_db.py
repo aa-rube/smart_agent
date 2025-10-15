@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from dateutil.relativedelta import relativedelta
-from sqlalchemy import create_engine, String, Integer, Text, func, DateTime as _DT, Boolean as _Bool
+from sqlalchemy import create_engine, String, Integer, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, Session
 
 MSK = ZoneInfo("Europe/Moscow")
@@ -25,14 +25,13 @@ class Base(DeclarativeBase):
 
 def _make_engine():
     # Используем админскую базу данных MySQL
-    engine = create_engine(
+    return create_engine(
         cfg.ADMIN_DB_URL,
         future=True,
         echo=False,
         pool_pre_ping=True
     )
 
-    return engine
 
 
 engine = _make_engine()

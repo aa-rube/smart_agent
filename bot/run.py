@@ -15,6 +15,7 @@ from bot.config import *
 import bot.utils.database as db
 import bot.utils.billing_db as billing_db
 from bot.utils.mailing import run_mailing_scheduler
+from bot.utils.notification import run_notification_scheduler
 
 from bot.handlers.payment_handler import process_yookassa_webhook
 from bot.utils import youmoney
@@ -150,6 +151,30 @@ async def main():
             except asyncio.TimeoutError:
                 continue
 
+    async def notification_loop():
+        """
+        Фоновый цикл сценарных уведомлений (unsub/trial/paid).
+        Раз в 10 минут проверяет, кому пришло время отправить сообщения.
+        Антиспам — на уровне notification.* через Redis.
+        """
+        # На старте один «тик» (можно словить хвосты после рестарта)
+        try:
+            await run_notification_scheduler(bot)
+        except Exception:
+            logging.exception("notification_loop initial tick failed")
+
+        while not shutdown_event.is_set():
+            try:
+                await run_notification_scheduler(bot)
+            except Exception:
+                logging.exception("notification_loop tick failed")
+            # Прерываемый sleep
+            try:
+                await asyncio.wait_for(shutdown_event.wait(), timeout=600)
+                break
+            except asyncio.TimeoutError:
+                continue
+
     # ---Жёсткий стоп по сигналу---
     def _hard_stop(signum, frame):
         # максимально быстрый stop для systemd: отменяем таски и мгновенно выходим
@@ -177,12 +202,13 @@ async def main():
         # Запускаем задачи как отдельные таски, чтобы их можно было отменить мгновенно
         billing_task = asyncio.create_task(billing_loop(), name="billing_loop")
         mailing_task = asyncio.create_task(mailing_loop(), name="mailing_loop")
+        notification_task = asyncio.create_task(notification_loop(), name="notification_loop")
         # Важно: отключаем встроенную обработку сигналов, чтобы не было «грейсфул» задержек
         polling_task = asyncio.create_task(dp.start_polling(bot, handle_signals=False), name="polling")
 
         # ждём, пока любая из задач завершится с исключением или по отмене
         done, pending = await asyncio.wait(
-            {billing_task, mailing_task, polling_task},
+            {billing_task, mailing_task, notification_task, polling_task},
             return_when=asyncio.FIRST_EXCEPTION,
         )
 
