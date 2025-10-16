@@ -32,6 +32,7 @@ SUMMARY_ENABLED: bool = False
 
 # ====== Доступ / подписка  ======
 import bot.utils.database as app_db          # триал/согласия/история
+
 from bot.handlers.payment_handler import (
     SUBSCRIBE_KB, SUB_FREE, SUB_PAY,
     has_access     as pay_has_access,

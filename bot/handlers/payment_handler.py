@@ -81,6 +81,54 @@ SUB_PAY = (
     "Стоимость пакета всего 2500 рублей!"
 )
 
+def format_access_text(user_id: int) -> str:
+    """
+    Короткий статус доступа для стартовых экранов инструментов.
+    """
+    try:
+        hours = app_db.trial_remaining_hours(user_id)
+    except Exception:
+        hours = 0
+    if app_db.is_trial_active(user_id):
+        try:
+            until_dt = app_db.get_trial_until(user_id)
+        except Exception:
+            until_dt = None
+        if until_dt:
+            return f"🆓 Бесплатный доступ активен до *{until_dt.date().isoformat()}* (~{hours} ч.)"
+        return f"🆓 Бесплатный доступ активен ещё *~{hours} ч.*"
+    if billing_db.has_saved_card(user_id):
+        return "✅ Подписка активна (автопродление включено)"
+    return "😢 Бесплатный период завершён. Оформи подписку, чтобы продолжить."
+
+
+def has_access(user_id: int) -> bool:
+    try:
+        return bool(app_db.is_trial_active(user_id) or billing_db.has_saved_card(user_id))
+    except Exception:
+        return False
+
+
+async def ensure_access(evt: Message | CallbackQuery) -> bool:
+    """
+    Централизованная проверка доступа. Возвращает True, если доступ есть.
+    Иначе — показывает экран с предложением оформить подписку и возвращает False,
+    прерывая основной флоу.
+    """
+    user_id = evt.from_user.id if isinstance(evt, CallbackQuery) else evt.from_user.id
+    if has_access(user_id):
+        return True
+    text = SUB_FREE if not billing_db.has_saved_card(user_id) else SUB_PAY
+    try:
+        if isinstance(evt, CallbackQuery):
+            await _edit_safe(evt, text, SUBSCRIBE_KB)
+        else:
+            await evt.answer(text, reply_markup=SUBSCRIBE_KB, parse_mode="Markdown")
+    except Exception:
+        pass
+    return False
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # ВНУТРЕННОЕ КЭШИРОВАНИЕ СОГЛАСИЯ (только для UI-чекбокса)
 # ──────────────────────────────────────────────────────────────────────────────
