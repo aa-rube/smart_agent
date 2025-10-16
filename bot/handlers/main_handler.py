@@ -29,38 +29,18 @@ from aiogram.types import User as TgUser
 # =============================================================================
 # Тексты
 # =============================================================================
-frst_text = (
-'''👋 Привет!
+frst_text = '''
+👋 Привет!
 Добро пожаловать в *ИНСТРУМЕНТЫ РИЭЛТОРА*.
-Выбирай, что нужно прямо сейчас 👇'''
-)
-
-ai_tools_text = ('''
-*Инструменты PRO* - все, что нужно для работы с клиентами и объектами недвижимости.'''
-)
-
-
-
+Выбирай, что нужно прямо сейчас 👇
+'''
+ai_tools_text = '''*Инструменты PRO* - все, что нужно для работы с клиентами и объектами недвижимости.'''
 HELP = "🆘 Нажмите на кнопку, чтобы обратиться в поддержку 👇"
-
 get_subscribe = 'Похоже, ещё не на все каналы подписаны 🤏'
 
 # =============================================================================
 # Клавиатуры
 # =============================================================================
-# Базовая (статичная) клавиатура — оставляем для совместимости,
-# но главный экран ниже будет использовать динамический билдер.
-frst_kb_inline = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="🏡 Готовые посты для соцсетей", callback_data="smm_content")],
-        [InlineKeyboardButton(text="📐 Обрисовщик планировок", callback_data="floor_plan")],
-        [InlineKeyboardButton(text="🎨 Редизайн квартиры", callback_data="nav.design_home")],
-        [InlineKeyboardButton(text="Инструменты PRO-риэлтора", callback_data="nav.ai_tools")],
-        [InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")],
-        [InlineKeyboardButton(text="Наше сообщество", url=PARTNER_URL)],
-        [InlineKeyboardButton(text="Тех. поддержка", url="https://t.me/dashaadminrealtor")],
-    ]
-)
 
 def build_main_menu_kb(user_id: int) -> InlineKeyboardMarkup:
     """
@@ -73,13 +53,13 @@ def build_main_menu_kb(user_id: int) -> InlineKeyboardMarkup:
     except Exception as e:
         logging.warning("Access check failed for %s: %s", user_id, e)
         has_access = False
-    first_btn_text = "🏡 Смотреть примеры постов" if has_access else "🏡 Готовые посты для соцсетей"
+    first_btn_text = "🏡 Готовые посты для соцсетей" if has_access else "🏡 Смотреть примеры постов"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=first_btn_text, callback_data="smm_content")],
             [InlineKeyboardButton(text="📐 Обрисовщик планировок", callback_data="floor_plan")],
             [InlineKeyboardButton(text="🎨 Редизайн квартиры", callback_data="nav.design_home")],
-            [InlineKeyboardButton(text="Инструменты PRO-риэлтора", callback_data="nav.ai_tools")],
+            [InlineKeyboardButton(text="🧠 Инструменты PRO-риэлтора", callback_data="nav.ai_tools")],
             [InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")],
             [InlineKeyboardButton(text="Наше сообщество", url=PARTNER_URL)],
             [InlineKeyboardButton(text="Тех. поддержка", url="https://t.me/dashaadminrealtor")],
@@ -98,12 +78,10 @@ ai_tools_inline = InlineKeyboardMarkup(
 )
 
 
-
 def back_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")]]
     )
-
 
 
 def help_kb():
