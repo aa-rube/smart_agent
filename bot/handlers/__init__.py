@@ -2,7 +2,6 @@
 from aiogram import Router
 from . import (
     main_handler,
-    # подключаем миддлвары логирования
     design_playbook,
     plans_playbook,
     admin,
@@ -41,11 +40,10 @@ def register_routers(rt: Router):
     payment_handler.router(rt)
 
     # Приоритет 5: Остальные обработчики
-    # Проверка подписки (кнопка «✅ Проверить подписку») - partners.check
     subscribe_partner_manager.router(rt)
     description_playbook.router(rt)
     feedback_playbook.router(rt)
-    design.router(rt)
+    design_playbook.router(rt)
     plans_playbook.router(rt)
     objection_playbook.router(rt)
     summary_playbook.router(rt)
