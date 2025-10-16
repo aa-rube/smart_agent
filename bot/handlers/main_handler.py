@@ -1,4 +1,4 @@
-# smart_agent/bot/handlers/handler_manager.py
+# smart_agent/bot/handlers/main_handler.py
 from __future__ import annotations
 
 import logging

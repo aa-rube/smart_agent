@@ -32,8 +32,12 @@ SUMMARY_ENABLED: bool = False
 
 # ====== Доступ / подписка  ======
 import bot.utils.database as app_db          # триал/согласия/история
-import bot.utils.billing_db as billing_db     # карты/подписки/лог платежей
-from bot.utils.database import is_trial_active, trial_remaining_hours
+from bot.handlers.payment_handler import (
+    SUBSCRIBE_KB, SUB_FREE, SUB_PAY,
+    has_access     as pay_has_access,
+    format_access_text as pay_format_access_text,
+    ensure_access  as pay_ensure_access,
+)
 
 
 def _clean_autofilled_comment(text: str, bot_username: Optional[str]) -> str:
@@ -63,6 +67,7 @@ def _is_filled(v) -> bool:
     if isinstance(v, (list, tuple, set, dict)):
         return len(v) > 0
     return True
+
 
 
 # ==========================
@@ -232,33 +237,6 @@ def _kb_add_back_exit(rows: list[list[InlineKeyboardButton]]) -> list[list[Inlin
     return rows
 
 
-def _is_sub_active(user_id: int) -> bool:
-    """
-    Новая модель: активная подписка = привязанная НЕ удалённая карта
-    (автопродление включено). Дату sub_until больше не читаем из variables.
-    """
-    return bool(billing_db.has_saved_card(user_id))
-
-def _format_access_text(user_id: int) -> str:
-    trial_hours = trial_remaining_hours(user_id)
-    # Есть активный триал — показываем дату окончания, если доступна
-    if is_trial_active(user_id):
-        # Узко перехватываем типичные ошибки извлечения/преобразования данных из БД
-        try:
-            until_dt = app_db.get_trial_until(user_id)
-        except (LookupError, ValueError, TypeError):
-            until_dt = None
-        if until_dt:
-            return f'🆓 Бесплатный доступ активен до *{until_dt.date().isoformat()}* (~{trial_hours} ч.)'
-        return f'🆓 Бесплатный доступ активен ещё *~{trial_hours} ч.*'
-    # Нет триала — проверяем подписку
-    if _is_sub_active(user_id):
-        return '✅ Подписка активна (автопродление включено)'
-    return '😢 Бесплатный период завершён. Оформи подписку, чтобы продолжить.'
-
-def _has_access(user_id: int) -> bool:
-    return bool(is_trial_active(user_id) or _is_sub_active(user_id))
-
 # ==========================
 # Безопасный ACK callback-запроса (чтобы не получить "query is too old")
 # ==========================
@@ -311,29 +289,9 @@ ASK_OBJECT_CLASS = "Выберите класс объекта недвижим�
 
 COUNTRY_ASK_AREA = "Где расположен загородный объект?"
 
-SUB_FREE = """
-🎁 Бесплатный период завершён
-Пробный доступ на 72 часа истёк — дальше только по подписке.
-
-📦* Что даёт подписка:*
- — Полный доступ ко всем инструментам
- — Без ограничений по количеству запусков в период подписки*
-Стоимость пакета всего 2500 рублей!
-""".strip()
-
-SUB_PAY = """
-🪫 Подписка не активна
-Срок подписки истёк или не был оформлен.
-
-📦* Что даёт подписка:*
- — Полный доступ ко всем инструментам
- — Без ограничений по количеству запусков в период подписки*
-Стоимость пакета всего 2500 рублей!
-""".strip()
-
 def text_descr_intro(user_id: int) -> str:
     """Стартовый текст с информацией о доступе. Начинаем с типа сделки."""
-    return f"{DESC_INTRO}\n\n{_format_access_text(user_id)}\n\n{ASK_DEAL}"
+    return f"{DESC_INTRO}\n\n{pay_format_access_text(user_id)}\n\n{ASK_DEAL}"
 
 # ==========================
 # Квартира: новые тексты / опции
@@ -977,10 +935,7 @@ def kb_short_comment_edit(original_text: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# Кнопка к офферу подписки
-SUBSCRIBE_KB = InlineKeyboardMarkup(
-    inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
-)
+
 
 def _derive_form_header(data: Dict) -> str:
     """
@@ -1175,13 +1130,8 @@ async def start_description_flow(cb: CallbackQuery, state: FSMContext, bot: Bot)
     """
     await _cb_ack(cb)
     user_id = cb.message.chat.id
-    # Контроль доступа (как в plans/design)
-    if not _has_access(user_id):
-        # Сообщение об отсутствии доступа идентично подходу в plans_playbook.py
-        if not _is_sub_active(user_id):
-            await _edit_text_or_caption(cb.message, SUB_FREE, SUBSCRIBE_KB)
-        else:
-            await _edit_text_or_caption(cb.message, SUB_PAY, SUBSCRIBE_KB)
+    # Централизованная проверка в платежном менеджере
+    if not await pay_ensure_access(cb):
         return
 
     await state.clear()
@@ -1773,18 +1723,8 @@ async def _generate_and_output(
     Собираем сырые поля и шлём их в executor.
     Если reuse_anchor=True — редактируем текущее сообщение (без создания нового).
     """
-    # Повторный контроль доступа перед генерацией (на случай, если стейт «завис»)
-    user_id = message.chat.id
-    if not _has_access(user_id):
-        # Тексты как в plans_playbook.py
-        text = SUB_FREE if not _is_sub_active(user_id) else SUB_PAY
-        try:
-            await message.edit_text(text, reply_markup=SUBSCRIBE_KB)
-        except TelegramBadRequest:
-            try:
-                await message.edit_caption(caption=text, reply_markup=SUBSCRIBE_KB)
-            except TelegramBadRequest:
-                await message.answer(text, reply_markup=SUBSCRIBE_KB)
+    # Прерываем основной флоу и кидаем на покупку, если доступа нет
+    if not await pay_ensure_access(message):
         await state.clear()
         return
 

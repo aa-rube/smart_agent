@@ -1,4 +1,4 @@
-#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\design.py
+#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\design_playbook.py
 from __future__ import annotations
 
 import fitz

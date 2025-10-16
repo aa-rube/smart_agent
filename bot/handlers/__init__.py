@@ -1,9 +1,9 @@
 # smart_agent/bot/handlers/__init__.py
 from aiogram import Router
 from . import (
-    handler_manager,
+    main_handler,
     # подключаем миддлвары логирования
-    design,
+    design_playbook,
     plans_playbook,
     admin,
     subscribe_partner_manager,
@@ -32,7 +32,7 @@ def register_routers(rt: Router):
     admin.router(rt)
 
     # Приоритет 2: Основные команды + универсальный обработчик команд
-    handler_manager.router(rt)
+    main_handler.router(rt)
 
     # Приоритет 3: SMM функциональность
     smm_playbook.router(rt)
