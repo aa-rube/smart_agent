@@ -13,10 +13,14 @@ from aiogram.fsm.context import FSMContext
 from aiogram.enums.chat_action import ChatAction
 from aiogram.exceptions import TelegramBadRequest
 
-import bot.utils.database as db                    # приложение: триал/история/consents
-import bot.utils.billing_db as billing_db          # биллинг: карты/подписки/лог платежей
-from bot.config import *
-from bot.utils.database import is_trial_active, trial_remaining_hours
+from bot.config import EXECUTOR_BASE_URL, get_file_path
+from bot.handlers.payment_handler import (
+    format_access_text,  # централизованный короткий статус доступа
+    ensure_access,       # централизованная проверка/показ экрана подписки
+    SUBSCRIBE_KB         # общая кнопка «Оформить подписку»
+)
+import aiohttp
+import os
 from bot.states.states import RedesignStates, ZeroDesignStates
 
 from bot.utils.image_processor import *
@@ -38,43 +42,11 @@ async def _safe_answer(cb: CallbackQuery) -> None:
 
 
 # =============================================================================
-# Доступ / подписка
-# =============================================================================
-
-def _is_sub_active(user_id: int) -> bool:
-    """
-    Новая модель: активная подписка = есть привязанная (не удалённая) карта.
-    Никаких variables['sub_until'] больше не используем.
-    """
-    return bool(billing_db.has_saved_card(user_id))
-
-def _format_access_text(user_id: int) -> str:
-    trial_hours = trial_remaining_hours(user_id)
-    # приоритет — активный триал
-    if is_trial_active(user_id):
-        try:
-            until_dt = db.get_trial_until(user_id)
-            if until_dt:
-                return f'🆓 Бесплатный доступ активен до *{until_dt.date().isoformat()}* (~{trial_hours} ч.)'
-        except Exception:
-            pass
-        return f'🆓 Бесплатный доступ активен ещё *~{trial_hours} ч.*'
-    # затем — подписка (автопродление включено)
-    if _is_sub_active(user_id):
-        return '✅ Подписка активна (автопродление включено)'
-    # иначе — нет доступа
-    return '😢 Бесплатный период завершён. Оформи подписку, чтобы продолжить.'
-
-def _has_access(user_id: int) -> bool:
-    return bool(is_trial_active(user_id) or _is_sub_active(user_id))
-
-
-# =============================================================================
 # Тексты
 # =============================================================================
 
 def _start_screen_text(user_id: int) -> str:
-    tokens_text = _format_access_text(user_id)
+    tokens_text = format_access_text(user_id)
     return f"""
 {tokens_text}
 
@@ -91,10 +63,10 @@ _TEXT_GET_FILE = """
 """.strip()
 
 def text_get_file_redesign(user_id: int) -> str:
-    return _TEXT_GET_FILE.format(tokens_text=_format_access_text(user_id))
+    return _TEXT_GET_FILE.format(tokens_text=format_access_text(user_id))
 
 def text_get_file_zero(user_id: int) -> str:
-    return _TEXT_GET_FILE.format(tokens_text=_format_access_text(user_id))
+    return _TEXT_GET_FILE.format(tokens_text=format_access_text(user_id))
 
 TEXT_GET_STYLE = "Ок! Теперь выбери стиль оформления 🖼️"
 TEXT_FINAL = "✅ Готово! Вот результат."
@@ -103,10 +75,6 @@ ERROR_PDF_PAGES = "❌ В PDF должно быть не больше одной
 ERROR_LINK = "❌ Не удалось скачать изображение по ссылке. Нужна прямая ссылка на файл (jpg/png)."
 SORRY_TRY_AGAIN = "😔 Не удалось сгенерировать изображение. Попробуйте ещё раз."
 UNSUCCESSFUL_TRY_LATER = "😔 Не удалось скачать сгенерированное изображение. Попробуйте позже."
-
-SUBSCRIBE_KB = InlineKeyboardMarkup(
-    inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
-)
 
 
 # =============================================================================
@@ -253,21 +221,19 @@ async def design_home(callback: CallbackQuery, state: FSMContext, bot: Bot):
 async def start_redesign_flow(callback: CallbackQuery, state: FSMContext, bot: Bot):
     """Начало редизайна — просим загрузить фото/скан/ссылку."""
     user_id = callback.message.chat.id
-
-    if _has_access(user_id):
-        await state.set_state(RedesignStates.waiting_for_file)
-        await _edit_or_replace_with_photo_file(
-            bot=bot,
-            msg=callback.message,
-            file_path=get_file_path('img/bot/design.png'),
-            caption=text_get_file_redesign(user_id),
-            kb=InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")]]
-            ),
-        )
-    else:
-        await _edit_text_or_caption(callback.message, _format_access_text(user_id), SUBSCRIBE_KB)
-
+    # централизованная проверка (покажет экран подписки и сам ответит callback при отсутствии доступа)
+    if not await ensure_access(callback):
+        return
+    await state.set_state(RedesignStates.waiting_for_file)
+    await _edit_or_replace_with_photo_file(
+        bot=bot,
+        msg=callback.message,
+        file_path=get_file_path('img/bot/design.png'),
+        caption=text_get_file_redesign(user_id),
+        kb=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")]]
+        ),
+    )
     await callback.answer()
 
 
@@ -336,13 +302,11 @@ async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot:
     """Генерация редизайна по фото + room_type + style."""
     # ВАЖНО: сразу закрываем callback, чтобы не «протух»
     await _safe_answer(callback)
-    
-    user_id = callback.from_user.id
-    if not _has_access(user_id):
-        await _edit_text_or_caption(callback.message, _format_access_text(user_id), SUBSCRIBE_KB)
+    # централизованная проверка доступа (сама покажет экран подписки)
+    if not await ensure_access(callback):
         await state.clear()
-        await callback.answer()
         return
+    user_id = callback.from_user.id
 
     data = await state.get_data()
     image_path = data.get("image_path")
@@ -413,21 +377,18 @@ async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot:
 
 async def start_zero_design_flow(callback: CallbackQuery, state: FSMContext, bot: Bot):
     user_id = callback.message.chat.id
-
-    if _has_access(user_id):
-        await state.set_state(ZeroDesignStates.waiting_for_file)
-        await _edit_or_replace_with_photo_file(
-            bot=bot,
-            msg=callback.message,
-            file_path=get_file_path('img/bot/zero_design.png'),
-            caption=text_get_file_zero(user_id),
-            kb=InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")]]
-            ),
-        )
-    else:
-        await _edit_text_or_caption(callback.message, _format_access_text(user_id), SUBSCRIBE_KB)
-
+    if not await ensure_access(callback):
+        return
+    await state.set_state(ZeroDesignStates.waiting_for_file)
+    await _edit_or_replace_with_photo_file(
+        bot=bot,
+        msg=callback.message,
+        file_path=get_file_path('img/bot/zero_design.png'),
+        caption=text_get_file_zero(user_id),
+        kb=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="nav.design_home")]]
+        ),
+    )
     await callback.answer()
 
 
@@ -505,14 +466,10 @@ async def handle_furniture_zero(callback: CallbackQuery, state: FSMContext):
 async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot):
     # Сразу закрываем callback
     await _safe_answer(callback)
-    
-    user_id = callback.from_user.id
-
-    if not _has_access(user_id):
-        await _edit_text_or_caption(callback.message, _format_access_text(user_id), SUBSCRIBE_KB)
+    if not await ensure_access(callback):
         await state.clear()
-        await callback.answer()
         return
+    user_id = callback.from_user.id
 
     data = await state.get_data()
     image_path = data.get("image_path")
