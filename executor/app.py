@@ -23,9 +23,6 @@ def create_app() -> Flask:
     logging.getLogger("httpx").setLevel(logging.INFO if HTTP_DEBUG else logging.WARNING)
     logging.getLogger("werkzeug").setLevel(logging.INFO)
 
-    # Replicate token -> env (для клиента)
-    if REPLICATE_API_TOKEN and not os.getenv("REPLICATE_API_TOKEN"):
-        os.environ["REPLICATE_API_TOKEN"] = REPLICATE_API_TOKEN
 
     # маршруты
     sa_executor.register_blueprint(api)

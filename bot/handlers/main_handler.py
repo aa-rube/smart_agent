@@ -61,8 +61,7 @@ def build_main_menu_kb(user_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🎨 Редизайн квартиры", callback_data="nav.design_home")],
             [InlineKeyboardButton(text="🧠 Инструменты PRO-риэлтора", callback_data="nav.ai_tools")],
             [InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")],
-            [InlineKeyboardButton(text="Наше сообщество", url=PARTNER_URL)],
-            [InlineKeyboardButton(text="Тех. поддержка", url="https://t.me/dashaadminrealtor")],
+            [InlineKeyboardButton(text="Наше сообщество", url=PARTNER_URL)]
         ]
     )
 

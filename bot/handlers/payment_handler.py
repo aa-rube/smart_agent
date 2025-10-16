@@ -674,7 +674,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                             "Платёж был отменён или не завершён.\n"
                             "Если списания не было — попробуйте оплатить снова из раздела тарифов."
                         )
-                        await bot.send_photo(chat_id=user_id_fail, photo=photo, caption=caption, parse_mode="Markdown")
+                        ##await bot.send_photo(chat_id=user_id_fail, photo=photo, caption=caption, parse_mode="Markdown")
                 except Exception as e:
                     logger.warning("Failed to send fail notice to %s: %s", user_id_fail, e)
             return 200, f"fail event={event} status={status}"
