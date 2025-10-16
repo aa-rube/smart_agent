@@ -18,7 +18,7 @@ from bot.config import get_file_path
 from bot.utils import youmoney
 import bot.utils.database as app_db
 import bot.utils.billing_db as billing_db
-from bot.utils.redis_repo import yookassa_dedup, invalidate_payment_ok_cache
+from bot.utils.redis_repo import yookassa_dedup, invalidate_payment_ok_cache, quota_repo
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,13 @@ TARIFFS: Dict[str, Dict] = {
     "6m": {"label": "6 месяцев", "months": 6, "amount": "11490.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
     "12m": {"label": "12 месяцев", "months": 12, "amount": "19900.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
 }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# КВОТЫ: бесплатные проходы (как в plans)
+# ──────────────────────────────────────────────────────────────────────────────
+# 5 проходов на 7*24 часа (скользящее окно)
+WEEKLY_PASS_LIMIT = 5
+WEEKLY_WINDOW_SEC = 7 * 24 * 60 * 60
 
 RATES_TEXT = ('''
 🎁 Хочешь получить полный доступ ко всем инструментам без ограничений?
@@ -134,6 +141,24 @@ def has_access(user_id: int) -> bool:
         return False
 
 
+async def _try_free_pass(user_id: int) -> bool:
+    """
+    Пытаемся списать один бесплатный «проход» из недельной квоты.
+    Возвращает True, если квота ещё не исчерпана (проход засчитан).
+    """
+    try:
+        ok, _, _ = await quota_repo.try_consume(
+            user_id,
+            scope="access",               # общий скоуп доступа к инструментам
+            limit=WEEKLY_PASS_LIMIT,      # 5 проходов
+            window_sec=WEEKLY_WINDOW_SEC  # 7 дней
+        )
+        return ok
+    except Exception:
+        logger.exception("Free pass quota check failed for user %s", user_id)
+        return False
+
+
 async def ensure_access(evt: Message | CallbackQuery) -> bool:
     """
     Централизованная проверка доступа. Возвращает True, если доступ есть.
@@ -142,6 +167,9 @@ async def ensure_access(evt: Message | CallbackQuery) -> bool:
     """
     user_id = evt.from_user.id if isinstance(evt, CallbackQuery) else evt.from_user.id
     if has_access(user_id):
+        return True
+    # Бесплатные проходы: если квота не исчерпана — пропускаем пользователя
+    if await _try_free_pass(user_id):
         return True
     # Приоритет: если когда-либо была подписка (и сейчас нет) — показываем про подписку.
     # Иначе, если был триал — показываем про завершённый триал.
