@@ -314,10 +314,10 @@ def kb_pay_with_consent(*, consent: bool, pay_url_card: Optional[str], pay_url_s
     rows: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton(text=check, callback_data="tos:toggle")]]
     if consent:
         btns: List[InlineKeyboardButton] = []
-        if pay_url_card:
-            btns.append(InlineKeyboardButton(text="💳 Оформить подписку (карта)", url=pay_url_card))
         if pay_url_sbp:
-            btns.append(InlineKeyboardButton(text="🏦 Оформить подписку через СБП", url=pay_url_sbp))
+            btns.append(InlineKeyboardButton(text="🌫 Оформить СБП", url=pay_url_sbp))
+        if pay_url_card:
+            btns.append(InlineKeyboardButton(text="💳 Оформить подписку", url=pay_url_card))
         if btns:
             rows.append(btns)
     rows.append([InlineKeyboardButton(text="⬅️ Выбрать другой тариф", callback_data="show_rates")])
@@ -345,7 +345,8 @@ def build_trial_offer(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
         "plan_amount": plan["amount"],
     }
 
-    # генерируем ссылку оплаты на 1 ₽ с сохранением карты (рекуррент)
+    # Генерируем ссылку оплаты на 1 ₽ ТОЛЬКО с сохранением карты (рекуррент).
+    # Без фолбэка на безтокенную оплату.
     try:
         pay_url = youmoney.create_pay_ex(
             user_id=user_id,
@@ -354,26 +355,21 @@ def build_trial_offer(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
             metadata=meta,
             save_payment_method=True,
         )
-    except Exception:
-        # Fallback: если магазин не умеет рекуррент — токен не сохраняем, но даём триал
-        meta_fallback = dict(meta, is_recurring="0", phase="trial_tokenless")
-        pay_url = youmoney.create_pay_ex(
-            user_id=user_id,
-            amount_rub=plan.get("trial_amount", "1.00"),
-            description=f"{description} (пробный период)",
-            metadata=meta_fallback,
-            save_payment_method=False,
-        )
+    except Exception as e:
+        logger.error("Trial recurring not available for user %s: %s", user_id, e)
+        pay_url = None
 
     text = (
         "🎁 Спасибо за подписку, наш подарок для тебя все инструменты — 3 дня за 1 ₽.\n\n"
         "После этого подписка автоматически продлевается — 2490 ₽/мес."
     )
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Активировать за 1 ₽", url=pay_url or "")],
-        ]
-    )
+    kb_rows: List[List[InlineKeyboardButton]] = []
+    if pay_url:
+        kb_rows.append([InlineKeyboardButton(text="💳 Активировать за 1 ₽", url=pay_url)])
+    else:
+        # если рекуррент недоступен — предлагаем вернуться к списку способов
+        kb_rows.append([InlineKeyboardButton(text="⬅️ Выбрать способ оплаты", callback_data="show_rates")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     return text, kb
 
 
@@ -414,8 +410,9 @@ def _compute_next_time_from_months(months: int) -> datetime:
 def _create_links_for_selection(user_id: int) -> tuple[Optional[str], Optional[str]]:
     """
     Генерирует ссылки оплаты (карта/СБП) для ранее выбранного тарифа в _PENDING_SELECTION[user_id].
-    Возвращает (pay_url_card, pay_url_sbp). Ошибки логируются и дают None.
-    Логику фолбэков (403/400) обрабатываем внутри.
+    Возвращает (pay_url_card, pay_url_sbp).
+    ВАЖНО: для триала «3 дня за 1 ₽» разрешаем ТОЛЬКО рекуррентные платежи (с сохранением метода).
+    Никаких фолбэков на безтокенные/разовые сценарии — если рекуррент недоступен, ссылка = None.
     """
     sel = _PENDING_SELECTION.get(user_id) or {}
     code = sel.get("code")
@@ -438,7 +435,7 @@ def _create_links_for_selection(user_id: int) -> tuple[Optional[str], Optional[s
     }
     first_amount = plan.get("trial_amount", "1.00")
 
-    # 1) Карта: пробуем с сохранением (автопродление), иначе — без
+    # 1) Карта (РЕКУРРЕНТ ТОЛЬКО): без фолбэков на разовую оплату.
     try:
         pay_url_card = youmoney.create_pay_ex(
             user_id=user_id,
@@ -449,21 +446,10 @@ def _create_links_for_selection(user_id: int) -> tuple[Optional[str], Optional[s
             payment_method_type="bank_card",
         )
     except Exception as e:
-        logger.error("Card recurring not allowed, fallback to tokenless card trial: %s", e)
-        try:
-            pay_url_card = youmoney.create_pay_ex(
-                user_id=user_id,
-                amount_rub=first_amount,
-                description=f"{description} (пробный период)",
-                metadata={**meta_base, "phase": "trial_tokenless", "is_recurring": "0"},
-                save_payment_method=False,
-                payment_method_type="bank_card",
-            )
-        except Exception as e2:
-            logger.error("Card tokenless also failed: %s", e2)
-            pay_url_card = None
+        logger.error("Card recurring not allowed — declining tokenless trial: %s", e)
+        pay_url_card = None
 
-    # 2) СБП: сперва пытаемся с сохранением (если магазин/банк умеет), иначе — разовый СБП
+    # 2) СБП (РЕКУРРЕНТ ТОЛЬКО): без фолбэков на разовую оплату.
     try:
         pay_url_sbp = youmoney.create_pay_ex(
             user_id=user_id,
@@ -474,21 +460,10 @@ def _create_links_for_selection(user_id: int) -> tuple[Optional[str], Optional[s
             payment_method_type="sbp",
         )
     except ForbiddenError as e:
-        logger.error("SBP recurring not allowed, fallback to SBP tokenless trial: %s", e)
-        try:
-            pay_url_sbp = youmoney.create_pay_ex(
-                user_id=user_id,
-                amount_rub=first_amount,
-                description=f"{description} (пробный период, СБП)",
-                metadata={**meta_base, "phase": "trial_tokenless", "is_recurring": "0"},
-                save_payment_method=False,
-                payment_method_type="sbp",
-            )
-        except Exception as e2:
-            logger.error("SBP tokenless also failed: %s", e2)
-            pay_url_sbp = None
+        logger.error("SBP recurring not allowed — declining tokenless trial: %s", e)
+        pay_url_sbp = None
     except Exception as e:
-        logger.error("SBP flow failed: %s", e)
+        logger.error("SBP recurring flow failed: %s", e)
         pay_url_sbp = None
 
     return (pay_url_card, pay_url_sbp)
