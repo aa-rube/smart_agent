@@ -11,6 +11,7 @@ from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 )
 from aiogram.filters import Command
+from html import escape
 
 from yookassa.domain.exceptions.forbidden_error import ForbiddenError
 from bot.config import get_file_path
@@ -60,13 +61,29 @@ PAY_TEXT = (
     "Нажмите «Оплатить» для оформления."
 )
 
+def _had_trial(user_id: int) -> bool:
+    """True, если триал когда-либо выдавался (есть trial_until в БД)."""
+    try:
+        return app_db.get_trial_until(user_id) is not None
+    except Exception:
+        return False
+
+def _had_subscription(user_id: int) -> bool:
+    """True, если у пользователя когда-либо была запись подписки (любой статус)."""
+    try:
+        from bot.utils.billing_db import SessionLocal, Subscription
+        with SessionLocal() as s:
+            return s.query(Subscription).filter(Subscription.user_id == user_id).first() is not None
+    except Exception:
+        return False
+
 # ──────────────────────────────────────────────────────────────────────────────
-# ПУБЛИЧНЫЕ ТЕКСТЫ ПРО ДОСТУП (централизовано)
+# ПУБЛИЧНЫЕ ТЕКСТЫ ПРО ДОСТУП (централизовано, HTML)
 # ──────────────────────────────────────────────────────────────────────────────
 SUB_FREE = (
     "🎁 Бесплатный период завершён\n"
     "Пробный доступ на 72 часа истёк — дальше только по подписке.\n\n"
-    "📦* Что даёт подписка:*\n"
+    "📦 <b>Что даёт подписка:</b>\n"
     " — Полный доступ ко всем инструментам\n"
     " — Без ограничений по количеству запусков в период подписки*\n"
     "Стоимость пакета всего 2500 рублей!"
@@ -75,7 +92,7 @@ SUB_FREE = (
 SUB_PAY = (
     "🪫 Подписка не активна\n"
     "Срок подписки истёк или не был оформлен.\n\n"
-    "📦* Что даёт подписка:*\n"
+    "📦 <b>Что даёт подписка:</b>\n"
     " — Полный доступ ко всем инструментам\n"
     " — Без ограничений по количеству запусков в период подписки*\n"
     "Стоимость пакета всего 2500 рублей!"
@@ -95,11 +112,19 @@ def format_access_text(user_id: int) -> str:
         except Exception:
             until_dt = None
         if until_dt:
-            return f"🆓 Бесплатный доступ активен до *{until_dt.date().isoformat()}* (~{hours} ч.)"
-        return f"🆓 Бесплатный доступ активен ещё *~{hours} ч.*"
+            return f"🆓 Бесплатный доступ активен до <b>{until_dt.date().isoformat()}</b> (~{hours} ч.)"
+        return f"🆓 Бесплатный доступ активен ещё <b>~{hours} ч.</b>"
     if billing_db.has_saved_card(user_id):
         return "✅ Подписка активна (автопродление включено)"
-    return "😢 Бесплатный период завершён. Оформи подписку, чтобы продолжить."
+    # Не активен триал и нет активной карты.
+    # Если триал ранее был — сообщаем, что он завершён.
+    if _had_trial(user_id):
+        return "😢 Бесплатный период завершён."
+    # Если ранее была подписка — сообщаем, что она не активна.
+    if _had_subscription(user_id):
+        return "🪫 Подписка не активна."
+    # Ничего не было — ничего «не завершилось»: возвращаем пустую строку.
+    return ""
 
 
 def has_access(user_id: int) -> bool:
@@ -118,12 +143,20 @@ async def ensure_access(evt: Message | CallbackQuery) -> bool:
     user_id = evt.from_user.id if isinstance(evt, CallbackQuery) else evt.from_user.id
     if has_access(user_id):
         return True
-    text = SUB_FREE if not billing_db.has_saved_card(user_id) else SUB_PAY
+    # Приоритет: если когда-либо была подписка (и сейчас нет) — показываем про подписку.
+    # Иначе, если был триал — показываем про завершённый триал.
+    # Иначе — общий экран подписки.
+    if _had_subscription(user_id):
+        text = SUB_PAY
+    elif _had_trial(user_id):
+        text = SUB_FREE
+    else:
+        text = SUB_PAY
     try:
         if isinstance(evt, CallbackQuery):
             await _edit_safe(evt, text, SUBSCRIBE_KB)
         else:
-            await evt.answer(text, reply_markup=SUBSCRIBE_KB, parse_mode="Markdown")
+            await evt.answer(text, reply_markup=SUBSCRIBE_KB, parse_mode="HTML")
     except Exception:
         pass
     return False
@@ -441,7 +474,7 @@ async def show_rates(evt: Message | CallbackQuery) -> None:
     if isinstance(evt, CallbackQuery):
         await _edit_safe(evt, RATES_TEXT, kb_rates())
     else:
-        await evt.answer(RATES_TEXT, reply_markup=kb_rates())
+        await evt.answer(RATES_TEXT, reply_markup=kb_rates(), parse_mode="HTML")
 
 
 async def choose_rate(cb: CallbackQuery) -> None:
@@ -801,10 +834,11 @@ async def cancel_request(cb: CallbackQuery) -> None:
     user_id = cb.from_user.id
     card = billing_db.get_user_card(user_id) or {}
     suffix = f"{(card.get('brand') or '').upper()} ••••{card.get('last4', '')}"
+    # HTML: жирный заголовок + экранирование
     text = (
-        f"Удалить карту *{suffix}*?\n\n"
-        "• Автосписания прекратятся.\n"
-        "• Подписка НЕ отменяется, доступ останется до оплаченной даты.\n"
+        f"Удалить карту <b>{escape(suffix)}</b>?<br><br>"
+        "• Автосписания прекратятся.<br>"
+        "• Подписка НЕ отменяется, доступ останется до оплаченной даты.<br>"
         "• Данные карты будут удалены."
     )
     await _edit_safe(cb, text, kb_cancel_confirm())
