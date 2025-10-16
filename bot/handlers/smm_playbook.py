@@ -32,14 +32,14 @@ SMM_DESCRIPTION = (
     "Никакого ИИ — всё создаёт маркетолог с опытом в недвижимости.\n"
     "✅ 30 постов и рассылок в месяц\n"
     "✅ Контент для WhatsApp, Telegram, ВКонтакте, Instagram, YouTube, TikTok\n"
-    "💼 Экономь время и получай больше заявок!\n"
+    "💼 Экономь время и получай больше заявок!\n\n"
     "🎁 Подпишись на 3 дня за 1 рубль!"
 )
 
 def kb_smm_subscribe() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🏡 Смотреть примеры постов", callback_data="show_rates")],
+            [InlineKeyboardButton(text="🎁 Оформить подписку", callback_data="show_rates")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")],
         ]
     )
