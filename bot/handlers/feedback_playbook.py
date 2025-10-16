@@ -20,18 +20,15 @@ from bot.utils.database import history_add, history_get, history_list_cases, his
 from bot.states.states import FeedbackStates
 from bot.utils.redis_repo import feedback_repo
 import bot.utils.logging_config as logging_config
+from bot.handlers.payment_handler import (
+    format_access_text,  # короткий статус доступа для экранов
+    ensure_access,       # централизованная проверка доступа (trial/card)
+)
 
 # module logger
 log = logging_config.logger
 
-# =============================================================================
-# Доступ / подписка
-# =============================================================================
-import bot.utils.database as app_db          # триал / история / согласия
-import bot.utils.billing_db as billing_db     # карты / подписки / платежный лог
-from bot.utils.database import (
-    is_trial_active, trial_remaining_hours
-)
+# (локальная логика доступа удалена — используем payment_handler.ensure_access/format_access_text)
 
 @dataclass
 class ReviewPayload:
