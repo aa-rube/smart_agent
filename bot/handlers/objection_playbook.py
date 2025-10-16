@@ -22,42 +22,10 @@ from aiogram.types import (
 from bot.config import EXECUTOR_BASE_URL, get_file_path
 from bot.states.states import ObjectionStates
 from bot.utils.chat_actions import run_long_operation_with_action
-
-# ===========================
-# Доступ / подписка (как в plans)
-# ===========================
-import bot.utils.database as app_db          # триал / история / согласия
-import bot.utils.billing_db as billing_db     # карты / подписки / платежный лог
-from bot.utils.database import (
-    is_trial_active, trial_remaining_hours
+from bot.handlers.payment_handler import (
+    format_access_text,  # короткий статус доступа
+    ensure_access,       # централизованная проверка (trial/card)
 )
-
-def _is_sub_active(user_id: int) -> bool:
-    """
-    Новая логика: считаем подписку активной, если у пользователя
-    есть сохранённая карта для рекуррентных списаний (активная подписка).
-    Дату sub_until больше не храним.
-    """
-    return bool(billing_db.has_saved_card(user_id))
-
-def _format_access_text(user_id: int) -> str:
-    trial_hours = trial_remaining_hours(user_id)
-    # активный триал — показываем дату окончания, если есть
-    if is_trial_active(user_id):
-        try:
-            until_dt = app_db.get_trial_until(user_id)
-            if until_dt:
-                return f'🆓 Бесплатный доступ активен до *{until_dt.date().isoformat()}* (~{trial_hours} ч.)'
-        except Exception:
-            pass
-        return f'🆓 Бесплатный доступ активен ещё *~{trial_hours} ч.*'
-    # нет триала — проверяем наличие активной подписки (карта сохранена)
-    if _is_sub_active(user_id):
-        return '✅ Подписка активна (автопродление включено)'
-    return '😢 Доступ закончился. Оформи подписку, чтобы продолжить.'
-
-def _has_access(user_id: int) -> bool:
-    return bool(is_trial_active(user_id) or _is_sub_active(user_id))
 
 
 # ============================================================================
@@ -86,34 +54,9 @@ ERROR_TEXT = (
 
 # Стартовый текст с информацией о доступе (как в plans)
 def _text_objection_home(user_id: int) -> str:
-    return f"{OBJECTION_HOME_TEXT}\n\n{_format_access_text(user_id)}"
+    return f"{OBJECTION_HOME_TEXT}\n\n{format_access_text(user_id)}"
 
-# ===========================
-# Тексты и клавиатуры подписки
-# ===========================
-SUB_FREE = """
-🎁 Бесплатный период завершён
-Пробный доступ на 72 часа истёк — дальше только по подписке.
 
-📦* Что даёт подписка:*
- — Полный доступ ко всем инструментам
- — Без ограничений по количеству запусков в период подписки*
-Стоимость пакета всего 2500 рублей!
-""".strip()
-
-SUB_PAY = """
-🪫 Подписка не активна
-Срок подписки истёк или не был оформлен.
-
-📦* Что даёт подписка:*
- — Полный доступ ко всем инструментам
- — Без ограничений по количеству запусков в период подписки*
-Стоимость пакета всего 2500 рублей!
-""".strip()
-
-SUBSCRIBE_KB = InlineKeyboardMarkup(
-    inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
-)
 
 # ============================================================================
 # Клавиатуры (целиком внутри файла)
@@ -288,15 +231,9 @@ async def start_objection_flow(callback: CallbackQuery, state: FSMContext):
     Начало сценария: редактируем текущее сообщение, просим ввести возражение,
     сохраняем message_id как «якорь», чтобы дальше редактировать именно его.
     """
-    user_id = callback.message.chat.id
-    if not _has_access(user_id):
-        # как в plans: различаем окончание трейла и неактивную подписку
-        if not _is_sub_active(user_id):
-            await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
-        else:
-            await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
+    # централизованный гейт: сам покажет экран подписки при отсутствии доступа
+    if not await ensure_access(callback):
         await state.clear()
-        await callback.answer()
         return
 
     await state.update_data(anchor_id=callback.message.message_id)
@@ -308,14 +245,8 @@ async def retry_objection(callback: CallbackQuery, state: FSMContext):
     """
     «Попробовать ещё раз» — возвращаемся к вводу.
     """
-    user_id = callback.message.chat.id
-    if not _has_access(user_id):
-        if not _is_sub_active(user_id):
-            await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
-        else:
-            await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
+    if not await ensure_access(callback):
         await state.clear()
-        await callback.answer()
         return
 
     data = await state.get_data()
@@ -332,11 +263,7 @@ async def handle_question(message: Message, state: FSMContext, bot: Bot):
     ▶ Сохраняем его message_id как новый anchor_id
     ▶ По готовности редактируем именно это новое сообщение.
     """
-    user_id = message.from_user.id
-    if not _has_access(user_id):
-        # Сообщаем о доступе и выходим, чтобы не жечь лимиты
-        text = SUB_FREE if not _is_sub_active(user_id) else SUB_PAY
-        await message.answer(text, reply_markup=SUBSCRIBE_KB)
+    if not await ensure_access(message):
         await state.clear()
         return
 
