@@ -21,7 +21,10 @@ from bot.config import get_file_path
 from bot.states.states import FloorPlanStates
 from bot.utils.chat_actions import run_long_operation_with_action
 from bot.utils.file_utils import safe_remove
-from bot.utils.redis_repo import quota_repo
+from bot.handlers.payment_handler import (
+    format_access_text,   # короткий статус доступа для экранов
+    ensure_access,        # централизованная проверка подписки/триала
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -42,8 +45,8 @@ _TEXT_GET_FILE_PLAN_TPL = """
 """.strip()
 
 def text_get_file_plan(user_id: int) -> str:
-    # Подписка/триал не проверяются — возвращаем статичный текст
-    return _TEXT_GET_FILE_PLAN_TPL
+    # Добавляем централизованный статус доступа сверху, как и в других модулях
+    return f"{format_access_text(user_id)}\n\n{_TEXT_GET_FILE_PLAN_TPL}"
 
 TEXT_GET_VIZ = "Выберите стиль визуализации плана:"
 TEXT_GET_STYLE = "Отлично! Теперь выберите интерьерный стиль 🖼️"
@@ -90,11 +93,7 @@ def kb_result_back() -> InlineKeyboardMarkup:
     )
 
 
-# ===========================
-# Квоты
-# ===========================
-GEN_LIMIT_PER_DAY = 500          # попыток на пользователя
-GEN_WINDOW_SEC    = 86400      # 24 часа
+# Квоты больше не используются: централизованная проверка доступа через ensure_access
 
 
 # ===========================
@@ -179,7 +178,9 @@ async def start_plans_flow(callback: CallbackQuery, state: FSMContext, bot: Bot)
     Стартовый коллбек: "floor_plan"
     """
     user_id = callback.message.chat.id
-    # Подписка/триал не проверяются — сразу переходим к загрузке
+    # Централизованная проверка подписки/триала (покажет экран подписки и ответит callback)
+    if not await ensure_access(callback):
+        return
     await state.set_state(FloorPlanStates.waiting_for_file)
     await _edit_or_replace_with_photo_file(
         bot=bot,
@@ -297,34 +298,15 @@ async def handle_style_plan(callback: CallbackQuery, state: FSMContext, bot: Bot
     # НЕ показываем pop-up
     await callback.answer()
 
+    # Повторная централизованная проверка перед «тяжёлой» операцией
+    if not await ensure_access(callback):
+        await state.clear()
+        return
+
     user_id = callback.from_user.id
     data = await state.get_data()
     plan_path = data.get("plan_path")
     viz = data.get("visualization_style")
-
-    # --- Лимит 3 генерации за 24 часа (скользящее окно) ---
-    ok, remaining, reset_at = await quota_repo.try_consume(
-        user_id,
-        scope="fp",            # floor plans
-        limit=GEN_LIMIT_PER_DAY,
-        window_sec=GEN_WINDOW_SEC,
-    )
-    if not ok:
-        # посчитаем сколько часов/минут до сброса
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc)
-        reset_dt = datetime.fromtimestamp(reset_at, tz=timezone.utc)
-        delta = reset_dt - now
-        total_min = max(1, int(delta.total_seconds() // 60))
-        hours, mins = divmod(total_min, 60)
-        eta_text = (f"{hours} ч. {mins} мин." if hours else f"{mins} мин.")
-        await _edit_text_or_caption(
-            callback.message,
-            f"⛔ Дневной лимит исчерпан.\nВы сможете запустить генерацию снова через ~{eta_text}.",
-            kb=kb_back_to_tools()
-        )
-        await state.clear()
-        return
 
     try:
         _, style_raw = (callback.data or "").split("_", 1)
