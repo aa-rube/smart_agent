@@ -42,56 +42,13 @@ class ReviewPayload:
     situation: Optional[str] = None
     style: Optional[str] = None  # friendly|neutral|formal
 
-def _is_sub_active(user_id: int) -> bool:
-    return bool(billing_db.has_saved_card(user_id))
 
-def _format_access_text(user_id: int) -> str:
-    trial_hours = trial_remaining_hours(user_id)
-    # при активном триале показываем точную дату окончания
-    if is_trial_active(user_id):
-        try:
-            until_dt = app_db.get_trial_until(user_id)
-            if until_dt:
-                return f'🆓 Бесплатный доступ активен до *{until_dt.date().isoformat()}* (~{trial_hours} ч.)'
-        except Exception:
-            pass
-        return f'🆓 Бесплатный доступ активен ещё *~{trial_hours} ч.*'
-    # нет триала — проверяем рекуррентную подписку (карта сохранена)
-    if _is_sub_active(user_id):
-        return '✅ Подписка активна (автопродление включено)'
-    return '😢 Доступ закончился. Оформи подписку, чтобы продолжить.'
 
-def _has_access(user_id: int) -> bool:
-    return bool(is_trial_active(user_id) or _is_sub_active(user_id))
 
-# Тексты и кнопка «Оформить подписку» (как в plans)
-SUB_FREE = """
-🎁 Бесплатный период завершён
-Пробный доступ на 72 часа истёк — дальше только по подписке.
-
-📦* Что даёт подписка:*
- — Полный доступ ко всем инструментам
- — Без ограничений по количеству запусков в период подписки*
-Стоимость пакета всего 2500 рублей!
-""".strip()
-
-SUB_PAY = """
-🪫 Подписка не активна
-Срок подписки истёк или не был оформлен.
-
-📦* Что даёт подписка:*
- — Полный доступ ко всем инструментам
- — Без ограничений по количеству запусков в период подписки*
-Стоимость пакета всего 2500 рублей!
-""".strip()
-
-SUBSCRIBE_KB = InlineKeyboardMarkup(
-    inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
-)
 
 # Доп. форматтер стартового текста «Отзывы» с информацией о доступе
 def _feedback_home_text(user_id: int) -> str:
-    return f"{MAIN_MENU_TITLE}\n\n{_format_access_text(user_id)}"
+    return f"{MAIN_MENU_TITLE}\n\n{format_access_text(user_id)}"
 
 # =============================================================================
 # UX Texts (copy)
@@ -803,12 +760,8 @@ def _state_from_history_item(item) -> Dict[str, Any]:
 # Flow handlers
 # =============================================================================
 async def start_feedback_flow(callback: CallbackQuery, state: FSMContext):
-    # Проверка доступа как в plans: без подписки не пускаем в сценарий
-    user_id = callback.message.chat.id
-    if not _has_access(user_id):
-        text = SUB_FREE if not _is_sub_active(user_id) else SUB_PAY
-        await ui_reply(callback, text, SUBSCRIBE_KB, state=state)
-        await callback.answer()
+    # Проверка доступа через централизованную функцию
+    if not await ensure_access(callback):
         return
 
     # якорим текущее сообщение для последующих редактирований
@@ -1263,11 +1216,8 @@ async def start_generation(callback: CallbackQuery, state: FSMContext, bot: Bot)
     # ACK РАНО, чтобы не словить "query is too old"
     await _safe_cb_answer(callback)
 
-    # Повторная проверка доступа перед обращением к сервису (как в plans.handle_style_plan)
-    user_id = callback.message.chat.id
-    if not _has_access(user_id):
-        text = SUB_FREE if not _is_sub_active(user_id) else SUB_PAY
-        await ui_reply(callback, text, SUBSCRIBE_KB, state=state)
+    # Повторная проверка доступа перед обращением к сервису
+    if not await ensure_access(callback):
         await state.clear()
         return
 
@@ -1349,10 +1299,7 @@ async def mutate_variant(callback: CallbackQuery, state: FSMContext, bot: Bot):
     await _safe_cb_answer(callback)
 
     # Защита на мутациях: если подписка слетела — не даём продолжить
-    user_id = callback.message.chat.id
-    if not _has_access(user_id):
-        text = SUB_FREE if not _is_sub_active(user_id) else SUB_PAY
-        await ui_reply(callback, text, SUBSCRIBE_KB, state=state)
+    if not await ensure_access(callback):
         await state.clear()
         return
 
@@ -1428,10 +1375,7 @@ async def gen_more_variant(callback: CallbackQuery, state: FSMContext, bot: Bot)
     await _safe_cb_answer(callback)
 
     # Проверка доступа для «Ещё вариант»
-    user_id = callback.message.chat.id
-    if not _has_access(user_id):
-        text = SUB_FREE if not _is_sub_active(user_id) else SUB_PAY
-        await ui_reply(callback, text, SUBSCRIBE_KB, state=state)
+    if not await ensure_access(callback):
         await state.clear()
         return
 
