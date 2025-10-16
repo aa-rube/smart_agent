@@ -24,66 +24,15 @@ from bot.utils.database import (
     summary_list_entries as list_entries,
     summary_get_entry as get_entry,
 )
-import bot.utils.database as db                    # приложение: триал/история/consents
-import bot.utils.billing_db as billing_db          # биллинг: карты/подписки/лог платежей
-from bot.utils.database import is_trial_active, trial_remaining_hours
+from bot.handlers.payment_handler import (
+    format_access_text,   # короткий статус доступа
+    ensure_access,        # централизованная проверка (trial/card)
+)
+
+# ============= Доступ / подписка: централизовано в payment_handler =============
 
 # Максимальная длительность аудиозаписи (в секундах): 10 минут
 MAX_AUDIO_SECONDS = 10 * 60
-
-# ============= Доступ / подписка (как в других скриптах) =============
-
-def _is_sub_active(user_id: int) -> bool:
-    """
-    Новая модель: активная подписка = наличие привязанной (не удалённой) карты.
-    Больше не читаем variables['sub_until'].
-    """
-    return bool(billing_db.has_saved_card(user_id))
-
-def _format_access_text(user_id: int) -> str:
-    trial_hours = trial_remaining_hours(user_id)
-    # приоритет — активный триал
-    if is_trial_active(user_id):
-        try:
-            until_dt = db.get_trial_until(user_id)
-            if until_dt:
-                return f'🆓 Бесплатный доступ активен до *{until_dt.date().isoformat()}* (~{trial_hours} ч.)'
-        except Exception:
-            pass
-        return f'🆓 Бесплатный доступ активен ещё *~{trial_hours} ч.*'
-    # затем — подписка (автопродление включено)
-    if _is_sub_active(user_id):
-        return '✅ Подписка активна (автопродление включено)'
-    # иначе — нет доступа
-    return '😢 Бесплатный период завершён. Оформи подписку, чтобы продолжить.'
-
-def _has_access(user_id: int) -> bool:
-    return bool(is_trial_active(user_id) or _is_sub_active(user_id))
-
-# Тексты уведомлений + кнопка «Оформить подписку»
-SUB_FREE = """
-🎁 Бесплатный период завершён
-Пробный доступ на 72 часа истёк — дальше только по подписке.
-
-📦* Что даёт подписка:*
- — Полный доступ ко всем инструментам
- — Без ограничений по количеству запусков в период подписки*
-Стоимость пакета всего 2500 рублей!
-""".strip()
-
-SUB_PAY = """
-🪫 Подписка не активна
-Срок подписки истёк или не был оформлен.
-
-📦* Что даёт подписка:*
- — Полный доступ ко всем инструментам
- — Без ограничений по количеству запусков в период подписки*
-Стоимость пакета всего 2500 рублей!
-""".strip()
-
-SUBSCRIBE_KB = InlineKeyboardMarkup(
-    inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
-)
 
 # ============= UI текст =============
 HOME_TEXT_TPL = ('''
@@ -102,7 +51,7 @@ HOME_TEXT_TPL = ('''
 ''').strip()
 
 def home_text(user_id: int) -> str:
-    return HOME_TEXT_TPL.format(access_text=_format_access_text(user_id))
+    return HOME_TEXT_TPL.format(access_text=format_access_text(user_id))
 
 ASK_TEXT = "✍️ Пришлите сюда текст переписки (можно несколькими сообщениями). Когда закончите — нажмите «Анализировать диалог»."
 ASK_AUDIO = "🎙️ Пришлите аудио (voice или audio) длительностью до 10 минут. Затем нажмите «Анализировать диалог». Аудио в виде документа не принимается."
@@ -499,13 +448,8 @@ async def reset_draft(callback: CallbackQuery, state: FSMContext):
 async def generate_summary(callback: CallbackQuery, bot: Bot):
     user_id = callback.from_user.id
     chat_id = callback.message.chat.id
-    # Блокируем генерацию без доступа и показываем инфо/кнопку подписки
-    if not _has_access(user_id):
-        if not _is_sub_active(user_id):
-            await _edit_text_or_caption(callback.message, SUB_FREE, SUBSCRIBE_KB)
-        else:
-            await _edit_text_or_caption(callback.message, SUB_PAY, SUBSCRIBE_KB)
-        await callback.answer()
+    # Централизованная проверка доступа (сама покажет экран подписки при отказе)
+    if not await ensure_access(callback):
         return
 
     payload = await _build_payload(user_id, chat_id)

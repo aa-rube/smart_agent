@@ -17,10 +17,8 @@ from bot.config import EXECUTOR_BASE_URL, get_file_path
 from bot.handlers.payment_handler import (
     format_access_text,  # централизованный короткий статус доступа
     ensure_access,       # централизованная проверка/показ экрана подписки
-    SUBSCRIBE_KB         # общая кнопка «Оформить подписку»
 )
-import aiohttp
-import os
+
 from bot.states.states import RedesignStates, ZeroDesignStates
 
 from bot.utils.image_processor import *
@@ -239,6 +237,9 @@ async def start_redesign_flow(callback: CallbackQuery, state: FSMContext, bot: B
 
 async def handle_file_redesign(message: Message, state: FSMContext, bot: Bot):
     """Получаем файл для редизайна → затем спросим тип помещения и стиль."""
+    if not await ensure_access(message):
+        await state.clear()
+        return
     await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     user_id = message.from_user.id
     image_bytes: bytes | None = None
@@ -393,6 +394,9 @@ async def start_zero_design_flow(callback: CallbackQuery, state: FSMContext, bot
 
 
 async def handle_file_zero(message: Message, state: FSMContext, bot: Bot):
+    if not await ensure_access(message):
+        await state.clear()
+        return
     await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     user_id = message.from_user.id
     image_bytes: bytes | None = None
