@@ -121,8 +121,25 @@ def format_access_text(user_id: int) -> str:
         if until_dt:
             return f"🆓 Бесплатный доступ активен до <b>{until_dt.date().isoformat()}</b> (~{hours} ч.)"
         return f"🆓 Бесплатный доступ активен ещё <b>~{hours} ч.</b>"
-    if billing_db.has_saved_card(user_id):
-        return "✅ Подписка активна (автопродление включено)"
+    # Подписка/грейс
+    try:
+        from bot.utils.billing_db import SessionLocal, Subscription
+        now = datetime.now(timezone.utc)
+        with SessionLocal() as s:
+            rec = (
+                s.query(Subscription)
+                .filter(Subscription.user_id == user_id, Subscription.status == "active")
+                .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
+                .first()
+            )
+            if rec:
+                if rec.next_charge_at and rec.next_charge_at > now:
+                    return "✅ Подписка активна"
+                fails = int(rec.consecutive_failures or 0)
+                if fails < 3:
+                    return f"🕊️ Грейс-период: ожидаем оплату (ретраи {fails}/6)"
+    except Exception:
+        pass
     # Не активен триал и нет активной карты.
     # Если триал ранее был — сообщаем, что он завершён.
     if _had_trial(user_id):
@@ -136,7 +153,9 @@ def format_access_text(user_id: int) -> str:
 
 def has_access(user_id: int) -> bool:
     try:
-        return bool(app_db.is_trial_active(user_id) or billing_db.has_saved_card(user_id))
+        if app_db.is_trial_active(user_id):
+            return True
+        return _has_paid_or_grace_access(user_id)
     except Exception:
         return False
 
@@ -255,23 +274,32 @@ def _trial_status_line(user_id: int) -> Optional[str]:
 def kb_settings_main(user_id: int) -> InlineKeyboardMarkup:
     rows: List[List[InlineKeyboardButton]] = []
 
-    # Статус: сначала триал; иначе — по факту наличия карты
+    # Статус: сначала триал; иначе — «активна» или «грейс» по подписке
     trial_line = _trial_status_line(user_id)
     if trial_line:
         rows.append([InlineKeyboardButton(text=trial_line, callback_data="noop")])
     else:
-        has_card = False
         try:
-            has_card = billing_db.has_saved_card(user_id)
+            from bot.utils.billing_db import SessionLocal, Subscription
+            now = datetime.now(timezone.utc)
+            with SessionLocal() as s:
+                rec = (
+                    s.query(Subscription)
+                    .filter(Subscription.user_id == user_id, Subscription.status == "active")
+                    .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
+                    .first()
+                )
+                if rec and rec.next_charge_at and rec.next_charge_at > now:
+                    status_text = "Статус: активна"
+                elif rec and int(rec.consecutive_failures or 0) < 3:
+                    fails = int(rec.consecutive_failures or 0)
+                    status_text = f"Статус: грейс-период (ретраи {fails}/6)"
+                else:
+                    status_text = "Статус: неактивна"
         except Exception:
-            has_card = False
-        rows.append([
-            InlineKeyboardButton(
-                text=("Статус: автопродление включено" if has_card else "Статус: неактивна"),
-                callback_data="noop"
-            )
-        ])
-    # Доп. строка: статус ретраев (если есть активная подписка)
+            status_text = "Статус: неактивна"
+        rows.append([InlineKeyboardButton(text=status_text, callback_data="noop")])
+    # Доп. строка: статус ретраев (если есть запись подписки)
     try:
         from bot.utils.billing_db import SessionLocal, Subscription
         with SessionLocal() as s:
@@ -405,6 +433,33 @@ def _compute_next_time_from_months(months: int) -> datetime:
         return datetime.now(timezone.utc) + relativedelta(months=+months)
     except Exception:
         return datetime.now(timezone.utc) + timedelta(days=30 * months)
+
+def _has_paid_or_grace_access(user_id: int) -> bool:
+    """
+    Доступ считается активным, если:
+      • следующий платёж ещё не наступил (next_charge_at > now), ИЛИ
+      • оплаченный период закончился, но не завершены 3 неудачные попытки списания
+        (consecutive_failures < 3) — «грейс-период».
+    """
+    try:
+        from bot.utils.billing_db import SessionLocal, Subscription
+        now = datetime.now(timezone.utc)
+        with SessionLocal() as s:
+            rec = (
+                s.query(Subscription)
+                .filter(Subscription.user_id == user_id, Subscription.status == "active")
+                .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
+                .first()
+            )
+            if not rec:
+                return False
+            if rec.next_charge_at and rec.next_charge_at > now:
+                return True  # оплаченный период ещё идёт
+            # оплаченный период закончился — смотрим ретраи
+            fails = int(rec.consecutive_failures or 0)
+            return fails < 3
+    except Exception:
+        return False
 
 
 def _create_links_for_selection(user_id: int) -> tuple[Optional[str], Optional[str]]:
@@ -890,8 +945,8 @@ def kb_manage_menu() -> InlineKeyboardMarkup:
 
 async def open_manage(cb: CallbackQuery) -> None:
     user_id = cb.from_user.id
-    # Управление доступно, если есть активный триал или карта (рекуррент)
-    if not (app_db.is_trial_active(user_id) or billing_db.has_saved_card(user_id)):
+    # Управление доступно, если есть активный триал или оплаченный/грейс-доступ
+    if not (app_db.is_trial_active(user_id) or _has_paid_or_grace_access(user_id)):
         await _edit_safe(cb, "Подписка не активна. Выберите тариф для оформления:", kb_rates())
         return
     await _edit_safe(
