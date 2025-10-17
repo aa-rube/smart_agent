@@ -26,7 +26,7 @@ import bot.utils.logging_config as logging_config
 log = logging_config.logger
 
 # ====== Глобальный флаг показа резюме анкеты ======
-# True  — показывать краткое резюме заполненных полей над каждым шагом.
+# True — показывать краткое резюме заполненных полей над каждым шагом.
 # False — полностью отключить резюме для всех флоу.
 SUMMARY_ENABLED: bool = False
 
@@ -34,8 +34,6 @@ SUMMARY_ENABLED: bool = False
 import bot.utils.database as app_db          # триал/согласия/история
 
 from bot.handlers.payment_handler import (
-    SUBSCRIBE_KB, SUB_FREE, SUB_PAY,
-    has_access     as pay_has_access,
     format_access_text as pay_format_access_text,
     ensure_access  as pay_ensure_access,
 )
