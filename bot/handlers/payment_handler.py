@@ -342,9 +342,9 @@ def kb_pay_with_consent(*, consent: bool, pay_url_card: Optional[str], pay_url_s
     rows: List[List[InlineKeyboardButton]] = [[InlineKeyboardButton(text=check, callback_data="tos:toggle")]]
     if consent:
         if pay_url_sbp:
-            rows.append([InlineKeyboardButton(text="🌫 Оформить СБП", url=pay_url_sbp)])
+            rows.append([InlineKeyboardButton(text="🌫 СБП", url=pay_url_sbp)])
         if pay_url_card:
-            rows.append([InlineKeyboardButton(text="💳 Оформить подписку", url=pay_url_card)])
+            rows.append([InlineKeyboardButton(text="💳 Карта ", url=pay_url_card)])
 
     rows.append([InlineKeyboardButton(text="⬅️ Выбрать другой тариф", callback_data="show_rates")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
