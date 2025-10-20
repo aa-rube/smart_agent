@@ -530,16 +530,26 @@ def _create_links_for_selection(user_id: int) -> tuple[Optional[str], Optional[s
         "trial_hours": str(plan.get("trial_hours", 72)),
         "plan_amount": plan["amount"],
     }
-    first_amount = plan.get("trial_amount", "1.00")
+    # Решаем: триал или полный платеж
+    has_trial = bool(plan.get("trial_amount"))
+    is_recurring = "1" if plan.get("recurring") else "0"
+    if has_trial:
+        first_amount = plan["trial_amount"]
+        phase = "trial"
+        desc_suffix = " (пробный период)"
+    else:
+        first_amount = plan["amount"]
+        phase = "renewal"  # первый полный платёж трактуем как период подписки
+        desc_suffix = ""
 
     # 1) Карта (РЕКУРРЕНТ ТОЛЬКО): без фолбэков на разовую оплату.
     try:
         pay_url_card = youmoney.create_pay_ex(
             user_id=user_id,
             amount_rub=first_amount,
-            description=f"{description} (пробный период)",
-            metadata={**meta_base, "phase": "trial", "is_recurring": "1"},
-            save_payment_method=True,
+            description=f"{description}{desc_suffix}",
+            metadata={**meta_base, "phase": phase, "is_recurring": is_recurring},
+            save_payment_method=bool(plan.get("recurring")),
             payment_method_type="bank_card",
         )
     except Exception as e:
@@ -551,9 +561,9 @@ def _create_links_for_selection(user_id: int) -> tuple[Optional[str], Optional[s
         pay_url_sbp = youmoney.create_pay_ex(
             user_id=user_id,
             amount_rub=first_amount,
-            description=f"{description} (пробный период, СБП)",
-            metadata={**meta_base, "phase": "trial", "is_recurring": "1"},
-            save_payment_method=True,
+            description=f"{description}{desc_suffix if desc_suffix else ''}",
+            metadata={**meta_base, "phase": phase, "is_recurring": is_recurring},
+            save_payment_method=bool(plan.get("recurring")),
             payment_method_type="sbp",
         )
     except ForbiddenError as e:
@@ -839,6 +849,13 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             await _notify_after_payment(bot, user_id, code, trial_until.date().isoformat())
 
         elif is_recurring and phase == "renewal":
+            # Сохраняем платёжный метод (чтобы было автопродление)
+            if pm_token:
+                billing_db.card_upsert_from_provider(
+                    user_id=user_id, provider=pmethod.get("type", "yookassa"),
+                    pm_token=pm_token, brand=brand, first6=first6, last4=last4,
+                    exp_month=exp_month, exp_year=exp_year,
+                )
             # переносим next_charge_at вперёд на период тарифа
             next_at = _compute_next_time_from_months(months)
             updated_sub_id = billing_db.subscription_mark_charged_for_user(user_id=user_id, next_charge_at=next_at)
@@ -848,9 +865,25 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                     user_id=user_id, plan_code=code, interval_months=months,
                     amount_value=TARIFFS.get(code, {}).get("amount", "0.00"),
                     amount_currency=str(obj.get("amount", {}).get("currency") or "RUB"),
-                    payment_method_id=None,  # оставим карту как было (мы её не знаем в этом событии)
+                    payment_method_id=pm_token,  # знаем токен из текущего события
                     next_charge_at=next_at, status="active",
                 )
+            else:
+                # если подписка есть, но карта ещё не привязана — привяжем
+                try:
+                    from bot.utils.billing_db import SessionLocal, Subscription, now_utc
+                    with SessionLocal() as s, s.begin():
+                        rec = (
+                            s.query(Subscription)
+                            .filter(Subscription.user_id == user_id, Subscription.status == "active")
+                            .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
+                            .first()
+                        )
+                        if rec and not rec.payment_method_id and pm_token:
+                            rec.payment_method_id = pm_token
+                            rec.updated_at = now_utc()
+                except Exception:
+                    pass
             # уведомление с «до …» брать из next_at
             await _notify_after_payment(bot, user_id, code, next_at.date().isoformat())
             # сброс счётчиков фейлов, обновление last_charge_at выполнено в repo; здесь — обнуление fail-серии на подписке
