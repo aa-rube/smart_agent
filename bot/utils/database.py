@@ -309,6 +309,30 @@ class AppRepository:
                 return None
             return to_aware_utc(rec.until_at)
 
+    def get_trial_created_at(self, user_id: int) -> Optional[datetime]:
+        """Дата первого оформления триала (created_at записи Trial)."""
+        with self._session() as s:
+            rec = s.get(Trial, user_id)
+            if not rec:
+                return None
+            return to_aware_utc(rec.created_at)
+
+    def trial_cooldown_days_left(self, user_id: int, *, cooldown_days: int = 60) -> int:
+        """
+        Сколько дней осталось до разрешения повторного триала.
+        Если триала не было — 0.
+        """
+        created = self.get_trial_created_at(user_id)
+        if not created:
+            return 0
+        delta = (now_utc() - created).days
+        left = cooldown_days - max(0, delta)
+        return max(0, left)
+
+    def is_trial_allowed(self, user_id: int, *, cooldown_days: int = 60) -> bool:
+        """Разрешён ли повторный триал с учётом кулдауна."""
+        return self.trial_cooldown_days_left(user_id, cooldown_days=cooldown_days) == 0
+
     def is_trial_active(self, user_id: int) -> bool:
         until = self.get_trial_until(user_id)
         return bool(until and now_utc() < to_aware_utc(until))
@@ -662,6 +686,10 @@ def get_trial_until(user_id: int) -> Optional[datetime]:
     return _repo.get_trial_until(user_id)
 
 
+def get_trial_created_at(user_id: int) -> Optional[datetime]:
+    return _repo.get_trial_created_at(user_id)
+
+
 def is_trial_active(user_id: int) -> bool:
     return _repo.is_trial_active(user_id)
 
@@ -672,6 +700,15 @@ def trial_remaining_hours(user_id: int) -> int:
 
 def list_trial_active_user_ids(now: Optional[datetime] = None) -> list[int]:
     return _repo.list_trial_active_user_ids(now)
+
+
+# Trial cooldown helpers
+def trial_cooldown_days_left(user_id: int, *, cooldown_days: int = 60) -> int:
+    return _repo.trial_cooldown_days_left(user_id, cooldown_days=cooldown_days)
+
+
+def is_trial_allowed(user_id: int, *, cooldown_days: int = 60) -> bool:
+    return _repo.is_trial_allowed(user_id, cooldown_days=cooldown_days)
 
 
 # History

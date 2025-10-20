@@ -392,6 +392,83 @@ class BillingRepository:
                 "exp_year": rec.exp_year,
             }
 
+    def list_user_payment_methods(self, user_id: int) -> List[Dict[str, Optional[str]]]:
+        """
+        Возвращает все не-удалённые платёжные методы пользователя.
+        Поля: provider ('bank_card' | 'sbp' | ...), brand, last4, provider_pm_token.
+        """
+        with self._session() as s:
+            rows = (
+                s.query(PaymentMethod.provider, PaymentMethod.brand, PaymentMethod.last4, PaymentMethod.provider_pm_token)
+                 .filter(PaymentMethod.user_id == user_id, PaymentMethod.deleted_at.is_(None))
+                 .all()
+            )
+            out: List[Dict[str, Optional[str]]] = []
+            for provider, brand, last4, token in rows:
+                out.append({
+                    "provider": provider,
+                    "brand": brand or "",
+                    "last4": last4 or "",
+                    "provider_pm_token": token or "",
+                })
+            return out
+
+    def has_saved_sbp(self, user_id: int) -> bool:
+        """Есть ли у пользователя активный рекуррентный токен СБП."""
+        with self._session() as s:
+            return (
+                s.query(PaymentMethod)
+                 .filter(
+                     PaymentMethod.user_id == user_id,
+                     PaymentMethod.deleted_at.is_(None),
+                     PaymentMethod.provider == "sbp",
+                 )
+                 .first()
+                is not None
+            )
+
+    def delete_user_sbp_and_detach_subscriptions(self, *, user_id: int) -> int:
+        """
+        Мягко удаляет ВСЕ активные СБП-токены (provider='sbp') и отвязывает их от активных подписок
+        только если payment_method_id совпадает с удаляемыми токенами.
+        Возвращает количество затронутых подписок.
+        """
+        with self._session() as s, s.begin():
+            now = now_utc()
+            # какие СБП-токены удаляем
+            sbp_tokens = [
+                token for (token,) in
+                s.query(PaymentMethod.provider_pm_token)
+                 .filter(
+                     PaymentMethod.user_id == user_id,
+                     PaymentMethod.deleted_at.is_(None),
+                     PaymentMethod.provider == "sbp",
+                 )
+                 .all()
+            ]
+            # пометить как удалённые
+            for pm in s.query(PaymentMethod).filter(
+                PaymentMethod.user_id == user_id,
+                PaymentMethod.deleted_at.is_(None),
+                PaymentMethod.provider == "sbp",
+            ).all():
+                pm.deleted_at = now
+
+            if not sbp_tokens:
+                return 0
+
+            # отвязать у подписок только эти токены
+            cnt = 0
+            for sub in s.query(Subscription).filter(
+                Subscription.user_id == user_id,
+                Subscription.status == "active",
+                Subscription.payment_method_id.in_(sbp_tokens),
+            ).all():
+                sub.payment_method_id = None
+                sub.updated_at = now
+                cnt += 1
+            return cnt
+
     def card_upsert_from_provider(
         self,
         *,
@@ -739,8 +816,17 @@ def has_saved_card(user_id: int) -> bool:
 def get_user_card(user_id: int) -> Optional[dict]:
     return _repo.get_user_card(user_id)
 
+def list_user_payment_methods(user_id: int) -> List[Dict[str, Optional[str]]]:
+    return _repo.list_user_payment_methods(user_id)
+
+def has_saved_sbp(user_id: int) -> bool:
+    return _repo.has_saved_sbp(user_id)
+
 def delete_user_card_and_detach_subscriptions(*, user_id: int) -> int:
     return _repo.delete_user_card_and_detach_subscriptions(user_id=user_id)
+
+def delete_user_sbp_and_detach_subscriptions(*, user_id: int) -> int:
+    return _repo.delete_user_sbp_and_detach_subscriptions(user_id=user_id)
 
 def card_upsert_from_provider(
     *, user_id: int, provider: str, pm_token: str,
