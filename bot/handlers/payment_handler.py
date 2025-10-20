@@ -299,25 +299,6 @@ def kb_settings_main(user_id: int) -> InlineKeyboardMarkup:
         except Exception:
             status_text = "Статус: неактивна"
         rows.append([InlineKeyboardButton(text=status_text, callback_data="noop")])
-    # Доп. строка: статус ретраев (если есть запись подписки)
-    try:
-        from bot.utils.billing_db import SessionLocal, Subscription
-        with SessionLocal() as s:
-            rec = (
-                s.query(Subscription)
-                .filter(Subscription.user_id == user_id, Subscription.status == "active")
-                .order_by(Subscription.updated_at.desc())
-                .first()
-            )
-            if rec:
-                last_try = _to_msk_str(rec.last_attempt_at)
-                fails = int(rec.consecutive_failures or 0)
-                rows.append([InlineKeyboardButton(
-                    text=f"Ретраи: {fails}/6, последняя попытка: {last_try}",
-                    callback_data="noop"
-                )])
-    except Exception:
-        pass
 
 
     # Платёжные методы (карта/СБП) и кнопки удаления
