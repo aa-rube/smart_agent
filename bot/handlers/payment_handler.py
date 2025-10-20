@@ -246,6 +246,66 @@ SUBSCRIBE_KB = InlineKeyboardMarkup(
     inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
 )
 
+def _build_settings_text(user_id: int) -> str:
+    """
+    Единая сборка текста для экрана /settings:
+    - Статус (триал/активна/грейс/неактивна)
+    - Платёжные данные (карта, СБП) или «не привязаны»
+    Формат: HTML (совместим с _edit_safe и .answer(parse_mode="HTML")).
+    """
+    # 1) Статус
+    now = datetime.now(timezone.utc)
+    try:
+        if app_db.is_trial_active(user_id):
+            until = app_db.get_trial_until(user_id)
+            if until:
+                status_line = f"триал до {until.date().isoformat()}"
+            else:
+                status_line = "триал активен"
+        else:
+            from bot.utils.billing_db import SessionLocal, Subscription
+            with SessionLocal() as s:
+                rec = (
+                    s.query(Subscription)
+                    .filter(Subscription.user_id == user_id, Subscription.status == "active")
+                    .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
+                    .first()
+                )
+                if rec and rec.next_charge_at and rec.next_charge_at > now:
+                    status_line = "активна"
+                elif rec and int(rec.consecutive_failures or 0) < 3:
+                    fails = int(rec.consecutive_failures or 0)
+                    status_line = f"грейс-период (ретраи {fails}/6)"
+                else:
+                    status_line = "неактивна"
+    except Exception:
+        status_line = "неактивна"
+
+    # 2) Платёжные методы
+    try:
+        methods = billing_db.list_user_payment_methods(user_id)
+    except Exception:
+        methods = []
+    has_card = any((m.get("provider") == "bank_card") for m in methods)
+    has_sbp  = any((m.get("provider") == "sbp") for m in methods)
+    pm_lines: list[str] = []
+    if has_card:
+        card = billing_db.get_user_card(user_id) or {}
+        suffix = f"{(card.get('brand') or '').upper()} ••••{card.get('last4', '')}"
+        pm_lines.append(f"Карта: {escape(suffix)}")
+    if has_sbp:
+        pm_lines.append("СБП: привязана")
+    if not pm_lines:
+        pm_lines.append("не привязаны")
+
+    text = (
+        "⚙️ <b>Настройки подписки</b>\n"
+        "Здесь можно управлять подпиской и удалять привязанные платёжные методы.\n\n"
+        f"<b>Статус:</b> {escape(status_line)}\n"
+        f"<b>Платёжные данные:</b> " + "; ".join(pm_lines)
+    )
+    return text
+
 def kb_rates() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎁 3 дня за 1₽", callback_data="sub:choose:1m")],
@@ -274,34 +334,7 @@ def _trial_status_line(user_id: int) -> Optional[str]:
 def kb_settings_main(user_id: int) -> InlineKeyboardMarkup:
     rows: List[List[InlineKeyboardButton]] = []
 
-    # Статус: сначала триал; иначе — «активна» или «грейс» по подписке
-    trial_line = _trial_status_line(user_id)
-    if trial_line:
-        rows.append([InlineKeyboardButton(text=trial_line, callback_data="noop")])
-    else:
-        try:
-            from bot.utils.billing_db import SessionLocal, Subscription
-            now = datetime.now(timezone.utc)
-            with SessionLocal() as s:
-                rec = (
-                    s.query(Subscription)
-                    .filter(Subscription.user_id == user_id, Subscription.status == "active")
-                    .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
-                    .first()
-                )
-                if rec and rec.next_charge_at and rec.next_charge_at > now:
-                    status_text = "Статус: активна"
-                elif rec and int(rec.consecutive_failures or 0) < 3:
-                    fails = int(rec.consecutive_failures or 0)
-                    status_text = f"Статус: грейс-период (ретраи {fails}/6)"
-                else:
-                    status_text = "Статус: неактивна"
-        except Exception:
-            status_text = "Статус: неактивна"
-        rows.append([InlineKeyboardButton(text=status_text, callback_data="noop")])
-
-
-    # Платёжные методы (карта/СБП) и кнопки удаления
+    # Платёжные методы (карта/СБП) — только действия (никаких noop-информеров)
     try:
         methods = billing_db.list_user_payment_methods(user_id)
     except Exception:
@@ -315,8 +348,6 @@ def kb_settings_main(user_id: int) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text=f"🗑️ Удалить карту ({suffix})", callback_data="sub:cancel_all")])
     if has_sbp:
         rows.append([InlineKeyboardButton(text="🗑️ Удалить СБП-привязку", callback_data="sub:cancel_sbp")])
-    if not has_card and not has_sbp:
-        rows.append([InlineKeyboardButton(text="Платёжные данные: не привязаны", callback_data="noop")])
 
     rows.append([InlineKeyboardButton(text="⬅️ К тарифам", callback_data="show_rates")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -898,12 +929,8 @@ async def open_settings_cmd(msg: Message) -> None:
     user_id = msg.from_user.id
     logger.info("settings user_id=%s has_card=%s trial_active=%s",
                 user_id, billing_db.has_saved_card(user_id), app_db.is_trial_active(user_id))
-    text = (
-        "⚙️ *Настройки подписки*\n"
-        "Здесь можно управлять подпиской и удалить привязанную карту.\n\n"
-        "• *Удалить карту* — немедленно остановит автосписания (подписка не отменяется, доступ действует до оплаченной даты)."
-    )
-    await msg.answer(text, reply_markup=kb_settings_main(user_id), parse_mode="Markdown")
+    text = _build_settings_text(user_id)
+    await msg.answer(text, reply_markup=kb_settings_main(user_id), parse_mode="HTML")
 
 
 async def cancel_request(cb: CallbackQuery) -> None:
@@ -921,7 +948,8 @@ async def cancel_request(cb: CallbackQuery) -> None:
 
 
 async def cancel_no(cb: CallbackQuery) -> None:
-    await _edit_safe(cb, "Действие отменено. Вы в настройках подписки.", kb_settings_main(cb.from_user.id))
+    uid = cb.from_user.id
+    await _edit_safe(cb, _build_settings_text(uid), kb_settings_main(uid))
 
 
 async def cancel_yes(cb: CallbackQuery) -> None:
@@ -933,7 +961,8 @@ async def cancel_yes(cb: CallbackQuery) -> None:
         logger.exception("Failed to delete card for user %s", user_id)
         await _edit_safe(cb, "Не удалось удалить карту. Попробуйте позже.", kb_settings_main(user_id))
         return
-    await _edit_safe(cb, "✅ Карта удалена. Автосписания остановлены. Подписка не отменена.", kb_settings_main(user_id))
+    success = "✅ Карта удалена. Автосписания остановлены. Подписка не отменена.\n\n"
+    await _edit_safe(cb, success + _build_settings_text(user_id), kb_settings_main(user_id))
 
 
 async def cancel_sbp_request(cb: CallbackQuery) -> None:
@@ -949,7 +978,8 @@ async def cancel_sbp_request(cb: CallbackQuery) -> None:
 
 
 async def cancel_sbp_no(cb: CallbackQuery) -> None:
-    await _edit_safe(cb, "Действие отменено. Вы в настройках подписки.", kb_settings_main(cb.from_user.id))
+    uid = cb.from_user.id
+    await _edit_safe(cb, _build_settings_text(uid), kb_settings_main(uid))
 
 
 async def cancel_sbp_yes(cb: CallbackQuery) -> None:
@@ -961,7 +991,8 @@ async def cancel_sbp_yes(cb: CallbackQuery) -> None:
         logger.exception("Failed to delete SBP for user %s", user_id)
         await _edit_safe(cb, "Не удалось удалить СБП. Попробуйте позже.", kb_settings_main(user_id))
         return
-    await _edit_safe(cb, "✅ СБП-привязка удалена. Автосписания по СБП остановлены. Подписка не отменена.", kb_settings_main(user_id))
+    success = "✅ СБП-привязка удалена. Автосписания по СБП остановлены. Подписка не отменена.\n\n"
+    await _edit_safe(cb, success + _build_settings_text(user_id), kb_settings_main(user_id))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
