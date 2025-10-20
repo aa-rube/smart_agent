@@ -30,9 +30,9 @@ MSK = ZoneInfo("Europe/Moscow")
 # ──────────────────────────────────────────────────────────────────────────────
 TARIFFS: Dict[str, Dict] = {
     "1m": {"label": "1 месяц", "months": 1, "amount": "2490.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
-    "3m": {"label": "3 месяца", "months": 3, "amount": "6490.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
-    "6m": {"label": "6 месяцев", "months": 6, "amount": "11490.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
-    "12m": {"label": "12 месяцев", "months": 12, "amount": "19900.00", "recurring": True, "trial_amount": "1.00", "trial_hours": 72},
+    "3m": {"label": "3 месяца", "months": 3, "amount": "6490.00", "recurring": True},
+    "6m": {"label": "6 месяцев", "months": 6, "amount": "11490.00", "recurring": True},
+    "12m": {"label": "12 месяцев", "months": 12, "amount": "19900.00", "recurring": True},
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
