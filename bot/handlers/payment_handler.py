@@ -84,6 +84,98 @@ def _had_subscription(user_id: int) -> bool:
     except Exception:
         return False
 
+def get_user_payment_methods(user_id: int) -> List[Dict[str, str]]:
+    """Возвращает список платёжных методов пользователя для UI."""
+    try:
+        db = billing_db.BillingDB()
+        return db.list_user_payment_methods(user_id)
+    except Exception:
+        logger.exception("Failed to get payment methods for user %s", user_id)
+        return []
+
+def has_saved_sbp_token(user_id: int) -> bool:
+    """Проверяет наличие сохранённого СБП токена у пользователя."""
+    try:
+        db = billing_db.BillingDB()
+        return db.has_saved_sbp(user_id)
+    except Exception:
+        logger.exception("Failed to check SBP token for user %s", user_id)
+        return False
+
+def format_payment_methods_text(user_id: int) -> str:
+    """Форматирует список платёжных методов для отображения в UI."""
+    methods = get_user_payment_methods(user_id)
+    if not methods:
+        return "💳 Платёжные методы не найдены"
+    
+    lines = ["💳 <b>Сохранённые платёжные методы:</b>"]
+    
+    for i, method in enumerate(methods, 1):
+        provider = method.get("provider", "")
+        brand = method.get("brand", "")
+        last4 = method.get("last4", "")
+        
+        if provider == "bank_card":
+            if brand and last4:
+                lines.append(f"{i}. 💳 {brand} ****{last4}")
+            elif last4:
+                lines.append(f"{i}. 💳 Карта ****{last4}")
+            else:
+                lines.append(f"{i}. 💳 Банковская карта")
+        elif provider == "sbp":
+            lines.append(f"{i}. 📱 СБП")
+        else:
+            lines.append(f"{i}. 💰 {provider}")
+    
+    return "\n".join(lines)
+
+def delete_user_sbp_tokens(user_id: int) -> int:
+    """Удаляет все СБП токены пользователя и отвязывает от подписок. Возвращает количество затронутых подписок."""
+    try:
+        db = billing_db.BillingDB()
+        return db.delete_user_sbp_and_detach_subscriptions(user_id=user_id)
+    except Exception:
+        logger.exception("Failed to delete SBP tokens for user %s", user_id)
+        return 0
+
+def get_trial_cooldown_status(user_id: int, cooldown_days: int = 60) -> Dict[str, any]:
+    """Возвращает статус кулдауна триала для пользователя."""
+    try:
+        days_left = app_db.trial_cooldown_days_left(user_id, cooldown_days=cooldown_days)
+        is_allowed = app_db.is_trial_allowed(user_id, cooldown_days=cooldown_days)
+        created_at = app_db.get_trial_created_at(user_id)
+        
+        return {
+            "days_left": days_left,
+            "is_allowed": is_allowed,
+            "created_at": created_at,
+            "had_trial": created_at is not None
+        }
+    except Exception:
+        logger.exception("Failed to get trial cooldown status for user %s", user_id)
+        return {
+            "days_left": 0,
+            "is_allowed": True,
+            "created_at": None,
+            "had_trial": False
+        }
+
+def format_trial_cooldown_text(user_id: int, cooldown_days: int = 60) -> str:
+    """Форматирует текст о статусе кулдауна триала."""
+    status = get_trial_cooldown_status(user_id, cooldown_days)
+    
+    if not status["had_trial"]:
+        return "🎁 Пробный период доступен"
+    
+    if status["is_allowed"]:
+        return "🎁 Пробный период снова доступен"
+    
+    days_left = status["days_left"]
+    if days_left > 0:
+        return f"⏳ Повторный пробный период будет доступен через {days_left} дн."
+    
+    return "🎁 Пробный период доступен"
+
 # ──────────────────────────────────────────────────────────────────────────────
 # ПУБЛИЧНЫЕ ТЕКСТЫ ПРО ДОСТУП (централизовано, HTML)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -246,9 +338,24 @@ SUBSCRIBE_KB = InlineKeyboardMarkup(
     inline_keyboard=[[InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")]]
 )
 
-def kb_rates() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎁 3 дня за 1₽", callback_data="sub:choose:1m")],
+def kb_rates(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
+    rows = []
+    
+    # Проверяем доступность триала
+    if user_id:
+        cooldown_status = get_trial_cooldown_status(user_id)
+        if cooldown_status["is_allowed"]:
+            if cooldown_status["had_trial"]:
+                rows.append([InlineKeyboardButton(text="🎁 Повторный триал 3 дня за 1₽", callback_data="sub:choose:1m")])
+            else:
+                rows.append([InlineKeyboardButton(text="🎁 3 дня за 1₽", callback_data="sub:choose:1m")])
+        else:
+            days_left = cooldown_status["days_left"]
+            rows.append([InlineKeyboardButton(text=f"⏳ Триал через {days_left} дн.", callback_data="trial:cooldown_info")])
+    else:
+        rows.append([InlineKeyboardButton(text="🎁 3 дня за 1₽", callback_data="sub:choose:1m")])
+    
+    rows.extend([
         [
             InlineKeyboardButton(text="1 месяц", callback_data="sub:choose:1m"),
             InlineKeyboardButton(text="3 месяца", callback_data="sub:choose:3m"),
@@ -257,6 +364,8 @@ def kb_rates() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="12 месяцев", callback_data="sub:choose:12m")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")],
     ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _trial_status_line(user_id: int) -> Optional[str]:
@@ -320,11 +429,27 @@ def kb_settings_main(user_id: int) -> InlineKeyboardMarkup:
         pass
 
 
-    # Кнопка удаления карты
-    if (lambda _uid: (billing_db.has_saved_card(_uid) if hasattr(billing_db, 'has_saved_card') else False))(user_id):
+    # Кнопка просмотра платёжных методов
+    methods = get_user_payment_methods(user_id)
+    if methods:
+        rows.append([InlineKeyboardButton(text="💳 Мои платёжные методы", callback_data="payment:show_methods")])
+    
+    # Платёжные методы (карта/СБП) и кнопки удаления
+    try:
+        methods = get_user_payment_methods(user_id)
+    except Exception:
+        methods = []
+    has_card = any((m.get("provider") == "bank_card") for m in methods)
+    has_sbp  = any((m.get("provider") == "sbp") for m in methods)
+
+    if has_card:
         card = billing_db.get_user_card(user_id) or {}
         suffix = f"{(card.get('brand') or '').upper()} ••••{card.get('last4', '')}"
         rows.append([InlineKeyboardButton(text=f"🗑️ Удалить карту ({suffix})", callback_data="sub:cancel_all")])
+    if has_sbp:
+        rows.append([InlineKeyboardButton(text="🗑️ Удалить СБП-привязку", callback_data="sub:cancel_sbp")])
+    if not has_card and not has_sbp:
+        rows.append([InlineKeyboardButton(text="Платёжные данные: не привязаны", callback_data="noop")])
 
     rows.append([InlineKeyboardButton(text="⬅️ К тарифам", callback_data="show_rates")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -334,6 +459,13 @@ def kb_cancel_confirm() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Да, удалить карту", callback_data="sub:cancel_yes")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="sub:cancel_no")],
+    ])
+
+
+def kb_cancel_sbp_confirm() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да, удалить СБП", callback_data="sub:cancel_sbp_yes")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="sub:cancel_sbp_no")],
     ])
 
 
@@ -357,7 +489,22 @@ def build_trial_offer(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     """
     Строит текст и клавиатуру с кнопкой «💳 Активировать за 1 ₽» (пробный доступ 3 дня),
     как первый тариф 1m с триалом. Ссылка — результат youmoney.create_pay_ex.
+    Проверяет кулдаун триала.
     """
+    # Проверяем кулдаун триала
+    cooldown_status = get_trial_cooldown_status(user_id)
+    
+    if not cooldown_status["is_allowed"]:
+        # Триал недоступен из-за кулдауна
+        days_left = cooldown_status["days_left"]
+        text = (
+            f"⏳ Повторный пробный период будет доступен через {days_left} дн.\n\n"
+            "Можете оформить полную подписку по обычной стоимости."
+        )
+        kb_rows = [[InlineKeyboardButton(text="⬅️ К тарифам", callback_data="show_rates")]]
+        kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+        return text, kb
+    
     plan = TARIFFS["1m"]
     description = f"Подписка на {plan['label']}"
     meta = {
@@ -371,30 +518,46 @@ def build_trial_offer(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
         "plan_amount": plan["amount"],
     }
 
-    # Генерируем ссылку оплаты на 1 ₽ ТОЛЬКО с сохранением карты (рекуррент).
-    # Без фолбэка на безтокенную оплату.
-    try:
-        pay_url = youmoney.create_pay_ex(
-            user_id=user_id,
-            amount_rub=plan.get("trial_amount", "1.00"),
-            description=f"{description} (пробный период)",
-            metadata=meta,
-            save_payment_method=True,
-        )
-    except Exception as e:
-        logger.error("Trial recurring not available for user %s: %s", user_id, e)
+    # Кулдаун 60 дней на повторный триал
+    if not app_db.is_trial_allowed(user_id, cooldown_days=60):
         pay_url = None
+    else:
+        try:
+            pay_url = youmoney.create_pay_ex(
+                user_id=user_id,
+                amount_rub=plan.get("trial_amount", "1.00"),
+                description=f"{description} (пробный период)",
+                metadata=meta,
+                save_payment_method=True,
+            )
+        except Exception as e:
+            logger.error("Trial recurring not available for user %s: %s", user_id, e)
+            pay_url = None
 
-    text = (
-        "🎁 Спасибо за подписку, наш подарок для тебя все инструменты — 3 дня за 1 ₽.\n\n"
-        "После этого подписка автоматически продлевается — 2490 ₽/мес."
-    )
+    # Текст зависит от того, первый ли это триал
+    if cooldown_status["had_trial"]:
+        text = (
+            "🎁 Повторный пробный период доступен!\n\n"
+            "Получите доступ ко всем инструментам на 3 дня за 1 ₽.\n"
+            "После этого подписка автоматически продлевается — 2490 ₽/мес."
+        )
+    else:
+        text = (
+            "🎁 Спасибо за подписку, наш подарок для тебя все инструменты — 3 дня за 1 ₽.\n\n"
+            "После этого подписка автоматически продлевается — 2490 ₽/мес."
+        )
+    
     kb_rows: List[List[InlineKeyboardButton]] = []
     if pay_url:
         kb_rows.append([InlineKeyboardButton(text="💳 Активировать за 1 ₽", url=pay_url)])
     else:
-        # если рекуррент недоступен — предлагаем вернуться к списку способов
-        kb_rows.append([InlineKeyboardButton(text="⬅️ Выбрать способ оплаты", callback_data="show_rates")])
+        # триал недоступен или рекуррент недоступен — отправляем к тарифам
+        kb_rows.append([InlineKeyboardButton(text="⬅️ Выбрать тариф", callback_data="show_rates")])
+        text = (
+            "❗ Пробный доступ уже активировался ранее. "
+            "Повторный триал доступен через 60 дней с момента первой активации.\n\n"
+            "Выберите тариф и продолжите пользоваться инструментами."
+        )
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     return text, kb
 
@@ -488,6 +651,10 @@ def _create_links_for_selection(user_id: int) -> tuple[Optional[str], Optional[s
     }
     first_amount = plan.get("trial_amount", "1.00")
 
+    # Запрещаем повторный триал в течение 60 дней
+    if not app_db.is_trial_allowed(user_id, cooldown_days=60):
+        return (None, None)
+
     # 1) Карта (РЕКУРРЕНТ ТОЛЬКО): без фолбэков на разовую оплату.
     try:
         pay_url_card = youmoney.create_pay_ex(
@@ -527,10 +694,11 @@ def _create_links_for_selection(user_id: int) -> tuple[Optional[str], Optional[s
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def show_rates(evt: Message | CallbackQuery) -> None:
+    user_id = evt.from_user.id
     if isinstance(evt, CallbackQuery):
-        await _edit_safe(evt, RATES_TEXT, kb_rates())
+        await _edit_safe(evt, RATES_TEXT, kb_rates(user_id))
     else:
-        await evt.answer(RATES_TEXT, reply_markup=kb_rates(), parse_mode="HTML")
+        await evt.answer(RATES_TEXT, reply_markup=kb_rates(user_id), parse_mode="HTML")
 
 
 async def choose_rate(cb: CallbackQuery) -> None:
@@ -546,12 +714,25 @@ async def choose_rate(cb: CallbackQuery) -> None:
         await _edit_safe(cb, "Такого тарифа нет. Выберите из списка.", kb_rates())
         return
 
+    # Проверяем кулдаун триала для тарифов с trial_amount
+    if plan.get("trial_amount") and not get_trial_cooldown_status(user_id)["is_allowed"]:
+        cooldown_status = get_trial_cooldown_status(user_id)
+        days_left = cooldown_status["days_left"]
+        text = (
+            f"⏳ Повторный пробный период будет доступен через {days_left} дн.\n\n"
+            f"Можете оформить подписку на {plan['label']} по обычной стоимости {plan['amount']} ₽."
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ К тарифам", callback_data="show_rates")]
+        ])
+        await _edit_safe(cb, text, kb)
+        return
+
     description = f"Подписка на {plan['label']}"
     # Сохраняем выбор тарифа — ссылки пока не создаём
     _PENDING_SELECTION[user_id] = {"code": code, "description": description}
 
     # Инициализируем состояние чекбокса.
-    # 1) Из памяти; 2) если нет — попытка гидратации из БД (если реализовано app_db.has_consent)
     consent = _CONSENT_FLAG.get(user_id, False)
     if not consent:
         try:
@@ -607,6 +788,13 @@ async def toggle_tos(cb: CallbackQuery) -> None:
     if new_state:
         # Создаём ссылки ТОЛЬКО сейчас — после согласия
         pay_url_card, pay_url_sbp = _create_links_for_selection(user_id)
+        # Если триал запрещён (кулдаун) — _create_links_for_selection() вернёт (None, None)
+        if not (pay_url_card or pay_url_sbp) and not app_db.is_trial_allowed(user_id, cooldown_days=60):
+            text = (
+                f"{header}\n\n"
+                "❗ Повторный пробный доступ доступен раз в 60 дней. "
+                "Сейчас оформить триал нельзя. Выберите тариф и оформите подписку."
+            )
         _LAST_PAY_URL_CARD[user_id] = pay_url_card or ""
         _LAST_PAY_URL_SBP[user_id]  = pay_url_sbp or ""
     else:
@@ -886,6 +1074,133 @@ async def open_settings_cmd(msg: Message) -> None:
     await msg.answer(text, reply_markup=kb_settings_main(user_id), parse_mode="Markdown")
 
 
+async def show_payment_methods_cmd(msg: Message) -> None:
+    """Показывает список сохранённых платёжных методов пользователя."""
+    user_id = msg.from_user.id
+    text = format_payment_methods_text(user_id)
+    
+    # Добавляем кнопки управления СБП если есть токены
+    kb_rows = []
+    if has_saved_sbp_token(user_id):
+        kb_rows.append([InlineKeyboardButton(text="🗑️ Удалить СБП токены", callback_data="payment:delete_sbp")])
+    
+    kb_rows.append([InlineKeyboardButton(text="⬅️ К тарифам", callback_data="show_rates")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    
+    await msg.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+async def show_trial_status_cmd(msg: Message) -> None:
+    """Показывает статус кулдауна триала."""
+    user_id = msg.from_user.id
+    status = get_trial_cooldown_status(user_id)
+    
+    if not status["had_trial"]:
+        text = (
+            "🎁 <b>Пробный период доступен</b>\n\n"
+            "Вы можете оформить пробную подписку на 3 дня за 1 ₽."
+        )
+    elif status["is_allowed"]:
+        created_at = status["created_at"]
+        created_date = created_at.strftime("%d.%m.%Y") if created_at else "неизвестно"
+        text = (
+            "🎁 <b>Повторный пробный период доступен</b>\n\n"
+            f"Первый триал был оформлен: {created_date}\n"
+            "Кулдаун завершён, вы можете снова оформить пробную подписку."
+        )
+    else:
+        days_left = status["days_left"]
+        created_at = status["created_at"]
+        created_date = created_at.strftime("%d.%m.%Y") if created_at else "неизвестно"
+        text = (
+            "⏳ <b>Кулдаун пробного периода</b>\n\n"
+            f"Первый триал был оформлен: {created_date}\n"
+            f"Повторный пробный период будет доступен через: <b>{days_left} дн.</b>\n\n"
+            "Можете оформить полную подписку по обычной стоимости."
+        )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💰 Посмотреть тарифы", callback_data="show_rates")]
+    ])
+    
+    await msg.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+async def show_payment_methods_callback(cb: CallbackQuery) -> None:
+    """Обработчик callback для показа платёжных методов."""
+    user_id = cb.from_user.id
+    text = format_payment_methods_text(user_id)
+    
+    kb_rows = []
+    if has_saved_sbp_token(user_id):
+        kb_rows.append([InlineKeyboardButton(text="🗑️ Удалить СБП токены", callback_data="payment:delete_sbp")])
+    kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="sub:settings_back")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    
+    await _edit_safe(cb, text, kb)
+
+
+async def delete_sbp_callback(cb: CallbackQuery) -> None:
+    """Обработчик удаления СБП токенов."""
+    user_id = cb.from_user.id
+    
+    try:
+        affected_subs = delete_user_sbp_tokens(user_id)
+        if affected_subs > 0:
+            text = f"✅ СБП токены удалены. Отвязано от {affected_subs} подписок."
+        else:
+            text = "✅ СБП токены удалены."
+    except Exception:
+        logger.exception("Failed to delete SBP tokens for user %s", user_id)
+        text = "❌ Не удалось удалить СБП токены. Попробуйте позже."
+    
+    await cb.answer(text, show_alert=True)
+    
+    # Обновляем список платёжных методов
+    updated_text = format_payment_methods_text(user_id)
+    kb_rows = []
+    if has_saved_sbp_token(user_id):
+        kb_rows.append([InlineKeyboardButton(text="🗑️ Удалить СБП токены", callback_data="payment:delete_sbp")])
+    kb_rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="sub:settings_back")])
+    kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
+    
+    await _edit_safe(cb, updated_text, kb)
+
+
+async def settings_back_callback(cb: CallbackQuery) -> None:
+    """Обработчик возврата в меню настроек."""
+    user_id = cb.from_user.id
+    text = (
+        "⚙️ *Настройки подписки*\n"
+        "Здесь можно управлять подпиской и удалить привязанную карту.\n\n"
+        "• *Удалить карту* — немедленно остановит автосписания (подписка не отменяется, доступ действует до оплаченной даты)."
+    )
+    await _edit_safe(cb, text, kb_settings_main(user_id))
+
+
+async def trial_cooldown_info_callback(cb: CallbackQuery) -> None:
+    """Обработчик для показа информации о кулдауне триала."""
+    user_id = cb.from_user.id
+    status = get_trial_cooldown_status(user_id)
+    
+    days_left = status["days_left"]
+    created_at = status["created_at"]
+    created_date = created_at.strftime("%d.%m.%Y") if created_at else "неизвестно"
+    
+    text = (
+        "⏳ <b>Кулдаун пробного периода</b>\n\n"
+        f"Первый триал был оформлен: {created_date}\n"
+        f"Повторный пробный период будет доступен через: <b>{days_left} дн.</b>\n\n"
+        "Можете оформить полную подписку по обычной стоимости."
+    )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ К тарифам", callback_data="show_rates")]
+    ])
+    
+    await _edit_safe(cb, text, kb)
+
+
 async def cancel_request(cb: CallbackQuery) -> None:
     user_id = cb.from_user.id
     card = billing_db.get_user_card(user_id) or {}
@@ -914,6 +1229,32 @@ async def cancel_yes(cb: CallbackQuery) -> None:
         await _edit_safe(cb, "Не удалось удалить карту. Попробуйте позже.", kb_settings_main(user_id))
         return
     await _edit_safe(cb, "✅ Карта удалена. Автосписания остановлены. Подписка не отменена.", kb_settings_main(user_id))
+
+
+async def cancel_sbp_request(cb: CallbackQuery) -> None:
+    user_id = cb.from_user.id
+    # Текст подтверждения без маски номера (для СБП нет last4/brand)
+    text = (
+        "Удалить привязку <b>СБП</b>?<br><br>"
+        "• Автосписания по СБП прекратятся.<br>"
+        "• Подписка НЕ отменяется, доступ останется до оплаченной даты.<br>"
+        "• Привязка СБП будет удалена."
+    )
+    await _edit_safe(cb, text, kb_cancel_sbp_confirm())
+
+async def cancel_sbp_no(cb: CallbackQuery) -> None:
+    await _edit_safe(cb, "Действие отменено. Вы в настройках подписки.", kb_settings_main(cb.from_user.id))
+
+async def cancel_sbp_yes(cb: CallbackQuery) -> None:
+    user_id = cb.from_user.id
+    try:
+        affected = billing_db.delete_user_sbp_and_detach_subscriptions(user_id=user_id)
+        logger.info("SBP deleted for user %s; detached from %s subscriptions", user_id, affected)
+    except Exception:
+        logger.exception("Failed to delete SBP for user %s", user_id)
+        await _edit_safe(cb, "Не удалось удалить СБП. Попробуйте позже.", kb_settings_main(user_id))
+        return
+    await _edit_safe(cb, "✅ СБП-привязка удалена. Автосписания по СБП остановлены. Подписка не отменена.", kb_settings_main(user_id))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -979,6 +1320,20 @@ def router(rt: Router) -> None:
 
     # /settings
     rt.message.register(open_settings_cmd, Command("settings"))
+    
+    # /payment_methods - список платёжных методов
+    rt.message.register(show_payment_methods_cmd, Command("payment_methods"))
+    
+    # /trial_status - статус кулдауна триала
+    rt.message.register(show_trial_status_cmd, Command("trial_status"))
+    
+    # управление платёжными методами
+    rt.callback_query.register(show_payment_methods_callback, F.data == "payment:show_methods")
+    rt.callback_query.register(delete_sbp_callback, F.data == "payment:delete_sbp")
+    rt.callback_query.register(settings_back_callback, F.data == "sub:settings_back")
+    
+    # информация о кулдауне триала
+    rt.callback_query.register(trial_cooldown_info_callback, F.data == "trial:cooldown_info")
 
     # тарифы
     rt.callback_query.register(show_rates, F.data == "show_rates")
@@ -996,3 +1351,8 @@ def router(rt: Router) -> None:
     rt.callback_query.register(cancel_request, F.data == "sub:cancel_all")
     rt.callback_query.register(cancel_yes, F.data == "sub:cancel_yes")
     rt.callback_query.register(cancel_no, F.data == "sub:cancel_no")
+
+    # удаление СБП
+    rt.callback_query.register(cancel_sbp_request, F.data == "sub:cancel_sbp")
+    rt.callback_query.register(cancel_sbp_yes, F.data == "sub:cancel_sbp_yes")
+    rt.callback_query.register(cancel_sbp_no, F.data == "sub:cancel_sbp_no")

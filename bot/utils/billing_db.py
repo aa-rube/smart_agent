@@ -1,4 +1,5 @@
 # smart_agent/bot/utils/billing_db.py
+#I'm using MYSQL8+ for this proj.
 from __future__ import annotations
 
 from typing import Optional, Any, List, Dict
