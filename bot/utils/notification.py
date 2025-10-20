@@ -20,10 +20,9 @@ from bot.config import get_file_path
 
 MSK = ZoneInfo("Europe/Moscow")
 _ANTI_SPAM_TTL_SEC = 14 * 24 * 3600  # 14 дней
-_BEFORE_AFTER_IMG_REL_DESIGN = "img/bot/before_after_design.png"  # универсальная заглушка «было-стало»
-_BEFORE_AFTER_IMG_REL_PLANS = "img/bot/before_after_plans.png"
-# Постоянная ссылка на канал с контентом (для онбординга trial D1)
-CONTENT_CHANNEL_URL = "https://t.me/+mYYhx7MVkXQ5ODBi"
+_BEFORE_AFTER_IMG_REL_DESIGN = "img/bot/before_after_design.jpg"  # универсальная заглушка «было-стало»
+_BEFORE_AFTER_IMG_REL_PLANS = "img/bot/before_after_plans.jpg"
+
 # Временное окно (часы), в которое разрешена отправка шага после достижения порога
 _SEND_WINDOW_HOURS = 12.0
 # ──────────────────────────────────────────────────────────────────────────────
