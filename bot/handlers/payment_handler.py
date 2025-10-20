@@ -411,6 +411,13 @@ def build_trial_offer(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
 
 async def _edit_safe(cb: CallbackQuery, text: str, kb: InlineKeyboardMarkup | None = None) -> Optional[int]:
     msg_id: Optional[int] = None
+    # Telegram HTML не поддерживает <br>. Нормализуем в перевод строки.
+    def _norm_html(s: str) -> str:
+        if not isinstance(s, str):
+            return s
+        s = s.replace("<br/>", "\n").replace("<br />", "\n").replace("<br>", "\n")
+        return s
+    text = _norm_html(text)
     try:
         m = await cb.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
         msg_id = m.message_id if isinstance(m, Message) else cb.message.message_id
@@ -933,9 +940,9 @@ async def cancel_sbp_request(cb: CallbackQuery) -> None:
     user_id = cb.from_user.id
     # Текст подтверждения без маски номера (для СБП нет last4/brand)
     text = (
-        "Удалить привязку <b>СБП</b>?<br><br>"
-        "• Автосписания по СБП прекратятся.<br>"
-        "• Подписка НЕ отменяется, доступ останется до оплаченной даты.<br>"
+        "Удалить привязку <b>СБП</b>?\n\n"
+        "• Автосписания по СБП прекратятся.\n"
+        "• Подписка НЕ отменяется, доступ останется до оплаченной даты.\n"
         "• Привязка СБП будет удалена."
     )
     await _edit_safe(cb, text, kb_cancel_sbp_confirm())
