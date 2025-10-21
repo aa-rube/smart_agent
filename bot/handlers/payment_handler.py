@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Dict, Optional, Tuple, List
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from aiogram import Router, F, Bot
 from aiogram.types import (
@@ -35,6 +36,32 @@ TARIFFS: Dict[str, Dict] = {
     "12m": {"label": "12 месяцев", "months": 12, "amount": "19900.00", "recurring": True},
 }
 
+def _to_decimal(x) -> Decimal:
+    """Безопасное преобразование значений из TARIFFS к Decimal."""
+    try:
+        return Decimal(str(x))
+    except Exception:
+        return Decimal("0")
+
+def _rub(x) -> str:
+    """Форматирование рублей: 12 345.67 → '12 345.67', 19900 → '19 900'."""
+    d = _to_decimal(x)
+    s = f"{d:,.2f}".replace(",", " ")
+    if s.endswith(".00"):
+        s = s[:-3]
+    return s
+
+def _base_month_amount() -> Decimal:
+    """Базовая помесячная цена (из плана '1m')."""
+    return _to_decimal(TARIFFS.get("1m", {}).get("amount", "0"))
+
+def _min_plan_amount() -> Decimal:
+    """Минимальная конечная стоимость среди всех планов (без trial_amount)."""
+    vals = []
+    for p in TARIFFS.values():
+        vals.append(_to_decimal(p.get("amount", "0")))
+    return min(vals) if vals else Decimal("0")
+
 # ──────────────────────────────────────────────────────────────────────────────
 # КВОТЫ: бесплатные проходы
 # ──────────────────────────────────────────────────────────────────────────────
@@ -42,47 +69,92 @@ TARIFFS: Dict[str, Dict] = {
 WEEKLY_PASS_LIMIT = 5
 WEEKLY_WINDOW_SEC = 7 * 24 * 60 * 60
 
-# ──────────────────────────────────────────────────────────────────────────────
-# ПУБЛИЧНЫЕ ТЕКСТЫ ПРО ДОСТУП (централизовано, HTML)
-# ──────────────────────────────────────────────────────────────────────────────
-SUB_FREE = (
-    "🎁 Бесплатный период завершён\n"
-    "Пробный доступ на 72 часа истёк — дальше только по подписке.\n\n"
-    "📦 <b>Что даёт подписка:</b>\n"
-    " — Полный доступ ко всем инструментам\n"
-    " — Без ограничений по количеству запусков в период подписки*\n"
-    "Стоимость пакета всего 2500 рублей!"
-)
+def _build_sub_free_text() -> str:
+    """SUB_FREE: динамическая минимальная цена и длительность пробного периода из TARIFFS."""
+    trial_hours = int(str(TARIFFS.get("1m", {}).get("trial_hours", 72)))
+    min_price = _rub(_min_plan_amount())
+    return (
+        "🎁 Бесплатный период завершён\n"
+        f"Пробный доступ на {trial_hours} часа(ов) истёк — дальше только по подписке.\n\n"
+        "📦 <b>Что даёт подписка:</b>\n"
+        " — Полный доступ ко всем инструментам\n"
+        " — Без ограничений по количеству запусков в период подписки*\n"
+        f"Стоимость от {min_price} ₽"
+    )
 
-PAY_NOTHING = ('''
-Упс… Кажется ваш лимит из 5 пробных генераций закончился.
+SUB_FREE = _build_sub_free_text()
 
-Мы видим, что вы активно пользуетесь нашими Инструментами.
-Чтобы продолжать пользоваться ими дальше, мы дарим вам 🎁 безлимитную подписку на 3 дня всего за 1 рубль!
-Оформляй и пользуйся без ограничений 👇
-'''
-)
+def _build_pay_nothing_text() -> str:
+    """PAY_NOTHING: фраза про trial собирается из trial_amount и trial_hours в '1m'."""
+    plan = TARIFFS.get("1m", {})
+    trial_amt = _rub(plan.get("trial_amount", "1"))
+    trial_hours = int(str(plan.get("trial_hours", 72)))
+    duration = f"{trial_hours // 24} дня" if trial_hours % 24 == 0 else f"{trial_hours} часов"
+    return (
+        "Упс… Кажется ваш лимит из 5 пробных генераций закончился.\n\n"
+        "Мы видим, что вы активно пользуетесь нашими Инструментами.\n"
+        f"Чтобы продолжать пользоваться ими дальше, дарим 🎁 безлимитную подписку на {duration} всего за {trial_amt} ₽!\n"
+        "Оформляй и пользуйся без ограничений 👇"
+    )
 
-SUB_PAY = (
-    "🪫 Подписка не активна\n"
-    "Срок подписки истёк или не был оформлен.\n\n"
-    "📦 <b>Что даёт подписка:</b>\n"
-    " — Полный доступ ко всем инструментам\n"
-    " — Без ограничений по количеству запусков в период подписки*\n"
-    "Стоимость пакета всего 2500 рублей!"
-)
+PAY_NOTHING = (_build_pay_nothing_text())
 
-RATES_TEXT = ('''
-🎁 Хочешь получить полный доступ ко всем инструментам без ограничений?
-Оформи пробную подписку на 3 дня всего за 1 ₽,
-а далее выбери удобный абонемент:
+def _build_sub_pay_text() -> str:
+    """SUB_PAY: динамическая минимальная цена из TARIFFS."""
+    min_price = _rub(_min_plan_amount())
+    return (
+        "🪫 Подписка не активна\n"
+        "Срок подписки истёк или не был оформлен.\n\n"
+        "📦 <b>Что даёт подписка:</b>\n"
+        " — Полный доступ ко всем инструментам\n"
+        " — Без ограничений по количеству запусков в период подписки*\n"
+        f"Стоимость от {min_price} ₽"
+    )
 
-1 месяц — 2 490 ₽
-3 месяца — <s>7 470 ₽</s> => 6 490 ₽
-6 месяцев — <s>14 940 ₽</s> => 11 490 ₽ 🔥
-12 месяцев — <s>29 880 ₽</s> => 19 990 ₽
-'''
-)
+SUB_PAY = _build_sub_pay_text()
+
+def _build_rates_text() -> str:
+    """Сборка блока тарифов на основе TARIFFS с автоматическим пересчётом цен/скидок."""
+    # Заголовок с trial
+    plan1 = TARIFFS.get("1m", {})
+    trial_amt = plan1.get("trial_amount")
+    trial_hours = int(str(plan1.get("trial_hours", 72)))
+    trial_part = ""
+    if trial_amt is not None:
+        trial_amt_s = _rub(trial_amt)
+        duration = f"{trial_hours // 24} дня" if trial_hours % 24 == 0 else f"{trial_hours} часов"
+        trial_part = f"Оформи пробную подписку на {duration} всего за {trial_amt_s} ₽,\nа далее выбери удобный абонемент:\n"
+    else:
+        trial_part = "Выбери удобный абонемент:\n"
+
+    # Строки тарифов
+    base_m = _base_month_amount()
+    items = []
+    discounts = {}
+    for code, p in sorted(TARIFFS.items(), key=lambda kv: kv[1].get("months", 0)):
+        label = p.get("label", code)
+        months = int(p.get("months", 1))
+        amount = _to_decimal(p.get("amount", "0"))
+        base_total = (base_m * months).quantize(Decimal("0.01"))
+        if months > 1 and amount < base_total:
+            discounts[code] = (base_total - amount)
+            line = f"{label} — <s>{_rub(base_total)} ₽</s> => {_rub(amount)} ₽"
+        else:
+            line = f"{label} — {_rub(amount)} ₽"
+        items.append((code, line))
+
+    # Пометим 🔥 самый выгодный дисконт
+    if discounts:
+        best_code = max(discounts.items(), key=lambda kv: kv[1])[0]
+        items = [(c, (l + " 🔥") if c == best_code else l) for c, l in items]
+
+    lines = "\n".join(l for _, l in items)
+    return (
+        "🎁 Хочешь получить полный доступ ко всем инструментам без ограничений?\n"
+        f"{trial_part}\n{lines}\n"
+    )
+
+RATES_TEXT = _build_rates_text()
 
 PRE_PAY_TEXT = (
     "📦 Что даёт подписка:\n"
@@ -426,9 +498,12 @@ def build_trial_offer(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
             logger.error("Trial recurring not available for user %s: %s", user_id, e)
             pay_url = None
 
+    # Динамическая фраза про trial и базовую помесячную цену
+    trial_hours = int(str(plan.get("trial_hours", 72)))
+    duration = f"{trial_hours // 24} дня" if trial_hours % 24 == 0 else f"{trial_hours} часов"
     text = (
-        "🎁 Спасибо за подписку, наш подарок для тебя все инструменты — 3 дня за 1 ₽.\n\n"
-        "После этого подписка автоматически продлевается — 2490 ₽/мес."
+        f"🎁 Спасибо за подписку, наш подарок для тебя — все инструменты на {duration} за {_rub(plan.get('trial_amount', '1'))} ₽.\n\n"
+        f"После этого подписка автоматически продлевается — {_rub(_base_month_amount())} ₽/мес."
     )
     kb_rows: List[List[InlineKeyboardButton]] = []
 
