@@ -22,10 +22,7 @@ from aiogram.types import (
 from bot.config import EXECUTOR_BASE_URL, get_file_path
 from bot.states.states import ObjectionStates
 from bot.utils.chat_actions import run_long_operation_with_action
-from bot.handlers.payment_handler import (
-    format_access_text,  # короткий статус доступа
-    ensure_access,       # централизованная проверка (trial/card)
-)
+from bot.handlers.payment_handler import ensure_access
 
 
 # ============================================================================
