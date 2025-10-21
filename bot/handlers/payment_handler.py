@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Dict, Optional, Tuple, List
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal
 
 from aiogram import Router, F, Bot
 from aiogram.types import (
@@ -119,7 +119,6 @@ def _build_rates_text() -> str:
     plan1 = TARIFFS.get("1m", {})
     trial_amt = plan1.get("trial_amount")
     trial_hours = int(str(plan1.get("trial_hours", 72)))
-    trial_part = ""
     if trial_amt is not None:
         trial_amt_s = _rub(trial_amt)
         duration = f"{trial_hours // 24} дня" if trial_hours % 24 == 0 else f"{trial_hours} часов"
@@ -605,9 +604,6 @@ def _create_links_for_selection(user_id: int) -> tuple[Optional[str], Optional[s
 
     if not plan:
         return (None, None)
-
-    pay_url_card: Optional[str] = None
-    pay_url_sbp: Optional[str] = None
 
     meta_base = {
         "user_id": str(user_id),
