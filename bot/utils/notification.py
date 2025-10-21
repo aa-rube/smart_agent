@@ -218,24 +218,7 @@ async def _send_unsub_d1_with_post(bot: Bot, user_id: int) -> bool:
     return ok
 
 
-async def _send_image_from_assets(bot: Bot, user_id: int, rel_path: str) -> bool:
-    """
-    Пытается отправить фото из каталога данных проекта.
-    Возвращает True при успехе, иначе False (например, если файла нет).
-    """
-    try:
-        abs_path = get_file_path(rel_path)
-    except Exception:
-        abs_path = rel_path
-    if not abs_path or not Path(abs_path).exists():
-        logging.warning("[notif] image not found: %s (resolved=%s)", rel_path, abs_path)
-        return False
-    try:
-        await bot.send_photo(user_id, FSInputFile(abs_path))
-        return True
-    except Exception as e:
-        logging.warning("[notif] send_photo to %s failed: %s", user_id, e)
-        return False
+
 
 
 async def _send_text_with_image_once(
@@ -248,9 +231,9 @@ async def _send_text_with_image_once(
     ttl: int = _ANTI_SPAM_TTL_SEC,
 ) -> bool:
     """
-    Ставит антиспам-метку и, если шаг ещё не отправляли, шлёт:
-      1) текст БЕЗ строки-плейсхолдера "/пример контента было-стало/"
-      2) следом картинку (before/after) как отдельным сообщением
+    Идемпотентно шлёт ОДНО сообщение: фото + подпись (caption) с текстом.
+    Плейсхолдер "/пример контента было-стало/" из текста вырезается.
+    Если файл изображения недоступен — шлём один текст как fallback.
     """
     try:
         need_send = await set_nx_with_ttl(key, "1", ttl)
@@ -260,15 +243,35 @@ async def _send_text_with_image_once(
     if not need_send:
         return False
 
-    clean = text.replace("/пример контента было-стало/", "").strip()
+    clean = (text or "").replace("/пример контента было-стало/", "").strip()
+
+    # Резолвим путь к изображению
+    try:
+        abs_path = get_file_path(image_rel_path)
+    except Exception:
+        abs_path = image_rel_path
+
+    # Если картинка есть — отправляем единым сообщением (photo + caption)
+    if abs_path and Path(abs_path).exists():
+        try:
+            await bot.send_photo(
+                user_id,
+                FSInputFile(abs_path),
+                caption=clean if clean else None,
+                parse_mode="HTML",
+            )
+            return True
+        except Exception as e:
+            logging.warning("[notif] send_photo (caption) to %s failed: %s", user_id, e)
+
+    # Фолбэк: нет изображения — отправляем только текст, чтобы не молчать
     try:
         if clean:
-            # Сообщение может содержать HTML-ссылки — включаем HTML-режим
             await bot.send_message(user_id, clean, parse_mode="HTML")
+            return True
     except Exception as e:
-        logging.warning("[notif] send text w/ image to %s failed: %s", user_id, e)
-    await _send_image_from_assets(bot, user_id, image_rel_path)
-    return True
+        logging.warning("[notif] fallback send_message to %s failed: %s", user_id, e)
+    return False
 
 
 def _compose_trial_d3_text(
