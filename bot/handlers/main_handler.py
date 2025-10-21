@@ -260,14 +260,12 @@ async def ai_tools(callback: CallbackQuery) -> None:
     меняем текущий экран на картинку ai_tools.png + подпись + клавиатуру.
     """
     await init_user(callback)
-    user_id = callback.from_user.id
     await _edit_or_replace_with_photo_cb(
         callback=callback,
         image_rel_path="img/bot/ai_tools.png",  # путь внутри DATA_DIR
         caption=ai_tools_text,
         kb=ai_tools_inline,
     )
-
 
 
 async def check_subscribe_retry(callback: CallbackQuery, bot: Bot) -> None:
@@ -280,9 +278,6 @@ async def check_subscribe_retry(callback: CallbackQuery, bot: Bot) -> None:
     await _replace_with_menu_with_logo(callback)
 
 
-
-
-
 # =============================================================================
 # Команды
 # =============================================================================
@@ -291,10 +286,10 @@ async def sub_cmd(message: Message) -> None:
     await show_rates_handler(message)
 
 
-
 async def help_cmd(message: Message) -> None:
     await init_user(message)
     await message.answer(HELP, reply_markup=help_kb())
+
 
 def router(rt: Router) -> None:
 
@@ -303,8 +298,7 @@ def router(rt: Router) -> None:
     rt.message.register(sub_cmd,  Command("sub"))
     rt.message.register(help_cmd, Command("support"))
 
-
     # callbacks
     rt.callback_query.register(ai_tools, F.data == "nav.ai_tools")
     rt.callback_query.register(check_subscribe_retry, F.data == "start_retry")
-
+    rt.callback_query.register(first_msg, F.data == "main")

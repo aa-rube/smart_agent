@@ -431,16 +431,19 @@ def build_trial_offer(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
         "После этого подписка автоматически продлевается — 2490 ₽/мес."
     )
     kb_rows: List[List[InlineKeyboardButton]] = []
+
     if pay_url:
         kb_rows.append([InlineKeyboardButton(text="💳 Активировать за 1 ₽", url=pay_url)])
+        kb_rows.append([InlineKeyboardButton(text="❌ Отказаться", callback_data="main")])
+
     else:
         # триал недоступен или рекуррент недоступен — отправляем к тарифам
         kb_rows.append([InlineKeyboardButton(text="⬅️ Выбрать тариф", callback_data="show_rates")])
         text = (
             "❗ Пробный доступ уже активировался ранее. "
-            "Повторный триал доступен через 60 дней с момента первой активации.\n\n"
             "Выберите тариф и продолжите пользоваться инструментами."
         )
+
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     return text, kb
 
