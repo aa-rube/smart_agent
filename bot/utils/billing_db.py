@@ -9,11 +9,10 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import (
     create_engine, text, inspect,
     String, Integer, BigInteger, ForeignKey, DateTime, Text,
-    or_, and_, exists, select
+    or_, select
 )
 from sqlalchemy.orm import (
-    DeclarativeBase, Mapped, mapped_column, relationship,
-    sessionmaker, Session
+    DeclarativeBase, Mapped, mapped_column, sessionmaker, Session
 )
 
 from bot.config import DB_URL  # <— общий DSN для биллинга
@@ -283,7 +282,7 @@ class BillingRepository:
             if rec:
                 rec.payment_id = payment_id
 
-    def list_mailing_eligible_users(self, now: Optional[datetime] = None) -> List[int]:
+    def list_mailing_eligible_users(self) -> List[int]:
         """
         Пользователи с ПРИВЯЗАННОЙ картой и активной подпиской, у которой не исчерпан лимит фейлов:
           - subscriptions.status == 'active'
@@ -618,7 +617,7 @@ class BillingRepository:
     def list_active_subscription_user_ids(self, now: Optional[datetime] = None) -> List[int]:
         """
         Все пользователи с активной подпиской, доступной на момент now:
-        status='active' и next_charge_at > now (т.е. оплаченный доступ ещё не истёк).
+        status='active' и next_charge_at > now (т.е.оплаченный доступ ещё не истёк).
         """
         now = now or now_utc()
         if now.tzinfo is None:
@@ -658,10 +657,10 @@ class BillingRepository:
         else:
             now = now.astimezone(timezone.utc)
 
-        # Новая политика ретраев автосписаний:
+        # Новая политика ретраев авто-списаний:
         # 1) Не чаще 2-х попыток в сутки (окно 24h).
         # 2) Минимальный интервал между попытками — 12 часов.
-        # 3) Максимум 6 НЕуспешных попыток за всё время (status IN ('canceled','expired')).
+        # 3) Максимум 6 НЕ успешных попыток за всё время (status IN ('canceled','expired')).
         window_24h = timedelta(hours=24)
         min_gap = timedelta(hours=12)
 
@@ -677,7 +676,6 @@ class BillingRepository:
                 .order_by(Subscription.next_charge_at.asc())
                 .limit(limit * 3)
             )
-            subs = list(q)
             # Некоторым диалектам не нравится параметризация LIMIT — подстрахуемся.
             try:
                 subs = list(q.limit(int(limit * 3)))
@@ -704,7 +702,7 @@ class BillingRepository:
                  .all()
             }
 
-            # Лимит 6 НЕуспешных попыток за всё время
+            # Лимит 6 НЕ успешных попыток за всё время
             blocked_ids_failed6 = {
                 sub_id for (sub_id,) in
                 s.query(ChargeAttempt.subscription_id)
@@ -895,7 +893,7 @@ def list_active_subscription_user_ids(now: Optional[datetime] = None) -> List[in
     return _repo.list_active_subscription_user_ids(now)
 
 def list_mailing_eligible_users(now: Optional[datetime] = None) -> List[int]:
-    return _repo.list_mailing_eligible_users(now)
+    return _repo.list_mailing_eligible_users()
 
 def is_user_payment_ok(user_id: int) -> bool:
     return _repo.is_user_payment_ok(user_id)

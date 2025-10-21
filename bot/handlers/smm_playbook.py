@@ -177,9 +177,9 @@ async def send_onboarding_after_payment(bot: Bot, user_id: int) -> None:
     try:
         await bot.send_message(
             chat_id=user_id,
-            text=(
-                "Что дальше:\n"
-                "• Каждый день в 09:00 (МСК) вы получаете новый пост.\n"
+            text=('''
+Спасибо за подписку, теперь ты можешь оценить все инструменты без ограничений!
+Теперь каждый день тебе будут приходить готовые посты для твоих соц сетей'''
             ),
         )
     except Exception:
