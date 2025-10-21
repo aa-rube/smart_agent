@@ -1056,9 +1056,7 @@ def _current_plan_code_guess() -> str:
 
 def kb_manage_menu() -> InlineKeyboardMarkup:
     cur_code = _current_plan_code_guess()
-    rows: List[List[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text=f"Текущий план: {TARIFFS[cur_code]['label']}", callback_data="noop")]
-    ]
+    rows: List[List[InlineKeyboardButton]] = [[]]
     for code, label in _upgrade_options_from(cur_code):
         rows.append([InlineKeyboardButton(text=f"Повысить до: {label}", callback_data=f"sub:upgrade:{code}")])
     rows.append([InlineKeyboardButton(text="⬅️ Назад к тарифам", callback_data="show_rates")])
