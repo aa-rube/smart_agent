@@ -52,10 +52,13 @@ ERROR_TEXT = (
     "Проверьте подключение и попробуйте ещё раз."
 )
 
+# # Стартовый текст с информацией о доступе (как в plans)
+# def _text_objection_home(user_id: int) -> str:
+#     return f"{OBJECTION_HOME_TEXT}\n\n{format_access_text(user_id)}"
+
 # Стартовый текст с информацией о доступе (как в plans)
 def _text_objection_home(user_id: int) -> str:
-    return f"{OBJECTION_HOME_TEXT}\n\n{format_access_text(user_id)}"
-
+    return f"{OBJECTION_HOME_TEXT}"
 
 
 # ============================================================================
