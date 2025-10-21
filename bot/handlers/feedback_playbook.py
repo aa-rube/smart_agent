@@ -43,8 +43,6 @@ class ReviewPayload:
     style: Optional[str] = None  # friendly|neutral|formal
 
 
-
-
 #
 # # Доп. форматтер стартового текста «Отзывы» с информацией о доступе
 # def _feedback_home_text(user_id: int) -> str:
