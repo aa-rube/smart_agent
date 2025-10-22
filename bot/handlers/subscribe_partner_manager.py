@@ -2,15 +2,19 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import List, Dict, Union, Optional
+from datetime import datetime, timezone
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramAPIError
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram import Router, F
+import httpx
 
 from bot.config import PARTNER_CHANNELS
 from bot.handlers.payment_handler import build_trial_offer
+import bot.utils.billing_db as billing_db
 
 
 # статусы, трактуемые как "подписан"
@@ -19,6 +23,16 @@ OK_STATUSES = {"creator", "administrator", "member"}
 # константа для callback_data проверки подписки
 PARTNER_CHECK_CB = "partners.check"
 
+# наш канал с готовыми постами (жёстко задан)
+EXAMPLES_CHAT_ID = -1003103282986
+# callback для подписки в этот канал из UI
+POSTS_SUBSCRIBE_CB = "posts.subscribe_examples"
+# (опционально) callback для показа примеров (если нет подписки)
+POSTS_SHOW_SAMPLES_CB = "posts.show_samples"
+
+# membership-service
+MEMBERSHIP_BASE_URL = os.getenv("MEMBERSHIP_BASE_URL", "http://127.0.0.1:6000")
+
 
 you_have_to_subscribe = ('''
 👋 Привет! Это «Инструменты Риэлтора». Подпишись на наш канал, там тоже много полезного!
@@ -26,6 +40,14 @@ you_have_to_subscribe = ('''
 
 # Текст, на который переключаемся при повторной проверке (редактирование по msg_id)
 you_have_to_subscribe_retry = '📢 Один шаг до старта, подпишись  👉 t.me/setrealtora и нажми кнопку ниже.'
+
+
+async def is_in_examples_channel(bot: Bot, user_id: int) -> bool:
+    """
+    True, если пользователь уже состоит в канале EXAMPLES_CHAT_ID.
+    Используем уже готовый _is_subscribed (оптимистично: на ошибках — True).
+    """
+    return await _is_subscribed(bot, EXAMPLES_CHAT_ID, user_id)
 
 
 def build_missing_subscribe_keyboard(
@@ -120,6 +142,29 @@ def all_subscribed(sub_map: Dict[int, bool]) -> bool:
     return all(sub_map.values()) if sub_map else True
 
 
+def has_active_paid_subscription(user_id: int) -> bool:
+    """
+    Строгая «оплата активна»: есть подписка status='active' и next_charge_at > now (UTC).
+    Триал/грейс сюда НЕ входит.
+    """
+    try:
+        from bot.utils.billing_db import SessionLocal, Subscription
+        
+        now_utc = datetime.now(timezone.utc)
+        
+        with SessionLocal() as s:
+            rec = (
+                s.query(Subscription)
+                .filter(Subscription.user_id == user_id, Subscription.status == "active")
+                .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
+                .first()
+            )
+            return bool(rec and rec.next_charge_at and rec.next_charge_at > now_utc)
+    
+    except Exception:
+        return False
+
+
 async def _edit_text_or_caption(message: Message, text: str, kb=None) -> None:
     """
     Пытаемся обновить текущее сообщение:
@@ -144,6 +189,26 @@ async def _edit_text_or_caption(message: Message, text: str, kb=None) -> None:
     except TelegramBadRequest:
         # уже нечего редактировать — игнорируем
         pass
+
+
+async def build_posts_button(bot: Bot, user_id: int) -> Optional[InlineKeyboardButton]:
+    """
+    Возвращает одну кнопку под логику:
+     • если НЕТ оплаченной подписки → показать «🏡 Смотреть примеры постов»
+     • если ЕСТЬ оплаченная подписка И пользователь уже в канале → кнопка не нужна (None)
+     • если ЕСТЬ оплаченная подписка И пользователя НЕТ в канале → показать «Подписаться»
+       (нажатие запускает membership_service, который добавит/пришлёт инвайт)
+    """
+    # 1) нет подписки → всегда показываем «Смотреть примеры»
+    if not has_active_paid_subscription(user_id):
+        return InlineKeyboardButton(text="🏡 Смотреть примеры постов", callback_data=POSTS_SHOW_SAMPLES_CB)
+    
+    # 2) есть подписка → проверяем членство в канале
+    if await is_in_examples_channel(bot, user_id):
+        return None  # убрать кнопку
+    
+    # 3) есть подписка, но пользователя нет в канале → предложить подписаться/добавиться
+    return InlineKeyboardButton(text="🏡 Подписаться на канал с постами", callback_data=POSTS_SUBSCRIBE_CB)
 
 
 async def ensure_partner_subs(
@@ -218,6 +283,48 @@ async def partner_check_cb(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer("Подписка подтверждена ✅", show_alert=False)
         text, kb = build_trial_offer(callback.from_user.id)
         await _edit_text_or_caption(callback.message, text, kb)
+
+
+async def posts_subscribe_cb(callback: CallbackQuery, bot: Bot) -> None:
+    """
+    Нажатие на «Подписаться на канал с постами».
+    Делаем HTTP POST в membership_service /members/invite с user_id.
+    Если пользователь уже добавлен — кнопку можно скрыть сообщением-уведомлением.
+    """
+    user_id = callback.from_user.id
+    url = f"{MEMBERSHIP_BASE_URL}/members/invite"
+    payload = {"user_id": int(user_id)}
+    
+    try:
+        async with httpx.AsyncClient(timeout=10) as http:
+            r = await http.post(url, json=payload)
+            if r.status_code >= 400:
+                await callback.answer("Не удалось подписать. Попробуйте позже.", show_alert=True)
+                return
+            data = r.json()
+    
+    except Exception as e:
+        logging.exception("posts_subscribe_cb: membership invite failed for %s: %s", user_id, e)
+        await callback.answer("Ошибка подключения. Попробуйте позже.", show_alert=True)
+        return
+    
+    status = str(data.get("status") or "")
+    if status == "added":
+        await callback.answer("Готово! Вы добавлены в канал ✅")
+        # можно убрать кнопку, если вы её держите в текущем сообщении:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+    
+    elif status == "invited_link_sent":
+        await callback.answer("Ссылка-приглашение отправлена вам в личку ✉️")
+    
+    elif status == "incident_reported_to_admin":
+        await callback.answer("Не получилось прислать ссылку. Админ уведомлён.", show_alert=True)
+    
+    else:
+        await callback.answer("Готово (неожиданный ответ). Проверьте личные сообщения.", show_alert=False)
 
 
 def router(rt: Router) -> None:
