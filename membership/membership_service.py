@@ -9,7 +9,7 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from telethon import TelegramClient, errors
+from telethon import TelegramClient, errors, events
 from telethon.sessions import StringSession
 from telethon.tl import functions, types
 
@@ -45,6 +45,17 @@ class RemoveRequest(BaseModel):
     user_id: int = Field(..., description="Telegram user_id")
 
 
+class SendMessageRequest(BaseModel):
+    chat_id: int = Field(..., description="ID чата или пользователя")
+    text: str = Field(..., description="Текст сообщения")
+    parse_mode: Optional[str] = Field(None, description="Режим парсинга (HTML, Markdown)")
+
+
+class SendToTargetRequest(BaseModel):
+    text: str = Field(..., description="Текст сообщения")
+    parse_mode: Optional[str] = Field(None, description="Режим парсинга (HTML, Markdown)")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Инициализация Telethon
 # ──────────────────────────────────────────────────────────────────────────────
@@ -78,6 +89,9 @@ async def lifespan(_: FastAPI):
             chat_accessible = await _ensure_chat_access()
             if not chat_accessible:
                 raise RuntimeError("Нет доступа к целевому чату. Проверьте что бот добавлен в чат")
+            
+            # Запускаем прослушивание сообщений
+            await start_message_listener()
     except Exception as e:
         logger.exception("Telethon is_user_authorized() failed: %s", e)
         raise
@@ -153,6 +167,7 @@ async def bot_send_message(
     chat_id: int,
     text: str,
     reply_markup: Optional[Dict[str, Any]] = None,
+    parse_mode: Optional[str] = None,
 ) -> bool:
     """
     Отправка через Bot API. Возвращает True, если ok==True.
@@ -164,6 +179,8 @@ async def bot_send_message(
     payload: Dict[str, Any] = {"chat_id": chat_id, "text": text}
     if reply_markup:
         payload["reply_markup"] = reply_markup
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
 
     async with httpx.AsyncClient(timeout=15) as http:
         r = await http.post(f"{BOT_API}/sendMessage", json=payload)
@@ -197,6 +214,65 @@ async def bot_notify_admin_incident(user_id: int, username: Optional[str], full_
     payload = {"chat_id": settings.ADMIN_ID, "text": txt, "parse_mode": "HTML"}
     async with httpx.AsyncClient(timeout=15) as http:
         await http.post(f"{BOT_API}/sendMessage", json=payload)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Утилиты Telethon для работы с сообщениями
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def start_message_listener():
+    """
+    Запускает прослушивание входящих сообщений и выводит их в консоль.
+    """
+    @client.on(events.NewMessage)
+    async def handler(event):
+        try:
+            # Получаем информацию о чате/пользователе
+            chat = await event.get_chat()
+            sender = await event.get_sender()
+            
+            chat_info = f"'{getattr(chat, 'title', '')}' ({chat.id})" if hasattr(chat, 'title') else f"ID: {chat.id}"
+            sender_info = f"@{sender.username}" if sender.username else f"{getattr(sender, 'first_name', '')} {getattr(sender, 'last_name', '')}".strip()
+            
+            print(f"📨 Новое сообщение:")
+            print(f"   Чат: {chat_info}")
+            print(f"   От: {sender_info} (ID: {sender.id})")
+            print(f"   Текст: {event.text}")
+            print(f"   Время: {event.date}")
+            print("-" * 50)
+        except Exception as e:
+            print(f"Ошибка при обработке сообщения: {e}")
+
+    print("🔄 Прослушивание сообщений запущено...")
+    # Не нужно запускать client.run() так как мы уже управляем клиентом через lifespan
+
+
+async def send_telethon_message(chat_id: int, text: str) -> bool:
+    """
+    Отправляет сообщение через Telethon клиент (user-bot) в указанный чат/пользователю.
+    """
+    try:
+        await client.send_message(chat_id, text)
+        logger.info(f"Сообщение отправлено через Telethon в {chat_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка отправки сообщения через Telethon в {chat_id}: {e}")
+        return False
+
+
+async def send_message_to_target_chat(text: str, parse_mode: Optional[str] = None) -> bool:
+    """
+    Отправляет сообщение в целевой чат через Bot API.
+    """
+    try:
+        return await bot_send_message(
+            chat_id=settings.TARGET_CHAT_ID,
+            text=text,
+            parse_mode=parse_mode
+        )
+    except Exception as e:
+        logger.error(f"Ошибка отправки сообщения в целевой чат: {e}")
+        return False
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -424,6 +500,69 @@ async def remove_member(req: RemoveRequest):
     if not ok:
         raise HTTPException(status_code=500, detail="Не удалось удалить пользователя (бан/анбан)")
     return {"status": "removed"}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Контроллеры для работы с сообщениями
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.post("/message/send")
+async def send_message(req: SendMessageRequest):
+    """
+    Отправляет сообщение в любой чат или пользователю через Bot API.
+    """
+    success = await bot_send_message(
+        chat_id=req.chat_id,
+        text=req.text,
+        parse_mode=req.parse_mode
+    )
+    
+    if success:
+        return {"status": "message_sent", "chat_id": req.chat_id}
+    else:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Не удалось отправить сообщение в {req.chat_id}"
+        )
+
+
+@app.post("/message/send_target")
+async def send_message_to_target(req: SendToTargetRequest):
+    """
+    Отправляет сообщение в целевой чат через Bot API.
+    """
+    success = await send_message_to_target_chat(
+        text=req.text,
+        parse_mode=req.parse_mode
+    )
+    
+    if success:
+        return {"status": "message_sent", "chat_id": settings.TARGET_CHAT_ID}
+    else:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Не удалось отправить сообщение в целевой чат {settings.TARGET_CHAT_ID}"
+        )
+
+
+@app.post("/message/send_telethon")
+async def send_message_telethon(req: SendMessageRequest):
+    """
+    Отправляет сообщение через Telethon клиент (user-bot).
+    Полезно когда нужно отправить от имени user-бота.
+    """
+    success = await send_telethon_message(
+        chat_id=req.chat_id,
+        text=req.text
+    )
+    
+    if success:
+        return {"status": "message_sent_telethon", "chat_id": req.chat_id}
+    else:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Не удалось отправить сообщение через Telethon в {req.chat_id}"
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
