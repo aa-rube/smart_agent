@@ -14,6 +14,7 @@ from telethon.sessions import StringSession
 from telethon.tl import functions, types
 
 from config import settings
+from telethon.tl.types import InputPeerChat, InputChannel
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,30 @@ app = FastAPI(
 )
 
 
+@app.get("/debug/chat")
+async def debug_chat():
+    """
+    Быстрый способ понять, что именно резолвится:
+      - тип (chat/channel)
+      - внутренние id/access_hash
+      - заголовок/username (если есть)
+    """
+    ent = await _get_entity_chat()
+    kind, inp = await _get_input_chat()
+    out = {
+        "kind": kind,
+        "entity_type": type(ent).__name__,
+        "input_type": type(inp).__name__,
+        "entity": {},
+    }
+    if isinstance(ent, types.Channel):
+        out["entity"] = {"id": ent.id, "access_hash": getattr(ent, "access_hash", None),
+                         "title": ent.title, "username": ent.username, "megagroup": ent.megagroup}
+    elif isinstance(ent, types.Chat):
+        out["entity"] = {"id": ent.id, "title": ent.title}
+    return out
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Утилиты Bot API
 # ──────────────────────────────────────────────────────────────────────────────
@@ -154,6 +179,10 @@ async def bot_notify_admin_incident(user_id: int, username: Optional[str], full_
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def _get_entity_chat():
+    """
+    Возвращает high-level entity (Chat|Channel) по TARGET_CHAT_ID.
+    Требует, чтобы аккаунт из TG_SESSION состоял в группе/канале.
+    """
     return await client.get_entity(settings.TARGET_CHAT_ID)
 
 
@@ -169,31 +198,38 @@ async def _get_input_peer_for_chat():
     return await client.get_input_entity(settings.TARGET_CHAT_ID)
 
 
-async def _get_input_chat():
+async def _get_input_chat() -> tuple[str, InputPeerChat | InputChannel]:
     """
-    Input-* версия чата для низкоуровневых TL-функций.
-    Для InviteToChannel требуется именно InputChannel.
+    Универсально получаем Input-* пира и сразу помечаем тип:
+      - ('channel', InputChannel)  — супергруппа/канал
+      - ('chat',    InputPeerChat) — обычная группа
     """
-    ip = await client.get_input_entity(settings.TARGET_CHAT_ID)
-    if isinstance(ip, types.InputPeerChannel):
-        return types.InputChannel(ip.channel_id, ip.access_hash)
-    return ip  # для обычных чатов это будет InputPeerChat
+    inp = await client.get_input_entity(settings.TARGET_CHAT_ID)
+    if isinstance(inp, InputChannel):
+        return "channel", inp
+    if isinstance(inp, InputPeerChat):
+        return "chat", inp
+    # Если пришёл не тот тип — попробуем дорезолвить через high-level
+    ent = await _get_entity_chat()
+    if isinstance(ent, types.Chat):
+        return "chat", InputPeerChat(ent.id)
+    if isinstance(ent, types.Channel):
+        return "channel", InputChannel(ent.id, ent.access_hash)
+    raise RuntimeError("TARGET_CHAT_ID не резолвится ни в Chat, ни в Channel")
 
 
-async def _get_input_user(user_id: int):
+async def _get_input_user(user_id: int) -> types.InputUser:
     """
-    Гарантированно вернуть InputUser (а не InputPeerUser).
-    Нужен, например, для InviteToChannel(users=[InputUser]).
+    Гарантировано возвращает InputUser (а не InputPeerUser).
     """
-    iu = await client.get_input_entity(user_id)
-    if isinstance(iu, types.InputPeerUser):
-        return types.InputUser(iu.user_id, iu.access_hash)
-    if isinstance(iu, types.InputUser):
-        return iu
     ent = await client.get_entity(user_id)
-    if isinstance(ent, types.User) and ent.access_hash is not None:
+    if isinstance(ent, types.User):
         return types.InputUser(ent.id, ent.access_hash)
-    raise ValueError("Cannot build InputUser from given user_id")
+    # На всякий случай fallback
+    ipeer = await client.get_input_entity(user_id)
+    if isinstance(ipeer, types.InputPeerUser):
+        return types.InputUser(ipeer.user_id, ipeer.access_hash)
+    raise RuntimeError("Не удалось получить InputUser для user_id=%s" % user_id)
 
 
 async def try_direct_invite(user_id: int) -> bool:
@@ -203,22 +239,20 @@ async def try_direct_invite(user_id: int) -> bool:
     Для обычных чатов: messages.AddChatUser(user_id=InputUser)
     """
     try:
-        ichat = await _get_input_chat()            # InputChannel | InputPeerChat
-        iuser = await _get_input_user(user_id)     # строго InputUser
+        kind, ichat = await _get_input_chat()
+        iuser = await _get_input_user(user_id)
 
-        if isinstance(ichat, types.InputChannel):
+        if kind == "channel":  # супергруппа
             await client(functions.channels.InviteToChannelRequest(
-                channel=ichat,
-                users=[iuser],
+                channel=ichat,  # InputChannel
+                users=[iuser],  # list[InputUser]
             ))
-        elif isinstance(ichat, types.InputPeerChat):
+        else:                  # обычный чат
             await client(functions.messages.AddChatUserRequest(
-                chat_id=ichat.chat_id,
-                user_id=iuser,
-                fwd_limit=0,
+                chat_id=ichat.chat_id,  # int
+                user_id=iuser,          # InputUser
+                fwd_limit=0
             ))
-        else:
-            return False
         return True
     except (
         errors.UserPrivacyRestrictedError,
@@ -231,7 +265,9 @@ async def try_direct_invite(user_id: int) -> bool:
         errors.ChatWriteForbiddenError,
         errors.RPCError,
         ValueError,
-    ):
+    ) as e:
+        # Любая из этих ошибок означает, что мы не смогли напрямую добавить — переходим к инвайту
+        logger.warning("Direct invite failed: %s", e)
         return False
 
 
@@ -248,13 +284,15 @@ async def create_single_use_invite(ttl_hours: int) -> str:
         request_needed=False,
         title=None
     ))
-    # Возврат может быть messages.ExportedChatInvite (с .invite/.new_invite)
-    # или одиночный types.ExportedChatInvite. Достаём ссылку безопасно.
+    # Вариант 1: messages.ExportedChatInvite (обёртка со списками)
     if isinstance(exported, types.messages.ExportedChatInvite):
-        inv = getattr(exported, "new_invite", None) or getattr(exported, "invite", None)
-        if isinstance(inv, types.ExportedChatInvite):
-            return inv.link
-    elif isinstance(exported, types.ExportedChatInvite):
+        if exported.invite and isinstance(exported.invite, types.ChatInviteExported):
+            return exported.invite.link
+        # иногда ссылка приходит в .link
+        if getattr(exported, "link", None):
+            return exported.link
+    # Вариант 2: простой ExportedChatInvite
+    if isinstance(exported, types.ExportedChatInvite):
         return exported.link
     raise RuntimeError("Не удалось получить ссылку-приглашение")
 
@@ -265,42 +303,33 @@ async def kick_then_unban(user_id: int) -> bool:
     для обычных чатов — DeleteChatUser. После этого пользователя можно снова звать.
     """
     try:
-        peer = await _get_input_peer_for_chat()
+        kind, ichat = await _get_input_chat()
         iuser = await _get_input_user(user_id)
 
-        if isinstance(peer, types.InputPeerChannel):
-            ichannel = types.InputChannel(peer.channel_id, peer.access_hash)
-            # Для EditBanned participant ожидается InputPeer*, возьмём InputPeerUser
-            ipeer_user = await client.get_input_entity(user_id)  # InputPeerUser
-            # Баним (kick)
+        if kind == "channel":
+            # Супергруппа: бан → анбан
             rights_ban = types.ChatBannedRights(
-                until_date=None,        # бессрочно (datetime|None)
-                view_messages=True,     # запрет просматривать = исключение
+                until_date=None,      # бессрочно
+                view_messages=True,   # исключение
             )
             await client(functions.channels.EditBannedRequest(
-                channel=ichannel,
-                participant=ipeer_user,
-                banned_rights=rights_ban
+                channel=ichat, participant=iuser, banned_rights=rights_ban
             ))
-            # Снимаем бан
             await asyncio.sleep(0.2)
             rights_unban = types.ChatBannedRights(
-                until_date=None,        # None = нет бана
+                until_date=0,         # явный unban
                 view_messages=False,
             )
             await client(functions.channels.EditBannedRequest(
-                channel=ichannel,
-                participant=ipeer_user,
-                banned_rights=rights_unban
-            ))
-        elif isinstance(peer, types.InputPeerChat):
-            # Обычный чат: просто удаляем участника
-            await client(functions.messages.DeleteChatUserRequest(
-                chat_id=peer.chat_id,
-                user_id=iuser
+                channel=ichat, participant=iuser, banned_rights=rights_unban
             ))
         else:
-            return False
+            # Обычная группа: DeleteChatUser — удаляет без помещения в бан-лист.
+            await client(functions.messages.DeleteChatUserRequest(
+                chat_id=ichat.chat_id,
+                user_id=iuser,
+                revoke_history=False,  # историю не трогаем
+            ))
         return True
     except errors.RPCError as e:
         try:
