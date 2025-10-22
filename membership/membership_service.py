@@ -1,5 +1,6 @@
 import time
 import asyncio
+import logging
 from typing import Optional
 
 import httpx
@@ -11,6 +12,8 @@ from telethon.sessions import StringSession
 from telethon.tl import functions, types
 
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -238,8 +241,23 @@ async def remove_member(req: RemoveRequest):
 
 @app.on_event("startup")
 async def _on_start():
-    # Стартуем сессию Telethon. Если TG_SESSION битый/пустой — свалимся с понятной ошибкой.
-    await client.start()
+    # Безинтерактивный старт: подключаем транспорт и проверяем авторизацию.
+    # Это предотвращает попытку Telethon спросить телефон под systemd.
+    await client.connect()
+    try:
+        authorized = client.is_user_authorized()
+    except Exception as e:
+        # Если что-то пошло не так, явно падаем — systemd перезапустит сервис
+        logger.exception("Telethon is_user_authorized() failed: %s", e)
+        raise
+    if not authorized:
+            # Сессия есть, но не авторизована (пустая/битая/не от этого API_ID/API_HASH).
+        # Не уходим в интерактив — сразу падаем понятной ошибкой.
+        raise RuntimeError(
+            "Telethon session is not authorized. "
+            "Проверь TG_SESSION (длинная строка), она должна быть сгенерирована "
+            "для текущих TG_API_ID/TG_API_HASH."
+        )
 
 if __name__ == "__main__":
     import uvicorn
