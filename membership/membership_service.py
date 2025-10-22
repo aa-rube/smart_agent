@@ -46,10 +46,8 @@ class RemoveRequest(BaseModel):
 client: TelegramClient
 
 def _make_client() -> TelegramClient:
-    if settings.SESSION:
-        return TelegramClient(StringSession(settings.SESSION), settings.API_ID, settings.API_HASH)
-    # fallback на файл-сессию (нужно один раз авторизоваться вручную)
-    return TelegramClient(settings.SESSION_NAME, settings.API_ID, settings.API_HASH)
+    # Только StringSession из ENV. Без него запуск под systemd невозможен.
+    return TelegramClient(StringSession(settings.SESSION), settings.API_ID, settings.API_HASH)
 
 client = _make_client()
 app = FastAPI(title="Membership Service (Telethon + Bot API)")
@@ -240,7 +238,7 @@ async def remove_member(req: RemoveRequest):
 
 @app.on_event("startup")
 async def _on_start():
-    # Стартуем сессию Telethon
+    # Стартуем сессию Telethon. Если TG_SESSION битый/пустой — свалимся с понятной ошибкой.
     await client.start()
 
 if __name__ == "__main__":
