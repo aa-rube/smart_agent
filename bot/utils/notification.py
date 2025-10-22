@@ -218,7 +218,30 @@ async def _send_unsub_d1_with_post(bot: Bot, user_id: int) -> bool:
     return ok
 
 
+async def _send_trial_d2_once(bot: Bot, user_id: int) -> bool:
+    """
+    ЕДИНЫЙ шаг D2 для триала: отправляем РОВНО ОДНО сообщение.
+    Сначала пытаемся фото+текст про «генератор интерьеров», если не получилось — текст про описания.
+    Антидубль: общий ключ notif:trial:{uid}:d2:any.
+    """
+    bundle_key = f"notif:trial:{user_id}:d2:any"
+    try:
+        need_send = await set_nx_with_ttl(bundle_key, "1", _ANTI_SPAM_TTL_SEC)
+    except Exception:
+        logging.exception("[notif] redis setnx failed for key=%s", bundle_key)
+        need_send = False
+    if not need_send:
+        return False
 
+    # Пытаемся «интерьеры» (фото+caption); если не вышло — текст про описания.
+    sent = await _send_text_with_image_once(
+        bot, user_id, f"{bundle_key}:img", TXT_TRIAL_D2_1, image_rel_path=_BEFORE_AFTER_IMG_REL_DESIGN
+    )
+    if sent:
+        return True
+
+    sent = await _send_text_once(bot, user_id, f"{bundle_key}:txt", TXT_TRIAL_D2_2)
+    return bool(sent)
 
 
 async def _send_text_with_image_once(
@@ -377,7 +400,7 @@ async def _send_trial_d3_pay_once(bot: Bot, user_id: int) -> bool:
 # пороги: D1=24h, D2=48h, D3=72h, D4=96h
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def run_unsubscribed_nurture(bot: Bot) -> None:
+async def run_unsubscribed_nurture(bot: Bot, *, sent_in_run: Optional[set[int]] = None) -> None:
     now = _utcnow()
 
     active_trial_ids = set(app_db.list_trial_active_user_ids(now))
@@ -393,6 +416,9 @@ async def run_unsubscribed_nurture(bot: Bot) -> None:
 
     sent = dict(d1=0, d2=0, d3=0, d4=0)
     for uid, first_at in rows:
+        # если этому пользователю уже что-то отправили в рамках ЭТОГО запуска шедулера — пропускаем
+        if sent_in_run is not None and uid in sent_in_run:
+            continue
         if uid in active_trial_ids or uid in active_paid_ids:
             continue
         h = _hours_since(first_at, now)
@@ -402,18 +428,26 @@ async def run_unsubscribed_nurture(bot: Bot) -> None:
         if _within_window(h, 24):
             if await _send_unsub_d1_with_post(bot, uid):
                 sent["d1"] += 1
+                if sent_in_run is not None: sent_in_run.add(uid)
+                continue
         if _within_window(h, 48):
             if await _send_text_once(bot, uid, f"notif:unsub:{uid}:d2", TXT_UNSUB_D2):
                 sent["d2"] += 1
+                if sent_in_run is not None: sent_in_run.add(uid)
+                continue
         if _within_window(h, 72):
             # D3: «Генератор интерьеров» → отправляем «design»
             if await _send_text_with_image_once(
                 bot, uid, f"notif:unsub:{uid}:d3", TXT_UNSUB_D3, image_rel_path=_BEFORE_AFTER_IMG_REL_DESIGN
             ):
                 sent["d3"] += 1
+                if sent_in_run is not None: sent_in_run.add(uid)
+                continue
         if _within_window(h, 96):
             if await _send_text_once(bot, uid, f"notif:unsub:{uid}:d4", TXT_UNSUB_D4):
                 sent["d4"] += 1
+                if sent_in_run is not None: sent_in_run.add(uid)
+                continue
 
     logging.info("[notif][unsub] done: %s", sent)
 
@@ -422,7 +456,7 @@ async def run_unsubscribed_nurture(bot: Bot) -> None:
 # baseline = app_db.Trial.created_at; пороги: D1_onboard>=1h, D1_2>=24h, D2_1>=48h, D2_2>=48h, D3_pay>=72h
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def run_trial_onboarding(bot: Bot) -> None:
+async def run_trial_onboarding(bot: Bot, *, sent_in_run: Optional[set[int]] = None) -> None:
     now = _utcnow()
     trial_ids = app_db.list_trial_active_user_ids(now)
     if not trial_ids:
@@ -437,8 +471,10 @@ async def run_trial_onboarding(bot: Bot) -> None:
              .all()
         )
 
-    sent = dict(d1_onboard=0, d1_2=0, d2_1=0, d2_2=0, d3_pay=0)
+    sent = dict(d1_onboard=0, d1_2=0, d2=0, d3_pay=0)
     for uid, created_at in rows:
+        if sent_in_run is not None and uid in sent_in_run:
+            continue
         h = _hours_since(created_at, now)
         if h < 0:
             continue
@@ -446,23 +482,27 @@ async def run_trial_onboarding(bot: Bot) -> None:
         if _within_window(h, 1):
             if await _send_text_once(bot, uid, f"notif:trial:{uid}:d1:onboard", TXT_TRIAL_D1_ONBOARD):
                 sent["d1_onboard"] += 1
+                if sent_in_run is not None: sent_in_run.add(uid)
+                continue
         if _within_window(h, 24):
             # D1_2: «планировки» → отправляем «plan»
             if await _send_text_with_image_once(
                 bot, uid, f"notif:trial:{uid}:d1:2", TXT_TRIAL_D1_2, image_rel_path=_BEFORE_AFTER_IMG_REL_PLANS
             ):
                 sent["d1_2"] += 1
+                if sent_in_run is not None: sent_in_run.add(uid)
+                continue
         if _within_window(h, 48):
-            # D2_1: «генератор интерьеров» → отправляем «design»
-            if await _send_text_with_image_once(
-                bot, uid, f"notif:trial:{uid}:d2:1", TXT_TRIAL_D2_1, image_rel_path=_BEFORE_AFTER_IMG_REL_DESIGN
-            ):
-                sent["d2_1"] += 1
-            if await _send_text_once(bot, uid, f"notif:trial:{uid}:d2:2", TXT_TRIAL_D2_2):
-                sent["d2_2"] += 1
+            # ЕДИНЫЙ D2 (либо «интерьеры», либо «описания»)
+            if await _send_trial_d2_once(bot, uid):
+                sent["d2"] += 1
+                if sent_in_run is not None: sent_in_run.add(uid)
+                continue
         if _within_window(h, 72):
             if await _send_trial_d3_pay_once(bot, uid):
                 sent["d3_pay"] += 1
+                if sent_in_run is not None: sent_in_run.add(uid)
+                continue
 
     logging.info("[notif][trial] done: %s", sent)
 
@@ -472,7 +512,7 @@ async def run_trial_onboarding(bot: Bot) -> None:
 # pre_renew: 0 < (next_charge_at - now) <= 24h
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def run_paid_lifecycle(bot: Bot) -> None:
+async def run_paid_lifecycle(bot: Bot, *, sent_in_run: Optional[set[int]] = None) -> None:
     now = _utcnow()
     active_ids = billing_db.list_active_subscription_user_ids(now)
     if not active_ids:
@@ -507,29 +547,12 @@ async def run_paid_lifecycle(bot: Bot) -> None:
 
     sent = dict(d3=0, d5=0, d7=0, d10=0, pre=0)
     for uid, (created_at, next_charge_at) in by_user.items():
+        if sent_in_run is not None and uid in sent_in_run:
+            continue
         h = _hours_since(created_at, now)
         if h < 0:
             continue
-
-        if _within_window(h, 72):
-            # D3: «дизайн интерьера» → отправляем «design»
-            if await _send_text_with_image_once(
-                bot, uid, f"notif:paid:{uid}:d3", TXT_PAID_D3, image_rel_path=_BEFORE_AFTER_IMG_REL_DESIGN
-            ):
-                sent["d3"] += 1
-        if _within_window(h, 120):
-            if await _send_text_once(bot, uid, f"notif:paid:{uid}:d5", TXT_PAID_D5):
-                sent["d5"] += 1
-        if _within_window(h, 168):
-            # D7: «планировки» → отправляем «plan»
-            if await _send_text_with_image_once(
-                bot, uid, f"notif:paid:{uid}:d7", TXT_PAID_D7, image_rel_path=_BEFORE_AFTER_IMG_REL_PLANS
-            ):
-                sent["d7"] += 1
-        if _within_window(h, 240):
-            if await _send_text_once(bot, uid, f"notif:paid:{uid}:d10", TXT_PAID_D10):
-                sent["d10"] += 1
-
+        # 0) СНАЧАЛА проверяем pre_renew (чтобы не было «трёх сообщений в один момент»)
         if next_charge_at is not None:
             nca = billing_db.to_aware_utc(next_charge_at) or next_charge_at
             delta_s = (nca - now).total_seconds()
@@ -537,6 +560,34 @@ async def run_paid_lifecycle(bot: Bot) -> None:
                 epoch_key = int(nca.timestamp())
                 if await _send_text_once(bot, uid, f"notif:paid:{uid}:pre:{epoch_key}", TXT_PAID_PRE_RENEW):
                     sent["pre"] += 1
+                    if sent_in_run is not None: sent_in_run.add(uid)
+                    continue
+
+        # 1) Этапные сообщения: отправляем только ОДНО за проход
+        if _within_window(h, 72):
+            if await _send_text_with_image_once(
+                bot, uid, f"notif:paid:{uid}:d3", TXT_PAID_D3, image_rel_path=_BEFORE_AFTER_IMG_REL_DESIGN
+            ):
+                sent["d3"] += 1
+                if sent_in_run is not None: sent_in_run.add(uid)
+                continue
+        if _within_window(h, 120):
+            if await _send_text_once(bot, uid, f"notif:paid:{uid}:d5", TXT_PAID_D5):
+                sent["d5"] += 1
+                if sent_in_run is not None: sent_in_run.add(uid)
+                continue
+        if _within_window(h, 168):
+            if await _send_text_with_image_once(
+                bot, uid, f"notif:paid:{uid}:d7", TXT_PAID_D7, image_rel_path=_BEFORE_AFTER_IMG_REL_PLANS
+            ):
+                sent["d7"] += 1
+                if sent_in_run is not None: sent_in_run.add(uid)
+                continue
+        if _within_window(h, 240):
+            if await _send_text_once(bot, uid, f"notif:paid:{uid}:d10", TXT_PAID_D10):
+                sent["d10"] += 1
+                if sent_in_run is not None: sent_in_run.add(uid)
+                continue
 
     logging.info("[notif][paid] done: %s", sent)
 
@@ -548,17 +599,19 @@ async def run_notification_scheduler(bot: Bot) -> None:
     """
     Запускайте по cron/APScheduler каждые 10–30 минут.
     """
+    # За один прогон шедулера — НЕ более одного сообщения на пользователя.
+    sent_in_run: set[int] = set()
     try:
-        await run_unsubscribed_nurture(bot)
+        await run_unsubscribed_nurture(bot, sent_in_run=sent_in_run)
     except Exception:
         logging.exception("[notif] unsubscribed_nurture failed")
 
     try:
-        await run_trial_onboarding(bot)
+        await run_trial_onboarding(bot, sent_in_run=sent_in_run)
     except Exception:
         logging.exception("[notif] trial_onboarding failed")
 
     try:
-        await run_paid_lifecycle(bot)
+        await run_paid_lifecycle(bot, sent_in_run=sent_in_run)
     except Exception:
         logging.exception("[notif] paid_lifecycle failed")
