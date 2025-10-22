@@ -1,7 +1,9 @@
-import time
+# membership/membership_service.py
 import asyncio
 import logging
-from typing import Optional
+from typing import Optional, Any, Dict
+from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -48,26 +50,68 @@ class RemoveRequest(BaseModel):
 
 client: TelegramClient
 
+
 def _make_client() -> TelegramClient:
-    # Только StringSession из ENV. Без него запуск под systemd невозможен.
+    """
+    Создаём TelegramClient только из StringSession (длинной строки).
+    Если TG_SESSION невалиден/пуст — дальше на старте намеренно упадём.
+    """
     return TelegramClient(StringSession(settings.SESSION), settings.API_ID, settings.API_HASH)
 
+
 client = _make_client()
-app = FastAPI(title="Membership Service (Telethon + Bot API)")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Lifespan (startup/shutdown)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # Безинтерактивный старт: подключаемся и убеждаемся, что сессия авторизована.
+    await client.connect()
+    try:
+        authorized = client.is_user_authorized()
+    except Exception as e:
+        logger.exception("Telethon is_user_authorized() failed: %s", e)
+        raise
+    if not authorized:
+        raise RuntimeError(
+            "Telethon session is not authorized. "
+            "Проверь TG_SESSION (длинная строка), она должна быть сгенерирована "
+            "для текущих TG_API_ID/TG_API_HASH."
+        )
+    yield
+    # Ничего особого при завершении
+    try:
+        await client.disconnect()
+    except Exception:
+        pass
+
+
+app = FastAPI(
+    title="Membership Service (Telethon + Bot API)",
+    lifespan=lifespan,
+)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Утилиты Bot API
 # ──────────────────────────────────────────────────────────────────────────────
 
-async def bot_send_message(chat_id: int, text: str, reply_markup: Optional[dict] = None) -> bool:
+async def bot_send_message(
+    chat_id: int,
+    text: str,
+    reply_markup: Optional[Dict[str, Any]] = None,
+) -> bool:
     """
     Отправка через Bot API. Возвращает True, если ok==True.
     """
     if not settings.BOT_TOKEN:
-        # Защитимся от случайного запуска без токена
         raise RuntimeError("BOT_TOKEN is not configured")
 
-    payload = {"chat_id": chat_id, "text": text}
+    # Важно: payload типизирован шире, чтобы положить reply_markup (dict)
+    payload: Dict[str, Any] = {"chat_id": chat_id, "text": text}
     if reply_markup:
         payload["reply_markup"] = reply_markup
 
@@ -100,7 +144,6 @@ async def bot_notify_admin_incident(user_id: int, username: Optional[str], full_
         "Боту не удалось отправить личное сообщение пользователю. "
         "Вероятно, пользователь не писал боту или ограничил ЛС."
     )
-    # HTML парсинг тут не обязателен, можно plain text, но оставим так
     payload = {"chat_id": settings.ADMIN_ID, "text": txt, "parse_mode": "HTML"}
     async with httpx.AsyncClient(timeout=15) as http:
         await http.post(f"{BOT_API}/sendMessage", json=payload)
@@ -118,15 +161,64 @@ async def _get_user_entity(user_id: int):
     return await client.get_entity(user_id)
 
 
+async def _get_input_peer_for_chat():
+    """
+    InputPeer* для таргет-чата (InputPeerChannel или InputPeerChat).
+    Нужен, например, для messages.ExportChatInviteRequest(peer=...).
+    """
+    return await client.get_input_entity(settings.TARGET_CHAT_ID)
+
+
+async def _get_input_chat():
+    """
+    Input-* версия чата для низкоуровневых TL-функций.
+    Для InviteToChannel требуется именно InputChannel.
+    """
+    ip = await client.get_input_entity(settings.TARGET_CHAT_ID)
+    if isinstance(ip, types.InputPeerChannel):
+        return types.InputChannel(ip.channel_id, ip.access_hash)
+    return ip  # для обычных чатов это будет InputPeerChat
+
+
+async def _get_input_user(user_id: int):
+    """
+    Гарантированно вернуть InputUser (а не InputPeerUser).
+    Нужен, например, для InviteToChannel(users=[InputUser]).
+    """
+    iu = await client.get_input_entity(user_id)
+    if isinstance(iu, types.InputPeerUser):
+        return types.InputUser(iu.user_id, iu.access_hash)
+    if isinstance(iu, types.InputUser):
+        return iu
+    ent = await client.get_entity(user_id)
+    if isinstance(ent, types.User) and ent.access_hash is not None:
+        return types.InputUser(ent.id, ent.access_hash)
+    raise ValueError("Cannot build InputUser from given user_id")
+
+
 async def try_direct_invite(user_id: int) -> bool:
     """
     Пробуем добавить напрямую (как админ-пользователь).
-    Для мегагруппы: channels.InviteToChannel.
+    Для мегагруппы/канала: channels.InviteToChannel(users=[InputUser])
+    Для обычных чатов: messages.AddChatUser(user_id=InputUser)
     """
     try:
-        chat = await _get_entity_chat()
-        user = await _get_user_entity(user_id)
-        await client(functions.channels.InviteToChannelRequest(channel=chat, users=[user]))
+        ichat = await _get_input_chat()            # InputChannel | InputPeerChat
+        iuser = await _get_input_user(user_id)     # строго InputUser
+
+        if isinstance(ichat, types.InputChannel):
+            await client(functions.channels.InviteToChannelRequest(
+                channel=ichat,
+                users=[iuser],
+            ))
+        elif isinstance(ichat, types.InputPeerChat):
+            await client(functions.messages.AddChatUserRequest(
+                chat_id=ichat.chat_id,
+                user_id=iuser,
+                fwd_limit=0,
+            ))
+        else:
+            return False
         return True
     except (
         errors.UserPrivacyRestrictedError,
@@ -138,8 +230,8 @@ async def try_direct_invite(user_id: int) -> bool:
         errors.FloodWaitError,
         errors.ChatWriteForbiddenError,
         errors.RPCError,
+        ValueError,
     ):
-        # Любая из этих ошибок означает, что мы не смогли напрямую добавить — переходим к инвайту
         return False
 
 
@@ -147,52 +239,70 @@ async def create_single_use_invite(ttl_hours: int) -> str:
     """
     Создаёт одноразовую ссылку с ограничением по использованию (1) и TTL (часов).
     """
-    chat = await _get_entity_chat()
-    expire_date = int(time.time() + max(60, ttl_hours * 3600))
+    peer = await _get_input_peer_for_chat()  # InputPeerChannel | InputPeerChat
+    expire_date = datetime.utcnow() + timedelta(seconds=max(60, ttl_hours * 3600))
     exported = await client(functions.messages.ExportChatInviteRequest(
-        peer=chat,
+        peer=peer,
         expire_date=expire_date,
         usage_limit=1,
         request_needed=False,
         title=None
     ))
-    # Ответ — ExportedChatInvite || ExportedChatInviteReplaced; берём актуальный инвайт
+    # Возврат может быть messages.ExportedChatInvite (с .invite/.new_invite)
+    # или одиночный types.ExportedChatInvite. Достаём ссылку безопасно.
     if isinstance(exported, types.messages.ExportedChatInvite):
-        if exported.new_invite:  # replaced-кейс
-            return exported.new_invite.link
-        if exported.invite:
-            return exported.invite.link
-    if isinstance(exported, types.ExportedChatInvite):
+        inv = getattr(exported, "new_invite", None) or getattr(exported, "invite", None)
+        if isinstance(inv, types.ExportedChatInvite):
+            return inv.link
+    elif isinstance(exported, types.ExportedChatInvite):
         return exported.link
     raise RuntimeError("Не удалось получить ссылку-приглашение")
 
 
 async def kick_then_unban(user_id: int) -> bool:
     """
-    «Полное удаление»: кик → мгновенный анбан.
-    После этого пользователя можно снова звать без проблем.
+    «Полное удаление»: для каналов — ban→unban (EditBanned),
+    для обычных чатов — DeleteChatUser. После этого пользователя можно снова звать.
     """
     try:
-        chat = await _get_entity_chat()
-        user = await _get_user_entity(user_id)
+        peer = await _get_input_peer_for_chat()
+        iuser = await _get_input_user(user_id)
 
-        # Баним (kick)
-        rights_ban = types.ChatBannedRights(
-            until_date=None,  # бессрочно
-            view_messages=True,  # запрет просматривать = исключение
-        )
-        await client(functions.channels.EditBannedRequest(channel=chat, participant=user, banned_rights=rights_ban))
-
-        # Небольшая пауза и снимаем бан
-        await asyncio.sleep(0.2)
-        rights_unban = types.ChatBannedRights(
-            until_date=0,  # явный unban
-            view_messages=False,
-        )
-        await client(functions.channels.EditBannedRequest(channel=chat, participant=user, banned_rights=rights_unban))
+        if isinstance(peer, types.InputPeerChannel):
+            ichannel = types.InputChannel(peer.channel_id, peer.access_hash)
+            # Для EditBanned participant ожидается InputPeer*, возьмём InputPeerUser
+            ipeer_user = await client.get_input_entity(user_id)  # InputPeerUser
+            # Баним (kick)
+            rights_ban = types.ChatBannedRights(
+                until_date=None,        # бессрочно (datetime|None)
+                view_messages=True,     # запрет просматривать = исключение
+            )
+            await client(functions.channels.EditBannedRequest(
+                channel=ichannel,
+                participant=ipeer_user,
+                banned_rights=rights_ban
+            ))
+            # Снимаем бан
+            await asyncio.sleep(0.2)
+            rights_unban = types.ChatBannedRights(
+                until_date=None,        # None = нет бана
+                view_messages=False,
+            )
+            await client(functions.channels.EditBannedRequest(
+                channel=ichannel,
+                participant=ipeer_user,
+                banned_rights=rights_unban
+            ))
+        elif isinstance(peer, types.InputPeerChat):
+            # Обычный чат: просто удаляем участника
+            await client(functions.messages.DeleteChatUserRequest(
+                chat_id=peer.chat_id,
+                user_id=iuser
+            ))
+        else:
+            return False
         return True
     except errors.RPCError as e:
-        # Сообщим админу, но не завалим весь запрос
         try:
             await bot_send_message(settings.ADMIN_ID, f"⚠️ Не удалось удалить пользователя {user_id} из чата. Ошибка: {e}")
         except Exception:
@@ -236,31 +346,10 @@ async def remove_member(req: RemoveRequest):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Запуск
+# Запуск локально
 # ──────────────────────────────────────────────────────────────────────────────
-
-@app.on_event("startup")
-async def _on_start():
-    # Безинтерактивный старт: подключаем транспорт и проверяем авторизацию.
-    # Это предотвращает попытку Telethon спросить телефон под systemd.
-    await client.connect()
-    try:
-        authorized = client.is_user_authorized()
-    except Exception as e:
-        # Если что-то пошло не так, явно падаем — systemd перезапустит сервис
-        logger.exception("Telethon is_user_authorized() failed: %s", e)
-        raise
-    if not authorized:
-            # Сессия есть, но не авторизована (пустая/битая/не от этого API_ID/API_HASH).
-        # Не уходим в интерактив — сразу падаем понятной ошибкой.
-        raise RuntimeError(
-            "Telethon session is not authorized. "
-            "Проверь TG_SESSION (длинная строка), она должна быть сгенерирована "
-            "для текущих TG_API_ID/TG_API_HASH."
-        )
 
 if __name__ == "__main__":
     import uvicorn
     # Запуск контроллера на 0.0.0.0:6000
     uvicorn.run(app, host="0.0.0.0", port=6000)
-
