@@ -193,8 +193,7 @@ async def bot_send_message(
 async def bot_send_invite_dm(user_id: int, invite_url: str) -> bool:
     kb = {"inline_keyboard": [[{"text": "Войти в чат", "url": invite_url}]]}
     text = (
-        "👋 Привет! Тебя пригласили в закрытый чат.\n"
-        "Нажми кнопку ниже, чтобы присоединиться."
+        "Чат с контентом риелтора! Заходи"
     )
     return await bot_send_message(user_id, text, reply_markup=kb)
 

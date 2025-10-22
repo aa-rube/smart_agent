@@ -3,12 +3,14 @@ import asyncio
 import logging
 import signal
 from contextlib import suppress
+import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
 from aiohttp import web
+import httpx
 
 from bot import setup
 from bot.config import *
@@ -19,7 +21,7 @@ from bot.utils.notification import run_notification_scheduler
 
 from bot.handlers.payment_handler import process_yookassa_webhook
 from bot.utils import youmoney
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from bot.handlers.description_playbook import register_http_endpoints
 
@@ -30,6 +32,18 @@ setup(dp)
 
 # Флаг для graceful shutdown
 shutdown_event = asyncio.Event()
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Membership Enforcer: настройки
+# ──────────────────────────────────────────────────────────────────────────────
+# Базовый URL membership-сервиса (по умолчанию локально)
+MEMBERSHIP_BASE_URL = os.getenv("MEMBERSHIP_BASE_URL", "http://127.0.0.1:6000")
+# Как часто сканировать просроченные подписки, сек
+ENFORCER_INTERVAL_SEC = int(os.getenv("MEMBERSHIP_ENFORCER_INTERVAL_SEC", "900"))  # 15 минут
+# Кулдаун между повторными попытками remove одного и того же пользователя, часы
+REMOVAL_COOLDOWN_HOURS = int(os.getenv("MEMBERSHIP_REMOVAL_COOLDOWN_HOURS", "24"))
+# Память последних попыток удаления (анти-спам при неудачах/повторах)
+_last_removal_attempt: dict[int, datetime] = {}
 
 
 async def yookassa_webhook_handler(request: web.Request):
@@ -46,6 +60,117 @@ async def yookassa_webhook_handler(request: web.Request):
     except Exception as e:
         logging.error(f"Error processing YooKassa webhook: {e}")
         return web.Response(status=500)
+
+
+def _has_active_paid_period_strict(user_id: int) -> bool:
+    """
+    Строгое состояние «оплачено»: есть запись подписки со статусом 'active'
+    и next_charge_at > сейчас (то есть оплаченный период ещё идёт).
+    Грейс-периоды сюда не входят.
+    """
+    try:
+        from bot.utils.billing_db import SessionLocal, Subscription
+        now_utc = datetime.now(ZoneInfo("UTC"))
+        with SessionLocal() as s:
+            rec = (
+                s.query(Subscription)
+                .filter(Subscription.user_id == user_id, Subscription.status == "active")
+                .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
+                .first()
+            )
+            if not rec:
+                return False
+            return bool(rec.next_charge_at and rec.next_charge_at > now_utc)
+    except Exception:
+        return False
+
+
+def _should_attempt_remove(user_id: int) -> bool:
+    """
+    Не даём «дубасить» Telegram remove слишком часто.
+    Возвращает True, если последняя попытка была достаточно давно.
+    """
+    now = datetime.now(ZoneInfo("UTC"))
+    last = _last_removal_attempt.get(user_id)
+    if last and (now - last) < timedelta(hours=REMOVAL_COOLDOWN_HOURS):
+        return False
+    _last_removal_attempt[user_id] = now
+    return True
+
+
+async def _membership_remove_http(user_id: int) -> bool:
+    """
+    Аккуратный HTTP-вызов membership-сервиса на удаление пользователя из чата.
+    Возвращает True при HTTP 2xx.
+    """
+    url = f"{MEMBERSHIP_BASE_URL}/members/remove"
+    payload = {"user_id": int(user_id)}
+    try:
+        async with httpx.AsyncClient(timeout=10) as http:
+            r = await http.post(url, json=payload)
+            if 200 <= r.status_code < 300:
+                return True
+            logging.warning("membership remove failed: user_id=%s status=%s body=%s",
+                            user_id, r.status_code, r.text)
+            return False
+    except Exception as e:
+        logging.exception("membership remove exception for user_id=%s: %s", user_id, e)
+        return False
+
+
+async def membership_enforcer_loop():
+    """
+    Периодически проверяет пользователей с истёкшим доступом
+    (нет активного триала и нет активного оплаченного периода)
+    и аккуратно инициирует удаление из чата через membership-service.
+    Анти-спам: один и тот же user_id удаляем не чаще, чем раз в REMOVAL_COOLDOWN_HOURS.
+    """
+    msk = ZoneInfo("Europe/Moscow")
+    while not shutdown_event.is_set():
+        try:
+            # 1) Кандидаты: подписки со статусом 'active', у которых оплаченный период уже закончился
+            from bot.utils.billing_db import SessionLocal, Subscription
+            now_utc = datetime.now(ZoneInfo("UTC"))
+            user_ids: set[int] = set()
+            with SessionLocal() as s:
+                rows = (
+                    s.query(Subscription.user_id, Subscription.next_charge_at)
+                    .filter(Subscription.status == "active")
+                    .all()
+                )
+            for uid, next_at in rows:
+                # Если триал активен — не трогаем
+                try:
+                    if db.is_trial_active(uid):
+                        continue
+                except Exception:
+                    # если не смогли проверить триал — подстрахуемся дальнейшей строгой проверкой
+                    pass
+                # Строго: активный оплаченный период?
+                if _has_active_paid_period_strict(uid):
+                    continue  # всё ещё в оплаченной зоне
+                # next_at в прошлом → оплаченный период закончился
+                if next_at is None or next_at <= now_utc:
+                    user_ids.add(int(uid))
+            # 2) Попробуем удалить каждого кандидата с анти-спамом
+            for uid in user_ids:
+                if shutdown_event.is_set():
+                    break
+                if not _should_attempt_remove(uid):
+                    continue
+                ok = await _membership_remove_http(uid)
+                if ok:
+                    logging.info("membership_enforcer: removed user %s from chat", uid)
+                else:
+                    logging.warning("membership_enforcer: failed to remove user %s", uid)
+        except Exception:
+            logging.exception("membership_enforcer_loop error")
+        # Прерываемый sleep
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=ENFORCER_INTERVAL_SEC)
+            break
+        except asyncio.TimeoutError:
+            continue
 
 
 async def main():
@@ -203,12 +328,13 @@ async def main():
         billing_task = asyncio.create_task(billing_loop(), name="billing_loop")
         mailing_task = asyncio.create_task(mailing_loop(), name="mailing_loop")
         notification_task = asyncio.create_task(notification_loop(), name="notification_loop")
+        enforcer_task = asyncio.create_task(membership_enforcer_loop(), name="membership_enforcer_loop")
         # Важно: отключаем встроенную обработку сигналов, чтобы не было «грейсфул» задержек
         polling_task = asyncio.create_task(dp.start_polling(bot, handle_signals=False), name="polling")
 
         # ждём, пока любая из задач завершится с исключением или по отмене
         done, pending = await asyncio.wait(
-            {billing_task, mailing_task, notification_task, polling_task},
+            {billing_task, mailing_task, notification_task, enforcer_task, polling_task},
             return_when=asyncio.FIRST_EXCEPTION,
         )
 
