@@ -83,24 +83,23 @@ async def lifespan(_: FastAPI):
     # Безинтерактивный старт: подключаемся и убеждаемся, что сессия авторизована.
     await client.connect()
     try:
-        authorized = client.is_user_authorized()
-        if authorized:
-            # Дополнительная проверка доступа к целевому чату
-            chat_accessible = await _ensure_chat_access()
-            if not chat_accessible:
-                raise RuntimeError("Нет доступа к целевому чату. Проверьте что бот добавлен в чат")
+        authorized = await client.is_user_authorized()
+        if not authorized:
+            raise RuntimeError(
+                "Telethon session is not authorized. "
+                "Проверь TG_SESSION (длинная строка), она должна быть сгенерирована "
+                "для текущих TG_API_ID/TG_API_HASH."
+            )
             
-            # Запускаем прослушивание сообщений
-            await start_message_listener()
+        # Дополнительная проверка доступа к целевому чату
+        chat_accessible = await _ensure_chat_access()
+        
+        # Запускаем прослушивание сообщений
+        await start_message_listener()
+        
     except Exception as e:
-        logger.exception("Telethon is_user_authorized() failed: %s", e)
+        logger.exception("Telethon startup failed: %s", e)
         raise
-    if not authorized:
-        raise RuntimeError(
-            "Telethon session is not authorized. "
-            "Проверь TG_SESSION (длинная строка), она должна быть сгенерирована "
-            "для текущих TG_API_ID/TG_API_HASH."
-        )
     yield
     # Ничего особого при завершении
     try:
@@ -288,7 +287,8 @@ async def _get_entity_chat():
         return await client.get_entity(settings.TARGET_CHAT_ID)
     except (ValueError, errors.ChannelInvalidError) as e:
         logger.error(f"Не удалось получить entity чата {settings.TARGET_CHAT_ID}: {e}")
-        raise RuntimeError(f"Бот не имеет доступа к чату {settings.TARGET_CHAT_ID} или чат не существует")
+        logger.warning(f"Бот не имеет доступа к целевому чату {settings.TARGET_CHAT_ID}. Некоторые функции будут недоступны.")
+        return None
 
 
 async def _get_user_entity(user_id: int):
@@ -304,7 +304,8 @@ async def _get_input_peer_for_chat():
         return await client.get_input_entity(settings.TARGET_CHAT_ID)
     except (ValueError, errors.ChannelInvalidError) as e:
         logger.error(f"Не удалось получить input entity чата {settings.TARGET_CHAT_ID}: {e}")
-        raise RuntimeError(f"Бот не имеет доступа к чату {settings.TARGET_CHAT_ID}")
+        logger.warning(f"Бот не имеет доступа к целевому чату {settings.TARGET_CHAT_ID}")
+        return None
 
 
 async def _ensure_chat_access():
@@ -313,10 +314,14 @@ async def _ensure_chat_access():
     """
     try:
         entity = await _get_entity_chat()
-        logger.info(f"Успешный доступ к чату: {getattr(entity, 'title', 'Unknown')}")
-        return True
+        if entity:
+            logger.info(f"Успешный доступ к чату: {getattr(entity, 'title', 'Unknown')}")
+            return True
+        else:
+            logger.warning("Доступ к целевому чату отсутствует")
+            return False
     except Exception as e:
-        logger.error(f"Критическая ошибка доступа к чату: {e}")
+        logger.warning(f"Ошибка доступа к целевому чату: {e}")
         return False
 
 
@@ -326,13 +331,19 @@ async def _get_input_chat() -> tuple[str, InputPeerChat | InputChannel]:
       - ('channel', InputChannel)  — супергруппа/канал
       - ('chat',    InputPeerChat) — обычная группа
     """
-    inp = await client.get_input_entity(settings.TARGET_CHAT_ID)
+    inp = await _get_input_peer_for_chat()
+    if inp is None:
+        raise RuntimeError(f"Нет доступа к целевому чату {settings.TARGET_CHAT_ID}")
+        
     if isinstance(inp, InputChannel):
         return "channel", inp
     if isinstance(inp, InputPeerChat):
         return "chat", inp
     # Если пришёл не тот тип — попробуем дорезолвить через high-level
     ent = await _get_entity_chat()
+    if ent is None:
+        raise RuntimeError(f"Нет доступа к целевому чату {settings.TARGET_CHAT_ID}")
+        
     if isinstance(ent, types.Chat):
         return "chat", InputPeerChat(ent.id)
     if isinstance(ent, types.Channel):
@@ -468,10 +479,9 @@ async def kick_then_unban(user_id: int) -> bool:
 @app.post("/members/invite")
 async def invite_member(req: InviteRequest):
     # Проверяем доступ к чату перед выполнением операций
-    try:
-        await _ensure_chat_access()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Нет доступа к целевому чату: {e}")
+    chat_accessible = await _ensure_chat_access()
+    if not chat_accessible:
+        raise HTTPException(status_code=500, detail="Нет доступа к целевому чату")
     
     # 1) Пробуем прямое добавление
     added = await try_direct_invite(req.user_id)
@@ -496,6 +506,11 @@ async def invite_member(req: InviteRequest):
 
 @app.post("/members/remove")
 async def remove_member(req: RemoveRequest):
+    # Проверяем доступ к чату перед выполнением операций
+    chat_accessible = await _ensure_chat_access()
+    if not chat_accessible:
+        raise HTTPException(status_code=500, detail="Нет доступа к целевому чату")
+    
     ok = await kick_then_unban(req.user_id)
     if not ok:
         raise HTTPException(status_code=500, detail="Не удалось удалить пользователя (бан/анбан)")
@@ -531,6 +546,7 @@ async def send_message_to_target(req: SendToTargetRequest):
     """
     Отправляет сообщение в целевой чат через Bot API.
     """
+    # Для Bot API не нужен доступ через Telethon, только правильный chat_id и права бота
     success = await send_message_to_target_chat(
         text=req.text,
         parse_mode=req.parse_mode
@@ -541,7 +557,7 @@ async def send_message_to_target(req: SendToTargetRequest):
     else:
         raise HTTPException(
             status_code=500, 
-            detail=f"Не удалось отправить сообщение в целевой чат {settings.TARGET_CHAT_ID}"
+            detail=f"Не удалось отправить сообщение в целевой чат {settings.TARGET_CHAT_ID}. Проверьте что бот добавлен в чат и имеет права на отправку сообщений."
         )
 
 
@@ -563,6 +579,30 @@ async def send_message_telethon(req: SendMessageRequest):
             status_code=500, 
             detail=f"Не удалось отправить сообщение через Telethon в {req.chat_id}"
         )
+
+
+@app.get("/debug/session")
+async def debug_session():
+    """
+    Информация о текущей Telethon сессии.
+    """
+    try:
+        me = await client.get_me()
+        return {
+            "session_authorized": True,
+            "user": {
+                "id": me.id,
+                "username": me.username,
+                "first_name": me.first_name,
+                "last_name": me.last_name,
+                "phone": me.phone
+            }
+        }
+    except Exception as e:
+        return {
+            "session_authorized": False,
+            "error": str(e)
+        }
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -1,7 +1,10 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\membership\config.py
 
 import os
+import logging
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Settings:
@@ -22,14 +25,14 @@ class Settings:
 
     def validate(self):
         """Проверка обязательных настроек"""
-        if not self.TARGET_CHAT_ID:
-            raise ValueError("TARGET_CHAT_ID не установлен")
         if not self.ADMIN_ID:
             raise ValueError("ADMIN_ID не установлен")
         if not self.BOT_TOKEN:
             raise ValueError("BOT_TOKEN не установлен")
         if not self.SESSION:
             raise ValueError("TG_SESSION не установлен")
+        if not self.TARGET_CHAT_ID:
+            logger.warning("TARGET_CHAT_ID не установлен - функции работы с целевым чатом недоступны")
 
 
 settings = Settings()
