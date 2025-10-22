@@ -5,6 +5,9 @@ import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Dict, Optional, Tuple, List
+import asyncio
+import os
+import httpx
 from decimal import Decimal
 
 from aiogram import Router, F, Bot
@@ -22,6 +25,9 @@ import bot.utils.billing_db as billing_db
 from bot.utils.redis_repo import yookassa_dedup, invalidate_payment_ok_cache, quota_repo
 
 logger = logging.getLogger(__name__)
+
+# Membership-service (FastAPI), по умолчанию локально на 6000
+MEMBERSHIP_BASE_URL = os.getenv("MEMBERSHIP_BASE_URL", "http://127.0.0.1:6000")
 
 # Локальная константа времени МСК для форматирования дат в UI
 MSK = ZoneInfo("Europe/Moscow")
@@ -553,6 +559,22 @@ async def _edit_safe(cb: CallbackQuery, text: str, kb: InlineKeyboardMarkup | No
 
 def _plan_by_code(code: str) -> Optional[Dict]:
     return TARIFFS.get(code)
+
+
+async def _membership_invite(user_id: int) -> None:
+    """
+    Запрос в membership-service: попытка добавить/пригласить пользователя в чат.
+    """
+    url = f"{MEMBERSHIP_BASE_URL}/members/invite"
+    payload = {"user_id": int(user_id)}
+    try:
+        async with httpx.AsyncClient(timeout=10) as http:
+            r = await http.post(url, json=payload)
+            if r.status_code >= 400:
+                logging.warning("membership invite failed: user_id=%s status=%s body=%s",
+                                user_id, r.status_code, r.text)
+    except Exception as e:
+        logging.exception("membership invite exception for user_id=%s: %s", user_id, e)
 
 
 def _compute_next_time_from_months(months: int) -> datetime:
