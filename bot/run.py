@@ -3,7 +3,6 @@ import asyncio
 import logging
 import signal
 from contextlib import suppress
-import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -21,7 +20,7 @@ from bot.utils.notification import run_notification_scheduler
 
 from bot.handlers.payment_handler import process_yookassa_webhook
 from bot.utils import youmoney
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from bot.handlers.description_playbook import register_http_endpoints
 
@@ -32,6 +31,14 @@ setup(dp)
 
 # Флаг для graceful shutdown
 shutdown_event = asyncio.Event()
+
+# Приведение дат к UTC-aware (на случай, если из БД пришёл naive)
+def _as_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Membership Enforcer: настройки
@@ -80,7 +87,9 @@ def _has_active_paid_period_strict(user_id: int) -> bool:
             )
             if not rec:
                 return False
-            return bool(rec.next_charge_at and rec.next_charge_at > now_utc)
+            # next_charge_at может быть naive → сравниваем только UTC-aware
+            next_at_utc = _as_utc(rec.next_charge_at)
+            return bool(next_at_utc and next_at_utc > now_utc)
     except Exception:
         return False
 
@@ -149,8 +158,9 @@ async def membership_enforcer_loop():
                 # Строго: активный оплаченный период?
                 if _has_active_paid_period_strict(uid):
                     continue  # всё ещё в оплаченной зоне
-                # next_at в прошлом → оплаченный период закончился
-                if next_at is None or next_at <= now_utc:
+                # next_at в прошлом → оплаченный период закончился (нормализуем к UTC-aware)
+                next_at_utc = _as_utc(next_at)
+                if next_at_utc is None or next_at_utc <= now_utc:
                     user_ids.add(int(uid))
             # 2) Попробуем удалить каждого кандидата с анти-спамом
             for uid in user_ids:
