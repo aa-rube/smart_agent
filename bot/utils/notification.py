@@ -394,6 +394,59 @@ async def _send_trial_d3_pay_once(bot: Bot, user_id: int) -> bool:
         logging.warning("[notif] trial d3 pay send to %s failed: %s", user_id, e)
         return False
 
+def _last_lifecycle_state(user_id: int, now: Optional[datetime] = None) -> str:
+    """
+    Возвращает 'paid' | 'trial' | 'unsub' по последнему релевантному created_at.
+    Используем для контекстных реакций/рассылок.
+    """
+    now = now or _utcnow()
+    trial_at: Optional[datetime] = None
+    paid_at: Optional[datetime] = None
+
+    # Trial: берём максимум created_at по активным или недавно завершившимся КЕЙСАМ,
+    # при необходимости можно сузить по статусам в app_db.Trial.
+    with app_db.SessionLocal() as s:
+        trial_at = (
+            s.query(func.max(app_db.Trial.created_at))
+             .filter(app_db.Trial.user_id == user_id)
+             .scalar()
+        )
+    # Paid: максимум created_at по активным подпискам
+    with billing_db.SessionLocal() as s:
+        paid_at = (
+            s.query(func.max(billing_db.Subscription.created_at))
+             .filter(
+                 billing_db.Subscription.user_id == user_id,
+                 billing_db.Subscription.status == "active",
+             )
+             .scalar()
+        )
+    if paid_at and (not trial_at or paid_at >= trial_at):
+        return "paid"
+    if trial_at and (not paid_at or trial_at > paid_at):
+        return "trial"
+    return "unsub"
+
+
+async def send_contextual_nudge(bot: Bot, user_id: int) -> bool:
+    """
+    Универсальная «реакция на событие»:
+    - если последнее состояние trial — шлём про фичи триала,
+    - если paid — шлём полезный совет про инструменты в подписке,
+    - иначе — мягкий нёрчор на подписку.
+    Идемпотентность: ключ завязан на состоянии.
+    """
+    state = _last_lifecycle_state(user_id)
+    key = f"notif:nudge:{user_id}:{state}"
+    if state == "trial":
+        text = TXT_TRIAL_D1_ONBOARD
+    elif state == "paid":
+        text = TXT_PAID_D5
+    else:
+        text = TXT_UNSUB_D2
+    return await _send_text_once(bot, user_id, key, text)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 1) «Взаимодействовал, но не подписался»
 # baseline = минимальный app_db.EventLog.created_at; исключаем активные trial/paid
