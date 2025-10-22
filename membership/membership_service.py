@@ -1,4 +1,4 @@
-# membership/membership_service.py
+#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\membership\membership_service.py
 import asyncio
 import logging
 from typing import Optional, Any, Dict
@@ -73,6 +73,11 @@ async def lifespan(_: FastAPI):
     await client.connect()
     try:
         authorized = client.is_user_authorized()
+        if authorized:
+            # Дополнительная проверка доступа к целевому чату
+            chat_accessible = await _ensure_chat_access()
+            if not chat_accessible:
+                raise RuntimeError("Нет доступа к целевому чату. Проверьте что бот добавлен в чат")
     except Exception as e:
         logger.exception("Telethon is_user_authorized() failed: %s", e)
         raise
@@ -94,6 +99,26 @@ app = FastAPI(
     title="Membership Service (Telethon + Bot API)",
     lifespan=lifespan,
 )
+
+
+@app.get("/health")
+async def health_check():
+    """
+    Проверка здоровья сервиса и доступа к чату.
+    """
+    try:
+        chat_info = await debug_chat()
+        return {
+            "status": "healthy",
+            "chat_accessible": True,
+            "chat_info": chat_info
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy", 
+            "chat_accessible": False,
+            "error": str(e)
+        }
 
 
 @app.get("/debug/chat")
@@ -183,7 +208,11 @@ async def _get_entity_chat():
     Возвращает high-level entity (Chat|Channel) по TARGET_CHAT_ID.
     Требует, чтобы аккаунт из TG_SESSION состоял в группе/канале.
     """
-    return await client.get_entity(settings.TARGET_CHAT_ID)
+    try:
+        return await client.get_entity(settings.TARGET_CHAT_ID)
+    except (ValueError, errors.ChannelInvalidError) as e:
+        logger.error(f"Не удалось получить entity чата {settings.TARGET_CHAT_ID}: {e}")
+        raise RuntimeError(f"Бот не имеет доступа к чату {settings.TARGET_CHAT_ID} или чат не существует")
 
 
 async def _get_user_entity(user_id: int):
@@ -195,7 +224,24 @@ async def _get_input_peer_for_chat():
     InputPeer* для таргет-чата (InputPeerChannel или InputPeerChat).
     Нужен, например, для messages.ExportChatInviteRequest(peer=...).
     """
-    return await client.get_input_entity(settings.TARGET_CHAT_ID)
+    try:
+        return await client.get_input_entity(settings.TARGET_CHAT_ID)
+    except (ValueError, errors.ChannelInvalidError) as e:
+        logger.error(f"Не удалось получить input entity чата {settings.TARGET_CHAT_ID}: {e}")
+        raise RuntimeError(f"Бот не имеет доступа к чату {settings.TARGET_CHAT_ID}")
+
+
+async def _ensure_chat_access():
+    """
+    Проверяет доступ к целевому чату при старте приложения.
+    """
+    try:
+        entity = await _get_entity_chat()
+        logger.info(f"Успешный доступ к чату: {getattr(entity, 'title', 'Unknown')}")
+        return True
+    except Exception as e:
+        logger.error(f"Критическая ошибка доступа к чату: {e}")
+        return False
 
 
 async def _get_input_chat() -> tuple[str, InputPeerChat | InputChannel]:
@@ -345,6 +391,12 @@ async def kick_then_unban(user_id: int) -> bool:
 
 @app.post("/members/invite")
 async def invite_member(req: InviteRequest):
+    # Проверяем доступ к чату перед выполнением операций
+    try:
+        await _ensure_chat_access()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Нет доступа к целевому чату: {e}")
+    
     # 1) Пробуем прямое добавление
     added = await try_direct_invite(req.user_id)
     if added:
