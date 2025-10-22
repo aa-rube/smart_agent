@@ -577,6 +577,22 @@ async def _membership_invite(user_id: int) -> None:
         logging.exception("membership invite exception for user_id=%s: %s", user_id, e)
 
 
+async def _membership_remove(user_id: int) -> None:
+    """
+    Запрос в membership-service: полное удаление пользователя из чата.
+    """
+    url = f"{MEMBERSHIP_BASE_URL}/members/remove"
+    payload = {"user_id": int(user_id)}
+    try:
+        async with httpx.AsyncClient(timeout=10) as http:
+            r = await http.post(url, json=payload)
+            if r.status_code >= 400:
+                logging.warning("membership remove failed: user_id=%s status=%s body=%s",
+                                user_id, r.status_code, r.text)
+    except Exception as e:
+        logging.exception("membership remove exception for user_id=%s: %s", user_id, e)
+
+
 def _compute_next_time_from_months(months: int) -> datetime:
     try:
         from dateutil.relativedelta import relativedelta
@@ -846,6 +862,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                 try:
                     # троттлинг: не чаще 1 раза за 12ч
                     can_notice = True
+                    should_remove = False  # сигнал «достигли 3-й подряд неудачи»
                     if sub_id:
                         from bot.utils.billing_db import SessionLocal, Subscription, now_utc
                         from sqlalchemy import select
@@ -855,11 +872,21 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                                 now = now_utc()
                                 if rec.last_fail_notice_at and (now - rec.last_fail_notice_at) < timedelta(hours=12):
                                     can_notice = False
-                                # инкремент фейлов (не более 6)
-                                rec.consecutive_failures = min((rec.consecutive_failures or 0) + 1, 6)
+                                # инкремент фейлов (не более 6) + детекция порога 3
+                                prev_fails = int(rec.consecutive_failures or 0)
+                                new_fails = min(prev_fails + 1, 6)
+                                rec.consecutive_failures = new_fails
+                                if new_fails >= 3 and prev_fails < 3:
+                                    should_remove = True
                                 if can_notice:
                                     rec.last_fail_notice_at = now
                                 rec.updated_at = now
+                    # если достигли 3-й неудачи — инициируем полное удаление из чата
+                    if should_remove:
+                        try:
+                            asyncio.create_task(_membership_remove(user_id_fail))
+                        except Exception:
+                            pass
                     if can_notice:
                         cover_path = get_file_path("data/img/bot/no_pay.png")
                         photo = FSInputFile(cover_path)
@@ -952,6 +979,11 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             )
             # уведомление
             await _notify_after_payment(bot, user_id, code, trial_until.date().isoformat())
+            # попытка инициализировать добавление/приглашение в чат
+            try:
+                asyncio.create_task(_membership_invite(user_id))
+            except Exception:
+                pass
 
         elif is_recurring and phase == "renewal":
             # Сохраняем платёжный метод (чтобы было автопродление)
@@ -991,6 +1023,11 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                     pass
             # уведомление с «до …» брать из next_at
             await _notify_after_payment(bot, user_id, code, next_at.date().isoformat())
+            # попытка инициализировать добавление/приглашение в чат
+            try:
+                asyncio.create_task(_membership_invite(user_id))
+            except Exception:
+                pass
             # сброс счётчиков фейлов, обновление last_charge_at выполнено в repo; здесь — обнуление fail-серии на подписке
             try:
                 from bot.utils.billing_db import SessionLocal, Subscription, now_utc
@@ -1012,6 +1049,11 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             trial_hours = int(str(metadata.get("trial_hours") or "72"))
             trial_until = app_db.set_trial(user_id, hours=trial_hours)
             await _notify_after_payment(bot, user_id, code, trial_until.date().isoformat())
+            # попытка инициализировать добавление/приглашение в чат
+            try:
+                asyncio.create_task(_membership_invite(user_id))
+            except Exception:
+                pass
 
         # помечаем как обработанный в БД (а в Redis уже зафиксирован финальный статус)
         try:

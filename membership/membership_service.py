@@ -243,3 +243,8 @@ async def _on_start():
     # Стартуем сессию Telethon
     await client.start()
 
+if __name__ == "__main__":
+    import uvicorn
+    # Запуск контроллера на 0.0.0.0:6000
+    uvicorn.run(app, host="0.0.0.0", port=6000)
+
