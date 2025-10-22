@@ -410,24 +410,27 @@ async def create_single_use_invite(ttl_hours: int) -> str:
     """
     peer = await _get_input_peer_for_chat()  # InputPeerChannel | InputPeerChat
     expire_date = datetime.utcnow() + timedelta(seconds=max(60, ttl_hours * 3600))
-    exported = await client(functions.messages.ExportChatInviteRequest(
+    res = await client(functions.messages.ExportChatInviteRequest(
         peer=peer,
         expire_date=expire_date,
         usage_limit=1,
         request_needed=False,
         title=None
     ))
-    # Вариант 1: messages.ExportedChatInvite (обёртка со списками)
-    if isinstance(exported, types.messages.ExportedChatInvite):
-        if exported.invite and isinstance(exported.invite, types.ChatInviteExported):
-            return exported.invite.link
-        # иногда ссылка приходит в .link
-        if getattr(exported, "link", None):
-            return exported.link
-    # Вариант 2: простой ExportedChatInvite
-    if isinstance(exported, types.ExportedChatInvite):
-        return exported.link
-    raise RuntimeError("Не удалось получить ссылку-приглашение")
+    # Telethon возвращает types.messages.ExportedChatInvite (обёртка),
+    # внутри которой .invite = types.ChatInviteExported
+    if isinstance(res, types.messages.ExportedChatInvite):
+        inv = getattr(res, "invite", None)
+        if isinstance(inv, types.ChatInviteExported) and getattr(inv, "link", None):
+            return inv.link
+        # иногда линк дублируется прямо в обёртке
+        link = getattr(res, "link", None)
+        if link:
+            return link
+    # Некоторые версии могут вернуть напрямую ChatInviteExported
+    if isinstance(res, types.ChatInviteExported):
+        return res.link
+    raise RuntimeError(f"Не удалось получить ссылку-приглашение (тип ответа: {type(res).__name__})")
 
 
 async def kick_then_unban(user_id: int) -> bool:
