@@ -168,7 +168,7 @@ async def _init_user_from_cb(cb: CallbackQuery) -> None:
         if tg_from:
             app_db.check_and_add_user(tg_from.id, chat_id=cb.message.chat.id, username=tg_from.username or None)
     except Exception:
-        logger.debug("init user skipped", exc_info=True)
+        logger.info("init user skipped", exc_info=True)
 
 async def _send_photo_to_chat(bot: Bot, chat_id: int, image_rel_path: str, caption: str) -> bool:
     """
@@ -216,7 +216,7 @@ async def _send_video_to_chat(bot: Bot, chat_id: int, video_rel_path: str, capti
                 return True
             except Exception:
                 # Фоллбэк: отправим как документ, чтобы пользователь всё равно получил файл
-                logger.debug("send_video failed for %s, fallback to send_document", vid_path, exc_info=True)
+                logger.info("send_video failed for %s, fallback to send_document", vid_path, exc_info=True)
                 await bot.send_document(chat_id=chat_id, document=FSInputFile(vid_path), caption=safe)
                 return True
         else:
