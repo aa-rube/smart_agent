@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import fitz
 from typing import Optional
+import os
+import aiohttp
+from pathlib import Path
 
 from aiogram import Router, F, Bot
 from aiogram.types import (
@@ -28,6 +31,18 @@ import base64
 import re
 import uuid
 from datetime import datetime
+
+# NEW: persistent storage + DB repo for generations
+from bot.utils.image_store import (
+    init_image_store,
+    save_bytes_as_png,
+    build_image_path_for_msg_id,
+    rename_for_new_msg_id,
+)
+from bot.utils.design_db import save_generation_record, get_generation_by_result_msg_id
+
+# Инициализируем persistent-хранилище при импорте модуля
+init_image_store()
 
 
 async def _safe_answer(cb: CallbackQuery) -> None:
@@ -63,6 +78,7 @@ def text_get_file_zero(user_id: int) -> str:
 
 TEXT_GET_STYLE = "Ок! Теперь выбери стиль оформления 🖼️"
 TEXT_FINAL = "✅ Готово! Вот результат."
+TEXT_WAIT = "⏳ Пожалуйста, подождите… генерируем новый вариант."
 ERROR_WRONG_INPUT = "❌ Пожалуйста, отправь изображение (jpg/png), PDF (1 страница) или прямую ссылку на картинку."
 ERROR_PDF_PAGES = "❌ В PDF должно быть не больше одной страницы."
 ERROR_LINK = "❌ Не удалось скачать изображение по ссылке. Нужна прямая ссылка на файл (jpg/png)."
@@ -124,6 +140,15 @@ def kb_result_back_zero() -> InlineKeyboardMarkup:
         inline_keyboard=[[InlineKeyboardButton(text="↩️ Загрузить другое фото", callback_data="zerodesign.back_to_upload")]]
     )
 
+# NEW: клавиатура с «Повторить» и «Назад»
+def kb_result_actions(*, result_msg_id: int, back_cb: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔁 Попробовать ещё раз", callback_data=f"d.rep={int(result_msg_id)}")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)],
+        ]
+    )
+
 
 # =============================================================================
 # Хелперы редактирования
@@ -147,17 +172,18 @@ async def _edit_text_or_caption(msg: Message, text: str, kb: Optional[InlineKeyb
 
 async def _edit_or_replace_with_photo_file(
     bot: Bot, msg: Message, file_path: str, caption: str, kb: Optional[InlineKeyboardMarkup] = None
-) -> None:
+) -> Message:
     try:
         media = InputMediaPhoto(media=FSInputFile(file_path), caption=caption)
-        await msg.edit_media(media=media, reply_markup=kb)
-        return
+        new_msg: Message = await msg.edit_media(media=media, reply_markup=kb)
+        return new_msg
     except TelegramBadRequest:
         try:
             await msg.delete()
         except TelegramBadRequest:
             pass
-        await bot.send_photo(chat_id=msg.chat.id, photo=FSInputFile(file_path), caption=caption, reply_markup=kb)
+        new_msg = await bot.send_photo(chat_id=msg.chat.id, photo=FSInputFile(file_path), caption=caption, reply_markup=kb)
+        return new_msg
 
 async def _edit_or_replace_with_photo_url(
     bot: Bot, msg: Message, url: str, caption: str, kb: Optional[InlineKeyboardMarkup] = None
@@ -277,12 +303,9 @@ async def handle_file_redesign(message: Message, state: FSMContext, bot: Bot):
         return
 
     if image_bytes:
-        saved_path = get_file_path(f"img/tmp/redesign_{user_id}.png")
-        os.makedirs(os.path.dirname(saved_path), exist_ok=True)
-        with open(saved_path, "wb") as f:
-            f.write(image_bytes)
-
-        await state.update_data(image_path=saved_path)
+        # NEW: сохраняем исходник как <msg_id>.png в домашнем хранилище
+        saved_path = save_bytes_as_png(image_bytes, message.message_id)
+        await state.update_data(image_path=str(saved_path), src_msg_id=message.message_id)
         await message.answer("Какое это помещение?", reply_markup=kb_room_type())
         await state.set_state(RedesignStates.waiting_for_room_type)
 
@@ -331,20 +354,42 @@ async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot:
             else:
                 image_bytes = await download_image_from_url(image_url)
             if image_bytes:
-                tmp_path = get_file_path(f"img/tmp/result_{user_id}.png")
-                os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
-                with open(tmp_path, "wb") as f:
-                    f.write(image_bytes)
+                # Сохраняем результат как <msg_id>.png (ожидаем edit в это же сообщение)
+                planned_msg_id = callback.message.message_id
+                planned_path = save_bytes_as_png(image_bytes, planned_msg_id)
 
-                await _edit_or_replace_with_photo_file(
+                result_msg = await _edit_or_replace_with_photo_file(
                     bot=bot,
                     msg=callback.message,
-                    file_path=tmp_path,
+                    file_path=str(planned_path),
                     caption=TEXT_FINAL,
-                    kb=kb_result_back_redesign()
+                    kb=None
                 )
-                try: os.remove(tmp_path)
-                except OSError: pass
+                final_msg_id = result_msg.message_id
+                final_path = planned_path if final_msg_id == planned_msg_id else rename_for_new_msg_id(planned_path, final_msg_id)
+
+                # Вешаем «Повторить/Назад»
+                kb = kb_result_actions(result_msg_id=final_msg_id, back_cb="redesign.back_to_upload")
+                try:
+                    await result_msg.edit_reply_markup(reply_markup=kb)
+                except TelegramBadRequest:
+                    pass
+
+                # Сохраняем запись в БД
+                try:
+                    save_generation_record(
+                        result_msg_id=final_msg_id,
+                        user_id=user_id,
+                        chat_id=callback.message.chat.id,
+                        mode="redesign",
+                        style=style_choice,
+                        room_type=room_type,
+                        furniture=None,
+                        src_image_path=image_path or "",
+                        result_image_path=str(final_path),
+                    )
+                except Exception as e:
+                    print(f"[design_db] save_generation_record error: {e}")
             else:
                 await _edit_text_or_caption(
                     callback.message,
@@ -358,11 +403,7 @@ async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot:
                 kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
                     text="⬅️ Назад", callback_data="nav.design_home")]]))
     finally:
-        if image_path and os.path.exists(image_path):
-            if safe_remove(image_path):
-                print(f"Временный файл удален: {image_path}")
-            else:
-                print(f"Не удалось удалить временный файл (занят): {image_path}")
+        # Исходники не удаляем (persistent), чистим только state
         await state.clear()
         # НЕ отвечаем повторно — к этому моменту query уже может протухнуть
 
@@ -434,13 +475,10 @@ async def handle_file_zero(message: Message, state: FSMContext, bot: Bot):
         return
 
     if image_bytes:
-        saved_path = await save_image_as_png(image_bytes, user_id)
-        if saved_path:
-            await state.update_data(image_path=saved_path)
-            await message.answer("Какое это помещение?", reply_markup=kb_room_type())
-            await state.set_state(ZeroDesignStates.waiting_for_room_type)
-        else:
-            await message.answer("Произошла ошибка при обработке файла. Попробуйте ещё раз.")
+        saved_path = save_bytes_as_png(image_bytes, message.message_id)
+        await state.update_data(image_path=str(saved_path), src_msg_id=message.message_id)
+        await message.answer("Какое это помещение?", reply_markup=kb_room_type())
+        await state.set_state(ZeroDesignStates.waiting_for_room_type)
 
 
 async def handle_room_type_zero(callback: CallbackQuery, state: FSMContext):
@@ -503,20 +541,39 @@ async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot
             else:
                 image_bytes = await download_image_from_url(image_url)
             if image_bytes:
-                tmp_path = get_file_path(f"img/tmp/result_{user_id}.png")
-                os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
-                with open(tmp_path, "wb") as f:
-                    f.write(image_bytes)
+                planned_msg_id = callback.message.message_id
+                planned_path = save_bytes_as_png(image_bytes, planned_msg_id)
 
-                await _edit_or_replace_with_photo_file(
+                result_msg = await _edit_or_replace_with_photo_file(
                     bot=bot,
                     msg=callback.message,
-                    file_path=tmp_path,
+                    file_path=str(planned_path),
                     caption=TEXT_FINAL,
-                    kb=kb_result_back_zero()
+                    kb=None
                 )
-                try: os.remove(tmp_path)
-                except OSError: pass
+                final_msg_id = result_msg.message_id
+                final_path = planned_path if final_msg_id == planned_msg_id else rename_for_new_msg_id(planned_path, final_msg_id)
+
+                kb = kb_result_actions(result_msg_id=final_msg_id, back_cb="zerodesign.back_to_upload")
+                try:
+                    await result_msg.edit_reply_markup(reply_markup=kb)
+                except TelegramBadRequest:
+                    pass
+
+                try:
+                    save_generation_record(
+                        result_msg_id=final_msg_id,
+                        user_id=user_id,
+                        chat_id=callback.message.chat.id,
+                        mode="zero",
+                        style=style_choice,
+                        room_type=room_type,
+                        furniture=furniture_choice,
+                        src_image_path=image_path or "",
+                        result_image_path=str(final_path),
+                    )
+                except Exception as e:
+                    print(f"[design_db] save_generation_record error: {e}")
             else:
                 await _edit_text_or_caption(
                     callback.message,
@@ -530,11 +587,6 @@ async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot
                 kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
                     text="⬅️ Назад", callback_data="nav.design_home")]]))
     finally:
-        if image_path and os.path.exists(image_path):
-            if safe_remove(image_path):
-                print(f"Временный файл удален: {image_path}")
-            else:
-                print(f"Не удалось удалить временный файл (занят): {image_path}")
         await state.clear()
         # Повторный answer убирать
 
@@ -593,6 +645,106 @@ async def handle_zero_back_to_upload(callback: CallbackQuery, state: FSMContext,
     )
     await callback.answer()
 
+
+# =============================================================================
+# RETRY: «Попробовать ещё раз» под результатом
+# =============================================================================
+async def handle_retry_generation(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """
+    callback_data: d.rep=<result_msg_id>
+    Логика:
+      1) читаем запись из БД по result_msg_id;
+      2) отправляем «песочные часы» КАК ФОТО ИЗ МЕНЮ (media), чтобы потом editMessageMedia сохранить msg_id;
+      3) заново вызываем executor с теми же параметрами;
+      4) editMessageMedia → картинка, вешаем клавиатуру;
+      5) сохраняем новую запись с новым result_msg_id.
+    """
+    await _safe_answer(callback)
+    data = (callback.data or "").strip()
+    try:
+        _, val = data.split("=", 1)  # d.rep=<id>
+        ref_msg_id = int(val)
+    except Exception:
+        await callback.answer("Ошибка параметров.", show_alert=True)
+        return
+
+    rec = get_generation_by_result_msg_id(ref_msg_id)
+    if rec is None:
+        await callback.answer("Не найдена запись для повтора.", show_alert=True)
+        return
+
+    mode = rec.mode
+    room_type = rec.room_type
+    style_choice = rec.style
+    furniture_choice = rec.furniture
+    src_image_path = rec.src_image_path
+
+    cover_rel = 'img/bot/design.png' if mode == 'redesign' else 'img/bot/zero_design.png'
+    wait_msg = await bot.send_photo(
+        chat_id=callback.message.chat.id,
+        photo=FSInputFile(get_file_path(cover_rel)),
+        caption=TEXT_WAIT
+    )
+
+    coro = generate_design(
+        image_path=src_image_path,
+        style=style_choice,
+        room_type=room_type,
+        furniture=furniture_choice
+    )
+    image_url = await run_long_operation_with_action(
+        bot=bot,
+        chat_id=callback.from_user.id,
+        action=ChatAction.UPLOAD_PHOTO,
+        coro=coro
+    )
+
+    if not image_url:
+        await _edit_text_or_caption(wait_msg, SORRY_TRY_AGAIN)
+        return
+
+    if _is_data_url(image_url):
+        image_bytes, _ = _data_url_to_bytes(image_url)
+    else:
+        image_bytes = await download_image_from_url(image_url)
+    if not image_bytes:
+        await _edit_text_or_caption(wait_msg, UNSUCCESSFUL_TRY_LATER)
+        return
+
+    planned_msg_id = wait_msg.message_id
+    planned_path = save_bytes_as_png(image_bytes, planned_msg_id)
+
+    result_msg = await _edit_or_replace_with_photo_file(
+        bot=bot,
+        msg=wait_msg,
+        file_path=str(planned_path),
+        caption=TEXT_FINAL,
+        kb=None
+    )
+    final_msg_id = result_msg.message_id
+    final_path = planned_path if final_msg_id == planned_msg_id else rename_for_new_msg_id(planned_path, final_msg_id)
+
+    back_cb = "redesign.back_to_upload" if mode == "redesign" else "zerodesign.back_to_upload"
+    kb = kb_result_actions(result_msg_id=final_msg_id, back_cb=back_cb)
+    try:
+        await result_msg.edit_reply_markup(reply_markup=kb)
+    except TelegramBadRequest:
+        pass
+
+    try:
+        save_generation_record(
+            result_msg_id=final_msg_id,
+            user_id=callback.from_user.id,
+            chat_id=callback.message.chat.id,
+            mode=mode,
+            style=style_choice,
+            room_type=room_type,
+            furniture=furniture_choice,
+            src_image_path=src_image_path,
+            result_image_path=str(final_path),
+        )
+    except Exception as e:
+        print(f"[design_db] save_generation_record (retry) error: {e}")
 
 
 #########################################################################################################
@@ -710,3 +862,6 @@ def router(rt: Router) -> None:
     rt.callback_query.register(handle_style_zero, ZeroDesignStates.waiting_for_style)
     # Назад с результата к загрузке (zero-design)
     rt.callback_query.register(handle_zero_back_to_upload, F.data == "zerodesign.back_to_upload")
+
+    # NEW: повторная генерация по кнопке под картинкой
+    rt.callback_query.register(handle_retry_generation, F.data.startswith("d.rep="))

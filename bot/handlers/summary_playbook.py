@@ -25,7 +25,6 @@ from bot.utils.database import (
     summary_get_entry as get_entry,
 )
 from bot.handlers.payment_handler import (
-    format_access_text,   # короткий статус доступа
     ensure_access,        # централизованная проверка (trial/card)
 )
 
@@ -341,8 +340,6 @@ def _render_result(res: dict) -> str:
     return "\n".join(parts)
 
 
-
-
 # ============= Экраны =============
 async def summary_home(callback: CallbackQuery, state: FSMContext, bot: Bot):
     await state.clear()
@@ -471,8 +468,7 @@ async def generate_summary(callback: CallbackQuery, bot: Bot):
         res = await run_long_operation_with_action(
             bot=bot,
             chat_id=chat_id,
-            action=ChatAction.TYPING,
-            coro=_do()
+            action=ChatAction.TYPING
         )
         text = _render_result(res)
         parts = _split(text)
