@@ -561,7 +561,7 @@ def _plan_by_code(code: str) -> Optional[Dict]:
     return TARIFFS.get(code)
 
 
-async def _membership_invite(user_id: int) -> None:
+async def membership_invite(user_id: int) -> None:
     """
     Запрос в membership-service: попытка добавить/пригласить пользователя в чат.
     """
@@ -981,7 +981,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             await _notify_after_payment(bot, user_id, code, trial_until.date().isoformat())
             # попытка инициализировать добавление/приглашение в чат
             try:
-                asyncio.create_task(_membership_invite(user_id))
+                asyncio.create_task(membership_invite(user_id))
             except Exception:
                 pass
 
@@ -1025,7 +1025,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             await _notify_after_payment(bot, user_id, code, next_at.date().isoformat())
             # попытка инициализировать добавление/приглашение в чат
             try:
-                asyncio.create_task(_membership_invite(user_id))
+                asyncio.create_task(membership_invite(user_id))
             except Exception:
                 pass
             # сброс счётчиков фейлов, обновление last_charge_at выполнено в repo; здесь — обнуление fail-серии на подписке
@@ -1051,7 +1051,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             await _notify_after_payment(bot, user_id, code, trial_until.date().isoformat())
             # попытка инициализировать добавление/приглашение в чат
             try:
-                asyncio.create_task(_membership_invite(user_id))
+                asyncio.create_task(membership_invite(user_id))
             except Exception:
                 pass
 

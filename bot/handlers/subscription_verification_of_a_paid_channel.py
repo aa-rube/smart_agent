@@ -1,0 +1,1 @@
+#C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\handlers\subscription_verification_of_a_paid_channel.py
