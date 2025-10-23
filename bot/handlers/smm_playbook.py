@@ -16,7 +16,6 @@ from aiogram.types import (
 
 from bot.config import get_file_path
 from bot.utils import database as app_db
-from bot.utils import billing_db
 from bot.utils.mailing import send_last_3_published_to_user
 
 logger = logging.getLogger(__name__)
@@ -24,6 +23,11 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 # CAPTION LIMITS
 # ──────────────────────────────────────────────────────────────────────────────
+# Относительные пути внутри DATA_DIR (разрешаются через get_file_path)
+POST_STORIES_REL = "post_1.jpg"
+POST_EXPERT_REL  = "post_2.jpg"
+POST_EDU_REL     = "post_3.MOV"
+
 def _safe_caption(text: str, limit: int = 1024) -> str:
     """
     Безопасно обрезает caption до лимита Telegram (по умолчанию 1024 символа).
@@ -181,8 +185,10 @@ async def _send_photo_to_chat(bot: Bot, chat_id: int, image_rel_path: str, capti
         if Path(img_path).exists():
             await bot.send_photo(chat_id=chat_id, photo=FSInputFile(img_path), caption=safe)
             return True
+        else:
+            logger.warning("Photo not found: resolved=%s (rel=%s)", img_path, image_rel_path)
     except Exception:
-        logger.warning("Failed to send photo %s", image_rel_path, exc_info=True)
+        logger.warning("Failed to send photo %s (resolved=%s)", image_rel_path, img_path, exc_info=True)
 
     try:
         await bot.send_message(chat_id=chat_id, text=caption)
@@ -204,10 +210,19 @@ async def _send_video_to_chat(bot: Bot, chat_id: int, video_rel_path: str, capti
     safe = _safe_caption(caption)
     try:
         if Path(vid_path).exists():
-            await bot.send_video(chat_id=chat_id, video=FSInputFile(vid_path), caption=safe)
-            return True
+            try:
+                # Попытка отправить как видео (Telegram иногда не любит MOV)
+                await bot.send_video(chat_id=chat_id, video=FSInputFile(vid_path), caption=safe)
+                return True
+            except Exception:
+                # Фоллбэк: отправим как документ, чтобы пользователь всё равно получил файл
+                logger.debug("send_video failed for %s, fallback to send_document", vid_path, exc_info=True)
+                await bot.send_document(chat_id=chat_id, document=FSInputFile(vid_path), caption=safe)
+                return True
+        else:
+            logger.warning("Video not found: resolved=%s (rel=%s)", vid_path, video_rel_path)
     except Exception:
-        logger.warning("Failed to send video %s", video_rel_path, exc_info=True)
+        logger.warning("Failed to send video %s (resolved=%s)", video_rel_path, vid_path, exc_info=True)
 
     try:
         await bot.send_message(chat_id=chat_id, text=caption)
@@ -232,21 +247,21 @@ async def smm_content(cb: CallbackQuery) -> None:
     chat_id = cb.message.chat.id
     bot = cb.bot
 
-    # 1) Развлекательный контент (сторис)
+    # 1) Развлекательный контент (сторис) — фото + caption
     try:
-        await _send_photo_to_chat(bot, chat_id, "post_1.jpg", _stories_caption())
+        await _send_photo_to_chat(bot, chat_id, POST_STORIES_REL, _stories_caption())
     except Exception:
         logger.warning("smm_content: failed to send stories block", exc_info=True)
 
-    # 2) Экспертный контент (посты) — большой текст как caption (с безопасным обрезанием)
+    # 2) Экспертный контент (посты) — фото + длинный caption (обрезаем до лимита)
     try:
-        await _send_photo_to_chat(bot, chat_id, "post_2.jpg", _expert_caption())
+        await _send_photo_to_chat(bot, chat_id, POST_EXPERT_REL, _expert_caption())
     except Exception:
         logger.warning("smm_content: failed to send expert block", exc_info=True)
 
-    # 3) Познавательный контент (видео)
+    # 3) Познавательный контент (видео) — video + caption (fallback: документ)
     try:
-        await _send_video_to_chat(bot, chat_id, "post_3.MOV", _edu_caption())
+        await _send_video_to_chat(bot, chat_id, POST_EDU_REL, _edu_caption())
     except Exception:
         logger.warning("smm_content: failed to send edu video block", exc_info=True)
 
