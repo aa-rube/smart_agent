@@ -27,8 +27,7 @@ PARTNER_CHECK_CB = "partners.check"
 EXAMPLES_CHAT_ID = -1003103282986
 # callback для подписки в этот канал из UI
 POSTS_SUBSCRIBE_CB = "posts.subscribe_examples"
-# (опционально) callback для показа примеров (если нет подписки)
-POSTS_SHOW_SAMPLES_CB = "posts.show_samples"
+# (не используем отдельный cb для примеров: остаётся существующий "smm_content")
 
 # membership-service
 MEMBERSHIP_BASE_URL = os.getenv("MEMBERSHIP_BASE_URL", "http://127.0.0.1:6000")
@@ -201,7 +200,8 @@ async def build_posts_button(bot: Bot, user_id: int) -> Optional[InlineKeyboardB
     """
     # 1) нет подписки → всегда показываем «Смотреть примеры»
     if not has_active_paid_subscription(user_id):
-        return InlineKeyboardButton(text="🏡 Смотреть примеры постов", callback_data=POSTS_SHOW_SAMPLES_CB)
+        # используем существующий обработчик «smm_content» для показа примеров
+        return InlineKeyboardButton(text="🏡 Смотреть примеры постов", callback_data="smm_content")
     
     # 2) есть подписка → проверяем членство в канале
     if await is_in_examples_channel(bot, user_id):
@@ -289,7 +289,7 @@ async def posts_subscribe_cb(callback: CallbackQuery, bot: Bot) -> None:
     """
     Нажатие на «Подписаться на канал с постами».
     Делаем HTTP POST в membership_service /members/invite с user_id.
-    Если пользователь уже добавлен — кнопку можно скрыть сообщением-уведомлением.
+    Если пользователь уже добавлен — кнопку можно скрыть.
     """
     user_id = callback.from_user.id
     url = f"{MEMBERSHIP_BASE_URL}/members/invite"
@@ -333,3 +333,4 @@ def router(rt: Router) -> None:
     Первый показ выполняется там, где вызывают ensure_partner_subs(...) из /start.
     """
     rt.callback_query.register(partner_check_cb, F.data == PARTNER_CHECK_CB)
+    rt.callback_query.register(posts_subscribe_cb, F.data == POSTS_SUBSCRIBE_CB)

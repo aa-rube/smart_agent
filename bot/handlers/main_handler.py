@@ -19,7 +19,11 @@ from aiogram.types import (
 )
 
 from bot.config import get_file_path, PARTNER_URL
-from bot.handlers.subscribe_partner_manager import ensure_partner_subs, PARTNER_CHECK_CB
+from bot.handlers.subscribe_partner_manager import (
+    ensure_partner_subs,
+    PARTNER_CHECK_CB,
+    build_posts_button,
+)
 from bot.handlers.payment_handler import show_rates as show_rates_handler
 import bot.utils.database as app_db
 import bot.utils.billing_db as billing_db
@@ -42,28 +46,37 @@ get_subscribe = 'Похоже, ещё не на все каналы подпис
 # Клавиатуры
 # =============================================================================
 
-def build_main_menu_kb(user_id: int) -> InlineKeyboardMarkup:
+async def build_main_menu_kb(bot: Bot, user_id: int) -> InlineKeyboardMarkup:
     """
-    Главная клавиатура с динамическим названием кнопки SMM:
-    — если есть активный триал или привязанная карта → «🏡 Смотреть примеры постов»
-    — иначе → «🏡 Готовые посты для соцсетей»
+    Главная клавиатура c новой логикой для кнопки постов:
+     • если нет оплаченной подписки → «🏡 Смотреть примеры постов»
+     • если подписка есть и пользователь уже в канале → кнопку убираем
+     • если подписка есть, но пользователя нет в канале → «Подписаться на канал…»
+    
+    Названия «готовые посты/примеры» в зависимости от подписки не переключаем.
     """
+    rows: list[list[InlineKeyboardButton]] = []
+    
+    # 1) Кнопка с постами (по правилам выше)
     try:
-        has_access = app_db.is_trial_active(user_id) or billing_db.has_saved_card(user_id)
+        posts_btn = await build_posts_button(bot, user_id)
     except Exception as e:
-        logging.warning("Access check failed for %s: %s", user_id, e)
-        has_access = False
-    first_btn_text = "🏡 Готовые посты для соцсетей" if has_access else "🏡 Смотреть примеры постов"
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=first_btn_text, callback_data="smm_content")],
-            [InlineKeyboardButton(text="📐 Обрисовщик планировок", callback_data="floor_plan")],
-            [InlineKeyboardButton(text="🎨 Редизайн квартиры", callback_data="nav.design_home")],
-            [InlineKeyboardButton(text="🧠 Инструменты PRO-риэлтора", callback_data="nav.ai_tools")],
-            [InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")],
-            [InlineKeyboardButton(text="Наше сообщество", url=PARTNER_URL)]
-        ]
-    )
+        logging.warning("build_posts_button failed for %s: %s", user_id, e)
+        posts_btn = InlineKeyboardButton(text="🏡 Смотреть примеры постов", callback_data="smm_content")
+    
+    if posts_btn is not None:
+        rows.append([posts_btn])
+    
+    # 2) Остальные кнопки
+    rows.extend([
+        [InlineKeyboardButton(text="📐 Обрисовщик планировок", callback_data="floor_plan")],
+        [InlineKeyboardButton(text="🎨 Редизайн квартиры", callback_data="nav.design_home")],
+        [InlineKeyboardButton(text="🧠 Инструменты PRO-риэлтора", callback_data="nav.ai_tools")],
+        [InlineKeyboardButton(text="📦 Оформить подписку", callback_data="show_rates")],
+        [InlineKeyboardButton(text="Наше сообщество", url=PARTNER_URL)],
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 ai_tools_inline = InlineKeyboardMarkup(
     inline_keyboard=[
@@ -138,7 +151,7 @@ async def send_menu_with_logo(bot: Bot, chat_id: int) -> None:
     """
     logo_rel = "img/bot/logo.png"  # путь внутри DATA_DIR
     logo_path = get_file_path(logo_rel)
-    kb = build_main_menu_kb(chat_id)
+    kb = await build_main_menu_kb(bot, chat_id)
     if Path(logo_path).exists():
         try:
             await bot.send_photo(
@@ -166,7 +179,7 @@ async def _replace_with_menu_with_logo(callback: CallbackQuery) -> None:
     """
     logo_rel = "img/bot/logo.png"
     logo_path = get_file_path(logo_rel)
-    kb = build_main_menu_kb(callback.from_user.id)
+    kb = await build_main_menu_kb(callback.bot, callback.from_user.id)
 
     # Путь к картинке существует — пробуем заменить медиа
     if Path(logo_path).exists():
