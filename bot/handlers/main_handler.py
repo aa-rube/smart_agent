@@ -22,12 +22,20 @@ from bot.config import get_file_path, PARTNER_URL
 from bot.handlers.subscribe_partner_manager import (
     ensure_partner_subs,
     PARTNER_CHECK_CB,
-    has_active_paid_subscription,
+    is_subscribed,  # ← публичная проверка членства
 )
-from bot.handlers.payment_handler import show_rates as show_rates_handler
+from bot.handlers.payment_handler import (
+    show_rates as show_rates_handler,
+    membership_invite,  # ← вызов membership_service
+)
 import bot.utils.database as app_db
 import bot.utils.billing_db as billing_db
 from aiogram.types import User as TgUser
+
+# Закрытый канал с готовыми постами (жёстко зашитый id)
+EXAMPLES_CHAT_ID = -1003103282986
+# Callback для кнопки «Подписаться на канал…»
+POSTS_SUBSCRIBE_CB = "posts.subscribe_examples"
 
 
 # =============================================================================
@@ -45,6 +53,28 @@ get_subscribe = 'Похоже, ещё не на все каналы подпис
 # =============================================================================
 # Клавиатуры
 # =============================================================================
+def has_active_paid_subscription(user_id: int) -> bool:
+    """
+    Строго «оплачено»: есть подписка status='active' и next_charge_at > сейчас (UTC).
+    Триал сюда НЕ входит.
+    """
+    try:
+        from bot.utils.billing_db import SessionLocal, Subscription
+        from datetime import datetime, timezone
+        with SessionLocal() as s:
+            rec = (
+                s.query(Subscription)
+                 .filter(Subscription.user_id == user_id, Subscription.status == "active")
+                 .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
+                 .first()
+            )
+            if not rec or not rec.next_charge_at:
+                return False
+            now_utc = datetime.now(timezone.utc)
+            # next_charge_at уже timezone-aware в модели
+            return rec.next_charge_at > now_utc
+    except Exception:
+        return False
 
 async def build_posts_button(bot: Bot, user_id: int) -> Optional[InlineKeyboardButton]:
     """
@@ -54,16 +84,17 @@ async def build_posts_button(bot: Bot, user_id: int) -> Optional[InlineKeyboardB
      • если ЕСТЬ оплаченная подписка И пользователя НЕТ в канале → показать «Подписаться»
        (нажатие запускает membership_service, который добавит/пришлёт инвайт)
     """
-    # 1) нет подписки → всегда показываем «Смотреть примеры»
+    # 1) Нет ОПЛАЧЕННОЙ подписки/триала → показываем «Смотреть примеры»
+    #   (Требование: «если оформленной платной подписки/триала нет — оставить кнопку с примерами»)
     if not has_active_paid_subscription(user_id):
-        # используем существующий обработчик «smm_content» для показа примеров
         return InlineKeyboardButton(text="🏡 Смотреть примеры постов", callback_data="smm_content")
 
-    # 2) есть подписка → проверяем членство в канале
-    if await is_in_examples_channel(bot, user_id):
-        return None  # убрать кнопку
+    # 2) Есть оплаченная подписка → проверяем членство именно в EXAMPLES_CHAT_ID
+    in_channel = await is_subscribed(bot, EXAMPLES_CHAT_ID, user_id)
+    if in_channel:
+        return None  # кнопку скрываем
 
-    # 3) есть подписка, но пользователя нет в канале → предложить подписаться/добавиться
+    # 3) Оплата есть, но в канале не состоит → предлагаем подписаться
     return InlineKeyboardButton(text="🏡 Подписаться на канал с постами", callback_data=POSTS_SUBSCRIBE_CB)
 
 
@@ -312,6 +343,20 @@ async def check_subscribe_retry(callback: CallbackQuery, bot: Bot) -> None:
     await _replace_with_menu_with_logo(callback)
 
 
+async def posts_subscribe_cb(callback: CallbackQuery) -> None:
+    """
+    Нажатие «Подписаться на канал с постами».
+    Вызывает payment_handler.membership_invite и даёт пользователю понятный ответ.
+    """
+    await init_user(callback)
+    try:
+        await membership_invite(callback.from_user.id)
+        # Не знаем режим (прямое добавление/ссылка в ЛС), даём универсальный ответ
+        await callback.answer("Готово! Если добавление напрямую не сработает, пришлём ссылку в личку.", show_alert=False)
+    except Exception:
+        await callback.answer("Не удалось подписать сейчас. Попробуйте позже.", show_alert=True)
+
+
 # =============================================================================
 # Команды
 # =============================================================================
@@ -336,3 +381,4 @@ def router(rt: Router) -> None:
     rt.callback_query.register(ai_tools, F.data == "nav.ai_tools")
     rt.callback_query.register(check_subscribe_retry, F.data == "start_retry")
     rt.callback_query.register(first_msg, F.data == "main")
+    rt.callback_query.register(posts_subscribe_cb, F.data == POSTS_SUBSCRIBE_CB)

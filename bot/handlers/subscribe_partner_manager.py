@@ -73,7 +73,7 @@ def build_missing_subscribe_keyboard(
 
 
 
-async def _is_subscribed(bot: Bot, chat_id: int, user_id: int) -> bool:
+async def is_subscribed(bot: Bot, chat_id: int, user_id: int) -> bool:
     """
     Возвращает True, если пользователь состоит в канале/группе.
 
@@ -110,7 +110,7 @@ async def get_partner_subscription_map(
     # никаких нормализаций — chat_id ДОЛЖЕН быть int
     for cfg in items:
         chat_id = cfg["chat_id"]  # если тут не int -> упадёт, и это ок (ошибка разработчика)
-        result[chat_id] = await _is_subscribed(bot, chat_id, user_id)
+        result[chat_id] = await is_subscribed(bot, chat_id, user_id)
 
     return result
 
