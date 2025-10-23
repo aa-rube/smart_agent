@@ -24,9 +24,9 @@ logger = logging.getLogger(__name__)
 # CAPTION LIMITS
 # ──────────────────────────────────────────────────────────────────────────────
 # Относительные пути внутри DATA_DIR (разрешаются через get_file_path)
-POST_STORIES_REL = "post_1.jpg"
-POST_EXPERT_REL  = "post_2.jpg"
-POST_EDU_REL     = "post_3.MOV"
+POST_STORIES_REL = "img/bot/post_1.jpg"
+POST_EXPERT_REL  = "img/bot/post_2.jpg"
+POST_EDU_REL     = "img/bot/post_3.MOV"
 
 def _safe_caption(text: str, limit: int = 1024) -> str:
     """
