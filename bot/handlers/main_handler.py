@@ -29,7 +29,7 @@ from bot.handlers.payment_handler import (
     membership_invite,  # ← вызов membership_service
 )
 import bot.utils.database as app_db
-import bot.utils.billing_db as billing_db
+from bot.handlers.payment_handler import has_access
 from aiogram.types import User as TgUser
 
 # Закрытый канал с готовыми постами (жёстко зашитый id)
@@ -53,28 +53,6 @@ get_subscribe = 'Похоже, ещё не на все каналы подпис
 # =============================================================================
 # Клавиатуры
 # =============================================================================
-def has_active_paid_subscription(user_id: int) -> bool:
-    """
-    Строго «оплачено»: есть подписка status='active' и next_charge_at > сейчас (UTC).
-    Триал сюда НЕ входит.
-    """
-    try:
-        from bot.utils.billing_db import SessionLocal, Subscription
-        from datetime import datetime, timezone
-        with SessionLocal() as s:
-            rec = (
-                s.query(Subscription)
-                 .filter(Subscription.user_id == user_id, Subscription.status == "active")
-                 .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
-                 .first()
-            )
-            if not rec or not rec.next_charge_at:
-                return False
-            now_utc = datetime.now(timezone.utc)
-            # next_charge_at уже timezone-aware в модели
-            return rec.next_charge_at > now_utc
-    except Exception:
-        return False
 
 async def build_posts_button(bot: Bot, user_id: int) -> Optional[InlineKeyboardButton]:
     """
@@ -86,7 +64,7 @@ async def build_posts_button(bot: Bot, user_id: int) -> Optional[InlineKeyboardB
     """
     # 1) Нет ОПЛАЧЕННОЙ подписки/триала → показываем «Смотреть примеры»
     #   (Требование: «если оформленной платной подписки/триала нет — оставить кнопку с примерами»)
-    if not has_active_paid_subscription(user_id):
+    if not has_access(user_id):
         return InlineKeyboardButton(text="🏡 Смотреть примеры постов", callback_data="smm_content")
 
     # 2) Есть оплаченная подписка → проверяем членство именно в EXAMPLES_CHAT_ID
@@ -95,7 +73,7 @@ async def build_posts_button(bot: Bot, user_id: int) -> Optional[InlineKeyboardB
         return None  # кнопку скрываем
 
     # 3) Оплата есть, но в канале не состоит → предлагаем подписаться
-    return InlineKeyboardButton(text="🏡 Подписаться на канал с постами", callback_data=POSTS_SUBSCRIBE_CB)
+    return InlineKeyboardButton(text="🏡 Подписаться на канал с контентом", callback_data=POSTS_SUBSCRIBE_CB)
 
 
 async def build_main_menu_kb(bot: Bot, user_id: int) -> InlineKeyboardMarkup:

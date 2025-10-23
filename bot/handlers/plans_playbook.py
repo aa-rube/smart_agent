@@ -22,7 +22,6 @@ from bot.states.states import FloorPlanStates
 from bot.utils.chat_actions import run_long_operation_with_action
 from bot.utils.file_utils import safe_remove
 from bot.handlers.payment_handler import (
-    format_access_text,   # короткий статус доступа для экранов
     ensure_access,        # централизованная проверка подписки/триала
 )
 
