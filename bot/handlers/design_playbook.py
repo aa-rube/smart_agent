@@ -3,10 +3,6 @@ from __future__ import annotations
 
 import fitz
 from typing import Optional
-import os
-import aiohttp
-from pathlib import Path
-
 from aiogram import Router, F, Bot
 from aiogram.types import (
     Message, CallbackQuery, FSInputFile, InputMediaPhoto,
@@ -26,7 +22,6 @@ from bot.states.states import RedesignStates, ZeroDesignStates
 
 from bot.utils.image_processor import *
 from bot.utils.chat_actions import run_long_operation_with_action
-from bot.utils.file_utils import safe_remove
 import base64
 import re
 import uuid
@@ -36,7 +31,6 @@ from datetime import datetime
 from bot.utils.image_store import (
     init_image_store,
     save_bytes_as_png,
-    build_image_path_for_msg_id,
     rename_for_new_msg_id,
 )
 from bot.utils.design_db import save_generation_record, get_generation_by_result_msg_id
@@ -58,7 +52,7 @@ async def _safe_answer(cb: CallbackQuery) -> None:
 # Тексты
 # =============================================================================
 
-def _start_screen_text(user_id: int) -> str:
+def _start_screen_text() -> str:
     return f"""
 • 🛋 *Редизайн интерьера* — загрузи фото мебелированного помещения и выбери стиль.
 
@@ -128,17 +122,6 @@ def kb_furniture() -> InlineKeyboardMarkup:
         ]
     )
 
-def kb_result_back_redesign() -> InlineKeyboardMarkup:
-    """Кнопка на экране результата редизайна — вернуться к загрузке фото."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="↩️ Загрузить другое фото", callback_data="redesign.back_to_upload")]]
-    )
-
-def kb_result_back_zero() -> InlineKeyboardMarkup:
-    """Кнопка на экране результата zero-design — вернуться к загрузке фото."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="↩️ Загрузить другое фото", callback_data="zerodesign.back_to_upload")]]
-    )
 
 # NEW: клавиатура с «Повторить» и «Попробовать другое»
 def kb_result_actions(*, result_msg_id: int, back_cb: str) -> InlineKeyboardMarkup:
@@ -219,11 +202,10 @@ def _data_url_to_bytes(s: str) -> tuple[bytes, str]:
 
 async def design_home(callback: CallbackQuery, state: FSMContext, bot: Bot):
     await state.clear()
-    user_id = callback.from_user.id
 
     cover_rel = "img/bot/main_design.png"
     cover_path = get_file_path(cover_rel)
-    caption = _start_screen_text(user_id)
+    caption = _start_screen_text()
 
     if os.path.exists(cover_path):
         await _edit_or_replace_with_photo_file(bot, callback.message, cover_path, caption, kb_design_home())
@@ -262,7 +244,6 @@ async def handle_file_redesign(message: Message, state: FSMContext, bot: Bot):
         await state.clear()
         return
     await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-    user_id = message.from_user.id
     image_bytes: bytes | None = None
 
     if message.photo:
@@ -438,7 +419,6 @@ async def handle_file_zero(message: Message, state: FSMContext, bot: Bot):
         await state.clear()
         return
     await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-    user_id = message.from_user.id
     image_bytes: bytes | None = None
 
     if message.photo:
@@ -657,7 +637,7 @@ async def handle_zero_back_to_upload(callback: CallbackQuery, state: FSMContext,
 # =============================================================================
 # RETRY: «Попробовать ещё раз» под результатом
 # =============================================================================
-async def handle_retry_generation(callback: CallbackQuery, state: FSMContext, bot: Bot):
+async def handle_retry_generation(callback: CallbackQuery, bot: Bot):
     """
     callback_data: d.rep=<result_msg_id>
     Логика:
