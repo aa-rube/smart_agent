@@ -3,10 +3,6 @@ from __future__ import annotations
 
 import fitz
 from typing import Optional
-import os
-import aiohttp
-from pathlib import Path
-
 from aiogram import Router, F, Bot
 from aiogram.types import (
     Message, CallbackQuery, FSInputFile, InputMediaPhoto,
@@ -26,7 +22,6 @@ from bot.states.states import RedesignStates, ZeroDesignStates
 
 from bot.utils.image_processor import *
 from bot.utils.chat_actions import run_long_operation_with_action
-from bot.utils.file_utils import safe_remove
 import base64
 import re
 import uuid
@@ -36,7 +31,6 @@ from datetime import datetime
 from bot.utils.image_store import (
     init_image_store,
     save_bytes_as_png,
-    build_image_path_for_msg_id,
     rename_for_new_msg_id,
 )
 from bot.utils.design_db import save_generation_record, get_generation_by_result_msg_id
@@ -128,17 +122,6 @@ def kb_furniture() -> InlineKeyboardMarkup:
         ]
     )
 
-def kb_result_back_redesign() -> InlineKeyboardMarkup:
-    """Кнопка на экране результата редизайна — вернуться к загрузке фото."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="↩️ Загрузить другое фото", callback_data="redesign.back_to_upload")]]
-    )
-
-def kb_result_back_zero() -> InlineKeyboardMarkup:
-    """Кнопка на экране результата zero-design — вернуться к загрузке фото."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="↩️ Загрузить другое фото", callback_data="zerodesign.back_to_upload")]]
-    )
 
 # NEW: клавиатура с «Повторить» и «Попробовать другое»
 def kb_result_actions(*, result_msg_id: int, back_cb: str) -> InlineKeyboardMarkup:
@@ -343,8 +326,7 @@ async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot:
         image_url = await run_long_operation_with_action(
             bot=bot,
             chat_id=user_id,
-            action=ChatAction.UPLOAD_PHOTO,
-            coro=coro
+            action=ChatAction.UPLOAD_PHOTO
         )
 
         if image_url:
@@ -535,8 +517,7 @@ async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot
         image_url = await run_long_operation_with_action(
             bot=bot,
             chat_id=user_id,
-            action=ChatAction.UPLOAD_PHOTO,
-            coro=coro
+            action=ChatAction.UPLOAD_PHOTO
         )
 
         if image_url:
@@ -703,8 +684,7 @@ async def handle_retry_generation(callback: CallbackQuery, state: FSMContext, bo
     image_url = await run_long_operation_with_action(
         bot=bot,
         chat_id=callback.from_user.id,
-        action=ChatAction.UPLOAD_PHOTO,
-        coro=coro
+        action=ChatAction.UPLOAD_PHOTO
     )
 
     if not image_url:
@@ -869,6 +849,7 @@ def router(rt: Router) -> None:
         ZeroDesignStates.waiting_for_file,
         F.content_type.in_({ContentType.PHOTO, ContentType.DOCUMENT, ContentType.TEXT})
     )
+
     rt.callback_query.register(handle_room_type_zero, ZeroDesignStates.waiting_for_room_type)
     rt.callback_query.register(handle_furniture_zero, ZeroDesignStates.waiting_for_furniture)
     rt.callback_query.register(handle_style_zero, ZeroDesignStates.waiting_for_style)
