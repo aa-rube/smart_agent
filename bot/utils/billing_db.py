@@ -129,6 +129,9 @@ class ChargeAttempt(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, index=True, nullable=False)
     payment_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)  # id платежа у провайдера
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="created")  # created|succeeded|canceled|expired
+    # Якорь "одного платежа/цикла": значение next_charge_at на момент ПЕРВОЙ попытки этого цикла
+    # Все попытки с одинаковым due_at относятся к одной "истории платежа"
+    due_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
     __table_args__ = (
         # для быстрых окон по попыткам
@@ -192,6 +195,13 @@ def init_schema() -> None:
         attempts_indexes = {ix["name"] for ix in insp.get_indexes("charge_attempts")}
         if "idx_attempt_sub_time" not in attempts_indexes:
             conn.exec_driver_sql("CREATE INDEX idx_attempt_sub_time ON charge_attempts (subscription_id, attempted_at)")
+        # Новое поле для привязки попыток к текущему платежному циклу
+        attempts_cols = {c["name"] for c in insp.get_columns("charge_attempts")}
+        if "due_at" not in attempts_cols:
+            conn.exec_driver_sql(f"ALTER TABLE charge_attempts ADD COLUMN due_at {dt_type} NULL")
+        # Индекс по (subscription_id, due_at) для быстрых подсчётов попыток "в рамках одного платежа"
+        if "idx_attempt_sub_due" not in attempts_indexes:
+            conn.exec_driver_sql("CREATE INDEX idx_attempt_sub_due ON charge_attempts (subscription_id, due_at)")
 
 
 class BillingRepository:
@@ -253,7 +263,7 @@ class BillingRepository:
             rec: Subscription | None = s.query(Subscription).with_for_update().filter(Subscription.id == subscription_id).one_or_none()
             if rec is None or rec.status != "active" or rec.payment_method_id is None:
                 return None
-            # щит: макс фейлов
+            # щит: макс фейлов В ТЕКУЩЕМ ЦИКЛЕ (consecutive_failures копится с последнего успеха)
             if (rec.consecutive_failures or 0) >= 6:
                 return None
             # щит: пауза 12ч (last_attempt_at может быть naive → нормализуем)
@@ -268,8 +278,17 @@ class BillingRepository:
             ).count()
             if cnt_24h >= 2:
                 return None
+            # due_anchor — это "какой платёж сейчас пытаемся закрыть" (значение next_charge_at на момент первой попытки)
+            due_anchor = to_aware_utc(rec.next_charge_at)
             # записываем попытку и след на подписке
-            attempt = ChargeAttempt(subscription_id=subscription_id, user_id=user_id, payment_id=None, status="created", attempted_at=now)
+            attempt = ChargeAttempt(
+                subscription_id=subscription_id,
+                user_id=user_id,
+                payment_id=None,
+                status="created",
+                attempted_at=now,
+                due_at=due_anchor,
+            )
             s.add(attempt)
             rec.last_attempt_at = now
             rec.updated_at = now
@@ -638,9 +657,15 @@ class BillingRepository:
             return [uid for (uid,) in rows]
 
     # --- retries / attempts ---
-    def record_charge_attempt(self, *, subscription_id: int, user_id: int, payment_id: Optional[str], status: str) -> int:
+    def record_charge_attempt(self, *, subscription_id: int, user_id: int, payment_id: Optional[str], status: str, due_at: Optional[datetime] = None) -> int:
         with self._session() as s, s.begin():
-            rec = ChargeAttempt(subscription_id=subscription_id, user_id=user_id, payment_id=payment_id, status=status)
+            rec = ChargeAttempt(
+                subscription_id=subscription_id,
+                user_id=user_id,
+                payment_id=payment_id,
+                status=status,
+                due_at=to_aware_utc(due_at) if due_at else None,
+            )
             s.add(rec)
             s.flush()
             return rec.id
@@ -657,10 +682,12 @@ class BillingRepository:
         else:
             now = now.astimezone(timezone.utc)
 
-        # Новая политика ретраев авто-списаний:
+        # Политика ретраев авто-списаний:
         # 1) Не чаще 2-х попыток в сутки (окно 24h).
         # 2) Минимальный интервал между попытками — 12 часов.
-        # 3) Максимум 6 НЕ успешных попыток за всё время (status IN ('canceled','expired')).
+        # 3) Максимум 6 НЕуспешных попыток В РАМКАХ ОДНОГО ПЛАТЕЖНОГО ЦИКЛА
+        #    (т.е. для той же пары subscription_id + due_at = next_charge_at),
+        #    считаются только status IN ('canceled','expired').
         window_24h = timedelta(hours=24)
         min_gap = timedelta(hours=12)
 
@@ -702,14 +729,29 @@ class BillingRepository:
                  .all()
             }
 
-            # Лимит 6 НЕ успешных попыток за всё время
-            blocked_ids_failed6 = {
-                sub_id for (sub_id,) in
-                s.query(ChargeAttempt.subscription_id)
-                 .filter(ChargeAttempt.status.in_(('canceled', 'expired')))
-                 .group_by(ChargeAttempt.subscription_id)
-                 .having(text('COUNT(*) >= 6'))
-                 .all()
+            # Лимит 6 НЕуспешных попыток в рамках ТЕКУЩЕГО цикла (due_at == rec.next_charge_at)
+            # Сначала соберём пары (sub_id, due_at) для кандидатов
+            candidate_pairs: List[tuple[int, Optional[datetime]]] = [
+                (rec.id, to_aware_utc(rec.next_charge_at)) for rec in subs
+            ]
+            # Вычислим counts по всем парам разом: group by (subscription_id, due_at)
+            from sqlalchemy import func
+            failed_counts = {
+                (sid, to_aware_utc(due_at)): cnt
+                for (sid, due_at, cnt) in
+                s.query(
+                    ChargeAttempt.subscription_id,
+                    ChargeAttempt.due_at,
+                    func.count("*")
+                )
+                .filter(
+                    ChargeAttempt.status.in_(('canceled', 'expired')),
+                    # фильтруем только по интересующим подпискам и только по их due_at
+                    ChargeAttempt.subscription_id.in_([sid for (sid, _) in candidate_pairs]),
+                    ChargeAttempt.due_at.in_({to_aware_utc(due_at) for (_, due_at) in candidate_pairs if due_at is not None})
+                )
+                .group_by(ChargeAttempt.subscription_id, ChargeAttempt.due_at)
+                .all()
             }
 
             items: List[Dict[str, Any]] = []
@@ -723,12 +765,11 @@ class BillingRepository:
                 if last_attempt_aware is not None and (now - last_attempt_aware) < min_gap:
                     # skip: 12h gap not passed
                     continue
-                # Safety-net по окнам попыток:
-                if (
-                    rec.id in blocked_ids_day2
-                    or rec.id in blocked_ids_gap12h
-                    or rec.id in blocked_ids_failed6
-                ):
+                # Лимиты по окнам + лимит 6 фейлов В ТЕКУЩЕМ ЦИКЛЕ
+                # (по паре (subscription_id, due_at = rec.next_charge_at))
+                pair = (rec.id, to_aware_utc(rec.next_charge_at))
+                failed6_now = failed_counts.get(pair, 0) >= 6
+                if (rec.id in blocked_ids_day2) or (rec.id in blocked_ids_gap12h) or failed6_now:
                     continue
                 items.append({
                     "id": rec.id,
@@ -860,8 +901,8 @@ def subscription_mark_charged_for_user(user_id: int, *, next_charge_at: datetime
 def subscriptions_due(now: datetime, limit: int = 200) -> List[Dict[str, Any]]:
     return _repo.subscriptions_due(now=now, limit=limit)
 
-def record_charge_attempt(*, subscription_id: int, user_id: int, payment_id: Optional[str], status: str) -> int:
-    return _repo.record_charge_attempt(subscription_id=subscription_id, user_id=user_id, payment_id=payment_id, status=status)
+def record_charge_attempt(*, subscription_id: int, user_id: int, payment_id: Optional[str], status: str, due_at: Optional[datetime] = None) -> int:
+    return _repo.record_charge_attempt(subscription_id=subscription_id, user_id=user_id, payment_id=payment_id, status=status, due_at=due_at)
 
 def mark_charge_attempt_status(*, payment_id: str, status: str) -> None:
     _repo.mark_charge_attempt_status(payment_id=payment_id, status=status)

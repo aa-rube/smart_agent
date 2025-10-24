@@ -46,11 +46,8 @@ _TEXT_GET_FILE_PLAN_TPL = """
 Готов? Кидай сюда 👇
 """.strip()
 
-# def text_get_file_plan(user_id: int) -> str:
-#     # Добавляем централизованный статус доступа сверху, как и в других модулях
-#     return f"{format_access_text(user_id)}\n\n{_TEXT_GET_FILE_PLAN_TPL}"
 
-def text_get_file_plan(user_id: int) -> str:
+def text_get_file_plan() -> str:
     return _TEXT_GET_FILE_PLAN_TPL
 
 TEXT_GET_VIZ = "Выберите стиль визуализации плана:"
@@ -193,7 +190,6 @@ async def start_plans_flow(callback: CallbackQuery, state: FSMContext, bot: Bot)
     Старт сценария «Планировки»: проверяем доступ → просим загрузить план/чертёж.
     Стартовый коллбек: "floor_plan"
     """
-    user_id = callback.message.chat.id
     # Централизованная проверка подписки/триала (покажет экран подписки и ответит callback)
     if not await ensure_access(callback):
         return
@@ -202,7 +198,7 @@ async def start_plans_flow(callback: CallbackQuery, state: FSMContext, bot: Bot)
         bot=bot,
         msg=callback.message,
         file_path=get_file_path('img/bot/plan.png'),
-        caption=text_get_file_plan(user_id),
+        caption=text_get_file_plan(),
         kb=kb_back_to_tools(),
     )
 
@@ -520,7 +516,6 @@ async def generate_floor_plan(*, floor_plan_path: str, visualization_style: str,
         return ""
 
 
-
 async def handle_plan_back_to_upload(callback: CallbackQuery, state: FSMContext, bot: Bot):
     """
     Кнопка «Назад» с экрана результата:
@@ -540,7 +535,7 @@ async def handle_plan_back_to_upload(callback: CallbackQuery, state: FSMContext,
     await bot.send_photo(
         chat_id=callback.message.chat.id,
         photo=FSInputFile(get_file_path('img/bot/plan.png')),
-        caption=text_get_file_plan(user_id),
+        caption=text_get_file_plan(),
         reply_markup=kb_back_to_tools(),
     )
 
