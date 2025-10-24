@@ -21,9 +21,22 @@ from bot.config import get_file_path
 from bot.states.states import FloorPlanStates
 from bot.utils.chat_actions import run_long_operation_with_action
 from bot.utils.file_utils import safe_remove
+from bot.utils.image_processor import download_image_from_url
 from bot.handlers.payment_handler import (
     ensure_access,        # централизованная проверка подписки/триала
 )
+from bot.utils.image_store import (
+    init_image_store,
+    save_bytes_as_png,
+    rename_for_new_msg_id,
+)
+from bot.utils.plan_db import (
+    save_plan_generation_record,
+    get_plan_generation_by_result_msg_id,
+)
+
+# Инициализируем persistent-хранилище при импорте модуля
+init_image_store()
 
 LOG = logging.getLogger(__name__)
 
@@ -46,6 +59,7 @@ def text_get_file_plan(user_id: int) -> str:
 TEXT_GET_VIZ = "Выберите стиль визуализации плана:"
 TEXT_GET_STYLE = "Отлично! Теперь выберите интерьерный стиль 🖼️"
 TEXT_FINAL = "✅ Готово! Вот визуализация планировки."
+TEXT_WAIT = "⏳ Пожалуйста, подождите… генерируем новый вариант."
 ERROR_WRONG_INPUT = "❌ Пожалуйста, отправь изображение (jpg/png), PDF (1 страница) или прямую ссылку на картинку."
 ERROR_PDF_PAGES = "❌ В PDF должно быть не больше одной страницы."
 ERROR_LINK = "❌ Не удалось скачать изображение по ссылке. Нужна прямая ссылка на файл (jpg/png)."
@@ -85,6 +99,15 @@ def kb_result_back() -> InlineKeyboardMarkup:
     """Клавиатура на экране результата, чтобы вернуться к загрузке нового плана."""
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="↩️ Загрузить другой план", callback_data="plan.back_to_upload")]]
+    )
+
+def kb_plan_result_actions(result_msg_id: int) -> InlineKeyboardMarkup:
+    """Две кнопки под результатом: повторить генерацию и загрузить другой план."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Сгенерировать ещё раз", callback_data=f"p.rep={result_msg_id}")],
+            [InlineKeyboardButton(text="↩️ Загрузить другой план", callback_data="plan.back_to_upload")],
+        ]
     )
 
 
@@ -136,17 +159,18 @@ async def _edit_text_or_caption(msg: Message, text: str, kb: Optional[InlineKeyb
 
 async def _edit_or_replace_with_photo_file(
     bot: Bot, msg: Message, file_path: str, caption: str, kb: Optional[InlineKeyboardMarkup] = None
-) -> None:
+) -> Message:
     try:
         media = InputMediaPhoto(media=FSInputFile(file_path), caption=caption)
-        await msg.edit_media(media=media, reply_markup=kb)
-        return
+        new_msg: Message = await msg.edit_media(media=media, reply_markup=kb)
+        return new_msg
     except TelegramBadRequest:
         try:
             await msg.delete()
         except TelegramBadRequest:
             pass
-        await bot.send_photo(chat_id=msg.chat.id, photo=FSInputFile(file_path), caption=caption, reply_markup=kb)
+        new_msg = await bot.send_photo(chat_id=msg.chat.id, photo=FSInputFile(file_path), caption=caption, reply_markup=kb)
+        return new_msg
 
 async def _edit_or_replace_with_photo_url(
     bot: Bot, msg: Message, url: str, caption: str, kb: Optional[InlineKeyboardMarkup] = None
@@ -238,13 +262,9 @@ async def handle_plan_file(message: Message, state: FSMContext, bot: Bot):
         return
 
     if image_bytes:
-        # сохраняем временно на диск сами (без save_image_as_png), имя — по user_id
-        plan_path = get_file_path(f"img/tmp/plan_{user_id}.png")
-        os.makedirs(os.path.dirname(plan_path), exist_ok=True)
-        with open(plan_path, "wb") as f:
-            f.write(image_bytes)
-
-        await state.update_data(plan_path=plan_path)
+        # NEW: сохраняем исходный план как <msg_id>.png в домашнем хранилище (persistent)
+        plan_path = save_bytes_as_png(image_bytes, message.message_id)
+        await state.update_data(plan_path=str(plan_path), src_msg_id=message.message_id)
         await message.answer(TEXT_GET_VIZ, reply_markup=kb_visualization_style())
         await state.set_state(FloorPlanStates.waiting_for_visualization_style)
 
@@ -332,41 +352,65 @@ async def handle_style_plan(callback: CallbackQuery, state: FSMContext, bot: Bot
             coro=coro,
         )
 
-        # 3) по готовности — ЗАМЕНЯЕМ это же сообщение на фото-результат
+        # 3) по готовности — ЗАМЕНЯЕМ это же сообщение на фото-результат + 2 кнопки, сохраняем запись в БД
         if image_url:
-            # Если пришёл data:URL — отправляем как файл, а не как URL
+            # Грузим байты (поддерживаем data:URL и обычный URL)
             if image_url.startswith("data:"):
-                local_path = _save_data_url_to_file(image_url, user_id)
-                try:
-                    await _edit_or_replace_with_photo_file(
-                        bot=bot,
-                        msg=callback.message,
-                        file_path=local_path,
-                        caption=TEXT_FINAL,
-                        kb=kb_result_back(),
-                    )
-                finally:
-                    safe_remove(local_path)
-                success = True
+                import base64, re
+                m = re.match(r"^data:(?P<mime>[^;]+);base64,(?P<data>.+)$", image_url)
+                if not m:
+                    await _edit_text_or_caption(callback.message, SORRY_TRY_AGAIN, kb=kb_back_to_tools())
+                    return
+                image_bytes = base64.b64decode(m.group("data"))
             else:
-                try:
-                    media = InputMediaPhoto(media=image_url, caption=TEXT_FINAL)
-                    await callback.message.edit_media(media=media, reply_markup=kb_result_back())
-                except TelegramBadRequest:
-                    # фоллбэк — отправим отдельным сообщением
-                    await bot.send_photo(
-                        chat_id=user_id,
-                        photo=image_url,
-                        caption=TEXT_FINAL,
-                        reply_markup=kb_result_back(),
-                    )
-                success = True
+                image_bytes = await download_image_from_url(image_url)
+            if not image_bytes:
+                await _edit_text_or_caption(callback.message, SORRY_TRY_AGAIN, kb=kb_back_to_tools())
+                return
+
+            planned_msg_id = callback.message.message_id
+            planned_path = save_bytes_as_png(image_bytes, planned_msg_id)
+
+            result_msg = await _edit_or_replace_with_photo_file(
+                bot=bot,
+                msg=callback.message,
+                file_path=str(planned_path),
+                caption=TEXT_FINAL,
+                kb=None
+            )
+            final_msg_id = result_msg.message_id
+            final_path = planned_path if final_msg_id == planned_msg_id else rename_for_new_msg_id(planned_path, final_msg_id)
+
+            # Две кнопки под результатом
+            kb = kb_plan_result_actions(result_msg_id=final_msg_id)
+            try:
+                await bot.edit_message_reply_markup(
+                    chat_id=callback.message.chat.id,
+                    message_id=final_msg_id,
+                    reply_markup=kb
+                )
+            except TelegramBadRequest as e:
+                LOG.warning("set markup failed: %s", e)
+
+            # Сохраняем запись в БД (для будущего retry)
+            try:
+                save_plan_generation_record(
+                    result_msg_id=final_msg_id,
+                    user_id=user_id,
+                    chat_id=callback.message.chat.id,
+                    visualization_style=viz or "sketch",
+                    interior_style=interior_style or "Модерн",
+                    src_image_path=str(plan_path or ""),
+                    result_image_path=str(final_path),
+                )
+            except Exception as e:
+                LOG.error("save_plan_generation_record error: %s", e)
+            success = True
         else:
             await _edit_text_or_caption(callback.message, SORRY_TRY_AGAIN, kb=kb_back_to_tools())
 
     finally:
-        if not success and plan_path and os.path.exists(plan_path):
-            safe_remove(plan_path)
+        # Исходные файлы не удаляем (persistent), чистим только state
         await state.clear()
 
 
@@ -507,6 +551,114 @@ async def handle_plan_back_to_upload(callback: CallbackQuery, state: FSMContext,
 
     await callback.answer()
 
+
+# ===========================
+# Retry: «Попробовать ещё раз»
+# ===========================
+async def handle_plan_retry_generation(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    """
+    callback_data: p.rep=<result_msg_id>
+    Логика:
+      1) находим запись по result_msg_id;
+      2) отправляем «часики» как фото из меню (plan.png) → media-edit сохранит msg_id;
+      3) повторно генерируем по тем же параметрам;
+      4) заменяем media в том же сообщении, ставим 2 кнопки;
+      5) сохраняем новую запись с новым result_msg_id.
+    """
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+
+    data = (callback.data or "")
+    try:
+        _, raw = data.split("=", 1)
+        ref_msg_id = int(raw)
+    except Exception:
+        await callback.answer("Ошибка параметров.", show_alert=True)
+        return
+
+    rec = get_plan_generation_by_result_msg_id(ref_msg_id)
+    if rec is None:
+        await callback.answer("Запись не найдена.", show_alert=True)
+        return
+
+    # Отправляем фото-«часики» (обложка)
+    wait_msg = await bot.send_photo(
+        chat_id=callback.message.chat.id,
+        photo=FSInputFile(get_file_path('img/bot/plan.png')),
+        caption=TEXT_WAIT
+    )
+
+    # Повторная генерация
+    coro = generate_floor_plan(
+        floor_plan_path=rec.src_image_path,
+        visualization_style=rec.visualization_style,
+        interior_style=rec.interior_style,
+    )
+    image_url = await run_long_operation_with_action(
+        bot=bot,
+        chat_id=callback.from_user.id,
+        action=ChatAction.UPLOAD_PHOTO,
+        coro=coro,
+    )
+
+    if not image_url:
+        await _edit_text_or_caption(wait_msg, SORRY_TRY_AGAIN)
+        return
+
+    # Получаем байты результата
+    if image_url.startswith("data:"):
+        import base64, re
+        m = re.match(r"^data:(?P<mime>[^;]+);base64,(?P<data>.+)$", image_url)
+        if not m:
+            await _edit_text_or_caption(wait_msg, SORRY_TRY_AGAIN)
+            return
+        image_bytes = base64.b64decode(m.group("data"))
+    else:
+        image_bytes = await download_image_from_url(image_url)
+    if not image_bytes:
+        await _edit_text_or_caption(wait_msg, SORRY_TRY_AGAIN)
+        return
+
+    planned_msg_id = wait_msg.message_id
+    planned_path = save_bytes_as_png(image_bytes, planned_msg_id)
+
+    result_msg = await _edit_or_replace_with_photo_file(
+        bot=bot,
+        msg=wait_msg,
+        file_path=str(planned_path),
+        caption=TEXT_FINAL,
+        kb=None
+    )
+    final_msg_id = result_msg.message_id
+    final_path = planned_path if final_msg_id == planned_msg_id else rename_for_new_msg_id(planned_path, final_msg_id)
+
+    # Две кнопки под результатом
+    kb = kb_plan_result_actions(result_msg_id=final_msg_id)
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=callback.message.chat.id,
+            message_id=final_msg_id,
+            reply_markup=kb
+        )
+    except TelegramBadRequest as e:
+        LOG.warning("set markup failed (retry): %s", e)
+
+    # Новая запись в БД для нового результата
+    try:
+        save_plan_generation_record(
+            result_msg_id=final_msg_id,
+            user_id=callback.from_user.id,
+            chat_id=callback.message.chat.id,
+            visualization_style=rec.visualization_style,
+            interior_style=rec.interior_style,
+            src_image_path=rec.src_image_path,
+            result_image_path=str(final_path),
+        )
+    except Exception as e:
+        LOG.error("save_plan_generation_record (retry) error: %s", e)
+
 # ===========================
 # Router
 # ===========================
@@ -526,3 +678,5 @@ def router(rt: Router) -> None:
     rt.callback_query.register(handle_style_plan, FloorPlanStates.waiting_for_style)
     # Кнопка «назад к загрузке плана» с экрана результата
     rt.callback_query.register(handle_plan_back_to_upload, F.data == "plan.back_to_upload")
+    # Retry
+    rt.callback_query.register(handle_plan_retry_generation, F.data.startswith("p.rep="))
