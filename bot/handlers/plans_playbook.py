@@ -1,8 +1,6 @@
 # smart_agent/bot/handlers/plans_playbook.py
 from __future__ import annotations
 import logging
-
-import os
 import fitz
 import aiohttp
 from typing import Optional
@@ -20,7 +18,6 @@ from aiogram.exceptions import TelegramBadRequest
 from bot.config import get_file_path
 from bot.states.states import FloorPlanStates
 from bot.utils.chat_actions import run_long_operation_with_action
-from bot.utils.file_utils import safe_remove
 from bot.utils.image_processor import download_image_from_url
 from bot.handlers.payment_handler import (
     ensure_access,        # централизованная проверка подписки/триала
@@ -218,7 +215,6 @@ async def handle_plan_file(message: Message, state: FSMContext, bot: Bot):
     """
     # Чат-статус
     await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-    user_id = message.from_user.id
     image_bytes: bytes | None = None
 
     if message.photo:
@@ -336,7 +332,6 @@ async def handle_style_plan(callback: CallbackQuery, state: FSMContext, bot: Bot
         kb=None,
     )
 
-    success = False
     try:
         # 2) чат-статус во время долгой операции — теперь передаём параметры,
         # а промпт собирается на стороне executor
@@ -555,7 +550,7 @@ async def handle_plan_back_to_upload(callback: CallbackQuery, state: FSMContext,
 # ===========================
 # Retry: «Попробовать ещё раз»
 # ===========================
-async def handle_plan_retry_generation(callback: CallbackQuery, state: FSMContext, bot: Bot):
+async def handle_plan_retry_generation(callback: CallbackQuery, bot: Bot):
     """
     callback_data: p.rep=<result_msg_id>
     Логика:
