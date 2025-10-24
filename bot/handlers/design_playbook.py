@@ -368,12 +368,16 @@ async def handle_style_redesign(callback: CallbackQuery, state: FSMContext, bot:
                 final_msg_id = result_msg.message_id
                 final_path = planned_path if final_msg_id == planned_msg_id else rename_for_new_msg_id(planned_path, final_msg_id)
 
-                # Вешаем «Повторить/Назад»
+                # Вешаем «Повторить/Попробовать другое» (надёжно — через bot.edit_message_reply_markup)
                 kb = kb_result_actions(result_msg_id=final_msg_id, back_cb="redesign.back_to_upload")
                 try:
-                    await result_msg.edit_reply_markup(reply_markup=kb)
-                except TelegramBadRequest:
-                    pass
+                    await bot.edit_message_reply_markup(
+                        chat_id=callback.message.chat.id,
+                        message_id=final_msg_id,
+                        reply_markup=kb
+                    )
+                except TelegramBadRequest as e:
+                    print(f"[kb] redesign set markup failed: {e}")
 
                 # Сохраняем запись в БД
                 try:
@@ -556,9 +560,13 @@ async def handle_style_zero(callback: CallbackQuery, state: FSMContext, bot: Bot
 
                 kb = kb_result_actions(result_msg_id=final_msg_id, back_cb="zerodesign.back_to_upload")
                 try:
-                    await result_msg.edit_reply_markup(reply_markup=kb)
-                except TelegramBadRequest:
-                    pass
+                    await bot.edit_message_reply_markup(
+                        chat_id=callback.message.chat.id,
+                        message_id=final_msg_id,
+                        reply_markup=kb
+                    )
+                except TelegramBadRequest as e:
+                    print(f"[kb] zero set markup failed: {e}")
 
                 try:
                     save_generation_record(
@@ -727,9 +735,13 @@ async def handle_retry_generation(callback: CallbackQuery, state: FSMContext, bo
     back_cb = "redesign.back_to_upload" if mode == "redesign" else "zerodesign.back_to_upload"
     kb = kb_result_actions(result_msg_id=final_msg_id, back_cb=back_cb)
     try:
-        await result_msg.edit_reply_markup(reply_markup=kb)
-    except TelegramBadRequest:
-        pass
+        await bot.edit_message_reply_markup(
+            chat_id=callback.message.chat.id,
+            message_id=final_msg_id,
+            reply_markup=kb
+        )
+    except TelegramBadRequest as e:
+        print(f"[kb] retry set markup failed: {e}")
 
     try:
         save_generation_record(
