@@ -140,12 +140,12 @@ def kb_result_back_zero() -> InlineKeyboardMarkup:
         inline_keyboard=[[InlineKeyboardButton(text="↩️ Загрузить другое фото", callback_data="zerodesign.back_to_upload")]]
     )
 
-# NEW: клавиатура с «Повторить» и «Назад»
+# NEW: клавиатура с «Повторить» и «Попробовать другое»
 def kb_result_actions(*, result_msg_id: int, back_cb: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🔁 Попробовать ещё раз", callback_data=f"d.rep={int(result_msg_id)}")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data=back_cb)],
+            [InlineKeyboardButton(text="🆕 Попробовать другое", callback_data=back_cb)],
         ]
     )
 
