@@ -472,6 +472,11 @@ async def kick_then_unban(user_id: int) -> bool:
                 revoke_history=False,  # историю не трогаем
             ))
         return True
+    except ValueError as e:
+        # Пользователь не найден (удалён аккаунт, заблокировал бота и т.д.)
+        logger.warning("Could not find user entity for user_id=%s: %s. User may have deleted account or blocked bot.", user_id, e)
+        # Если пользователь не найден, считаем операцию успешной (пользователь уже не в чате)
+        return True
     except errors.RPCError as e:
         try:
             await bot_send_message(settings.ADMIN_ID, f"⚠️ Не удалось удалить пользователя {user_id} из чата. Ошибка: {e}")
