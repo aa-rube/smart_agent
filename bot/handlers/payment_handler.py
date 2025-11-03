@@ -487,8 +487,8 @@ def build_trial_offer(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
         "plan_amount": plan["amount"],
     }
 
-    # Кулдаун 60 дней на повторный пробный период
-    if not app_db.is_trial_allowed(user_id, cooldown_days=60):
+    # Кулдаун 90 дней на повторный пробный период/покупку за 1 рубль (учитывает покупки подписки)
+    if not app_db.is_trial_allowed(user_id, cooldown_days=90):
         pay_url = None
     else:
         try:
@@ -658,6 +658,9 @@ def _create_links_for_selection(user_id: int) -> tuple[Optional[str], Optional[s
         first_amount = plan["trial_amount"]
         phase = "trial"
         desc_suffix = " (пробный период)"
+        # Проверяем кулдаун 90 дней для пробного периода за 1 рубль
+        if not app_db.is_trial_allowed(user_id, cooldown_days=90):
+            return (None, None)  # Кулдаун не прошёл - не создаём ссылки
     else:
         first_amount = plan["amount"]
         phase = "renewal"  # первый полный платёж трактуем как период подписки
@@ -783,10 +786,10 @@ async def toggle_tos(cb: CallbackQuery) -> None:
         # Создаём ссылки ТОЛЬКО сейчас — после согласия
         pay_url_card, pay_url_sbp = _create_links_for_selection(user_id)
         # Если пробный период запрещён (кулдаун) — _create_links_for_selection() вернёт (None, None)
-        if not (pay_url_card or pay_url_sbp) and not app_db.is_trial_allowed(user_id, cooldown_days=60):
+        if not (pay_url_card or pay_url_sbp) and not app_db.is_trial_allowed(user_id, cooldown_days=90):
             text = (
                 f"{header}\n\n"
-                "❗ Повторный пробный доступ доступен раз в 60 дней. "
+                "❗ Повторный пробный доступ доступен раз в 90 дней после последней покупки. "
                 "Сейчас оформить пробный период нельзя. Выберите тариф и оформите подписку."
             )
         _LAST_PAY_URL_CARD[user_id] = pay_url_card or ""
@@ -854,6 +857,11 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             except Exception:
                 user_id_fail, sub_id = None, None
             if user_id_fail:
+                # Записываем событие неуспешного платежа в БД
+                try:
+                    app_db.event_add(user_id_fail, f"PAYMENT:FAIL status={status} payment_id={payment_id}")
+                except Exception:
+                    logger.warning("Failed to log payment fail event for user %s", user_id_fail)
                 # ⚡ сбрасываем кэш «payment_ok» при любом финальном фейле
                 try:
                     await invalidate_payment_ok_cache(user_id_fail)
@@ -954,6 +962,12 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
 
         # Убедимся, что пользователь есть в app DB (для пробного периода/истории)
         app_db.check_and_add_user(user_id)
+
+        # Записываем событие успешного платежа в БД
+        try:
+            app_db.event_add(user_id, f"PAYMENT:SUCCESS status={status} payment_id={payment_id} phase={phase} plan={code}")
+        except Exception:
+            logger.warning("Failed to log payment success event for user %s", user_id)
 
         # Успешные сценарии
         if is_recurring and phase == "trial":

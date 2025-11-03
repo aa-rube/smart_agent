@@ -329,9 +329,87 @@ class AppRepository:
         left = cooldown_days - max(0, delta)
         return max(0, left)
 
-    def is_trial_allowed(self, user_id: int, *, cooldown_days: int = 60) -> bool:
-        """Разрешён ли повторный триал с учётом кулдауна."""
-        return self.trial_cooldown_days_left(user_id, cooldown_days=cooldown_days) == 0
+    def get_last_purchase_action_date(self, user_id: int) -> Optional[datetime]:
+        """
+        Возвращает дату последней итерации покупки (успех/неуспех, автосписание, любое действие пользователя).
+        Проверяет:
+        - последний триал (updated_at из trials)
+        - последняя подписка (updated_at из subscriptions)
+        - последний успешный платеж (last_charge_at из subscriptions)
+        - последняя попытка автосписания (attempted_at из charge_attempts)
+        - последний платеж (created_at из payment_log где статус успешный/отменен/истек)
+        Возвращает максимум из всех этих дат.
+        """
+        dates = []
+        
+        # 1. Последний триал (updated_at - последнее обновление триала)
+        with self._session() as s:
+            trial_rec = s.get(Trial, user_id)
+            if trial_rec:
+                dates.append(to_aware_utc(trial_rec.updated_at))
+        
+        # 2. Последняя подписка и последний успешный платеж
+        try:
+            from bot.utils.billing_db import SessionLocal as BillingSessionLocal, Subscription, ChargeAttempt, PaymentLog
+            with BillingSessionLocal() as s:
+                # Последняя подписка (updated_at)
+                sub_rec = (
+                    s.query(Subscription)
+                    .filter(Subscription.user_id == user_id)
+                    .order_by(Subscription.updated_at.desc())
+                    .first()
+                )
+                if sub_rec:
+                    dates.append(to_aware_utc(sub_rec.updated_at))
+                    if sub_rec.last_charge_at:
+                        dates.append(to_aware_utc(sub_rec.last_charge_at))
+                
+                # Последняя попытка автосписания
+                attempt_rec = (
+                    s.query(ChargeAttempt)
+                    .filter(ChargeAttempt.user_id == user_id)
+                    .order_by(ChargeAttempt.attempted_at.desc())
+                    .first()
+                )
+                if attempt_rec:
+                    dates.append(to_aware_utc(attempt_rec.attempted_at))
+                
+                # Последний платеж (любой статус - успех, отмена, истечение)
+                payment_rec = (
+                    s.query(PaymentLog)
+                    .filter(
+                        PaymentLog.user_id == user_id,
+                        PaymentLog.status.isnot(None),
+                        PaymentLog.status.in_(('succeeded', 'canceled', 'expired'))
+                    )
+                    .order_by(PaymentLog.created_at.desc())
+                    .first()
+                )
+                if payment_rec:
+                    dates.append(to_aware_utc(payment_rec.created_at))
+        except Exception:
+            pass  # billing_db может быть недоступен
+        
+        if not dates:
+            return None
+        
+        # Возвращаем максимум из всех дат
+        valid_dates = [d for d in dates if d is not None]
+        return max(valid_dates) if valid_dates else None
+
+    def is_trial_allowed(self, user_id: int, *, cooldown_days: int = 90) -> bool:
+        """
+        Разрешён ли повторный триал/покупка за 1 рубль с учётом кулдауна.
+        Проверяет не только триал, но и любые покупки подписки.
+        Кулдаун: 90 дней с последней итерации покупки (успех/неуспех, автосписание, любое действие).
+        """
+        last_action = self.get_last_purchase_action_date(user_id)
+        if last_action is None:
+            return True  # Не было покупок - разрешено
+        
+        now = now_utc()
+        delta = (now - last_action).days
+        return delta >= cooldown_days
 
     def is_trial_active(self, user_id: int) -> bool:
         until = self.get_trial_until(user_id)
@@ -707,7 +785,16 @@ def trial_cooldown_days_left(user_id: int, *, cooldown_days: int = 60) -> int:
     return _repo.trial_cooldown_days_left(user_id, cooldown_days=cooldown_days)
 
 
-def is_trial_allowed(user_id: int, *, cooldown_days: int = 60) -> bool:
+def get_last_purchase_action_date(user_id: int) -> Optional[datetime]:
+    """Возвращает дату последней итерации покупки (успех/неуспех, автосписание, любое действие пользователя)."""
+    return _repo.get_last_purchase_action_date(user_id)
+
+def is_trial_allowed(user_id: int, *, cooldown_days: int = 90) -> bool:
+    """
+    Разрешён ли повторный триал/покупка за 1 рубль с учётом кулдауна.
+    Проверяет не только триал, но и любые покупки подписки.
+    Кулдаун: 90 дней с последней итерации покупки.
+    """
     return _repo.is_trial_allowed(user_id, cooldown_days=cooldown_days)
 
 
