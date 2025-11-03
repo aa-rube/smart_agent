@@ -392,9 +392,18 @@ def _build_settings_text(user_id: int) -> str:
     )
     return text
 
-def kb_rates() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎁 3 дня за 1₽", callback_data="sub:choose:1m")],
+def kb_rates(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
+    """
+    Строит клавиатуру тарифов.
+    Кнопка "🎁 3 дня за 1₽" показывается только если доступен пробный период (кулдаун 90 дней прошёл).
+    """
+    rows: List[List[InlineKeyboardButton]] = []
+    
+    # Кнопка "🎁 3 дня за 1₽" показывается только если доступен пробный период
+    if user_id is not None and app_db.is_trial_allowed(user_id, cooldown_days=90):
+        rows.append([InlineKeyboardButton(text="🎁 3 дня за 1₽", callback_data="sub:choose:1m")])
+    
+    rows.extend([
         [
             InlineKeyboardButton(text="1 месяц", callback_data="sub:choose:1m"),
             InlineKeyboardButton(text="3 месяца", callback_data="sub:choose:3m"),
@@ -403,6 +412,7 @@ def kb_rates() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="12 месяцев", callback_data="sub:choose:12m")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")],
     ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _trial_status_line(user_id: int) -> Optional[str]:
@@ -705,10 +715,11 @@ def _create_links_for_selection(user_id: int) -> tuple[Optional[str], Optional[s
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def show_rates(evt: Message | CallbackQuery) -> None:
+    user_id = evt.from_user.id if isinstance(evt, CallbackQuery) else evt.from_user.id
     if isinstance(evt, CallbackQuery):
-        await _edit_safe(evt, RATES_TEXT, kb_rates())
+        await _edit_safe(evt, RATES_TEXT, kb_rates(user_id))
     else:
-        await evt.answer(RATES_TEXT, reply_markup=kb_rates(), parse_mode="HTML")
+        await evt.answer(RATES_TEXT, reply_markup=kb_rates(user_id), parse_mode="HTML")
 
 
 async def choose_rate(cb: CallbackQuery) -> None:
@@ -716,13 +727,24 @@ async def choose_rate(cb: CallbackQuery) -> None:
     try:
         _, _, code = cb.data.split(":", 2)  # sub:choose:<code>
     except Exception:
-        await _edit_safe(cb, "Не удалось определить тариф. Попробуйте ещё раз.", kb_rates())
+        await _edit_safe(cb, "Не удалось определить тариф. Попробуйте ещё раз.", kb_rates(user_id))
         return
 
     plan = _plan_by_code(code)
     if not plan:
-        await _edit_safe(cb, "Такого тарифа нет. Выберите из списка.", kb_rates())
+        await _edit_safe(cb, "Такого тарифа нет. Выберите из списка.", kb_rates(user_id))
         return
+
+    # Проверяем кулдаун для пробного периода за 1 рубль (только для тарифа 1m с trial_amount)
+    has_trial = bool(plan.get("trial_amount"))
+    if has_trial and code == "1m":
+        if not app_db.is_trial_allowed(user_id, cooldown_days=90):
+            await _edit_safe(
+                cb,
+                "❗ Повторный пробный доступ доступен раз в 90 дней после последней покупки. Сейчас оформить пробный период нельзя. Выберите тариф и оформите подписку.",
+                kb_rates(user_id)
+            )
+            return
 
     description = f"Подписка на {plan['label']}"
     # Сохраняем выбор тарифа — ссылки пока не создаём
@@ -786,12 +808,7 @@ async def toggle_tos(cb: CallbackQuery) -> None:
         # Создаём ссылки ТОЛЬКО сейчас — после согласия
         pay_url_card, pay_url_sbp = _create_links_for_selection(user_id)
         # Если пробный период запрещён (кулдаун) — _create_links_for_selection() вернёт (None, None)
-        if not (pay_url_card or pay_url_sbp) and not app_db.is_trial_allowed(user_id, cooldown_days=90):
-            text = (
-                f"{header}\n\n"
-                "❗ Повторный пробный доступ доступен раз в 90 дней после последней покупки. "
-                "Сейчас оформить пробный период нельзя. Выберите тариф и оформите подписку."
-            )
+        # В этом случае просто не показываем кнопки оплаты
         _LAST_PAY_URL_CARD[user_id] = pay_url_card or ""
         _LAST_PAY_URL_SBP[user_id]  = pay_url_sbp or ""
     else:
@@ -1217,7 +1234,7 @@ async def open_manage(cb: CallbackQuery) -> None:
     user_id = cb.from_user.id
     # Управление доступно, если есть активный пробный период или оплаченный/грейс-доступ
     if not (app_db.is_trial_active(user_id) or _has_paid_or_grace_access(user_id)):
-        await _edit_safe(cb, "Подписка не активна. Выберите тариф для оформления:", kb_rates())
+        await _edit_safe(cb, "Подписка не активна. Выберите тариф для оформления:", kb_rates(user_id))
         return
     await _edit_safe(
         cb,
