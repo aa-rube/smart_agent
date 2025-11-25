@@ -20,8 +20,8 @@ from bot.utils.notification import run_notification_scheduler
 
 from bot.handlers.payment_handler import process_yookassa_webhook
 from bot.utils import youmoney
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
+from bot.utils.time_helpers import now_msk, to_aware_msk
 from bot.handlers.description_playbook import register_http_endpoints
 
 
@@ -234,45 +234,112 @@ async def main():
         """
         while not shutdown_event.is_set():
             try:
-                # timezone-aware MSK:
-                now_msk = datetime.now(msk)
-                due = billing_db.subscriptions_due(now=now_msk, limit=100)
+                # Используем МСК везде
+                now_msk_val = now_msk()
+                due = billing_db.subscriptions_due(now=now_msk_val, limit=100)
                 for sub in due:
                     if shutdown_event.is_set():
                         break
                     
                     user_id = sub["user_id"]
                     pm_id = sub["payment_method_id"]
+                    subscription_id = sub.get("id")
                     # если токена нет (триал был без сохранённой карты) — пропускаем
                     if not pm_id:
-                        logging.info("Skip recurring: subscription %s for user %s has no payment_method_id", sub.get("id"), user_id)
+                        logging.info("Skip recurring: subscription %s for user %s has no payment_method_id", subscription_id, user_id)
                         continue
                     amount = sub["amount_value"]
                     plan_code = sub["plan_code"]
 
+                    # Проверка на дубликаты: есть ли активная попытка с payment_id для этой подписки
+                    try:
+                        from bot.utils.billing_db import SessionLocal, ChargeAttempt
+                        with SessionLocal() as s:
+                            existing_attempt = (
+                                s.query(ChargeAttempt)
+                                .filter(
+                                    ChargeAttempt.subscription_id == subscription_id,
+                                    ChargeAttempt.status == "created",
+                                    ChargeAttempt.payment_id.isnot(None)
+                                )
+                                .first()
+                            )
+                            if existing_attempt:
+                                logging.info("Skip recurring: active attempt with payment_id exists (sub=%s, user=%s, payment_id=%s)", 
+                                           subscription_id, user_id, existing_attempt.payment_id)
+                                continue
+                    except Exception as e:
+                        logging.warning("Failed to check for duplicate attempts: %s", e)
+
+                    # Валидация payment_method_id перед созданием платежа
+                    if not pm_id or not isinstance(pm_id, str) or len(pm_id.strip()) == 0:
+                        logging.warning(
+                            "Invalid payment_method_id for subscription %s, user %s: %s",
+                            subscription_id, user_id, pm_id
+                        )
+                        continue
+                    
                     # Второй щит + атомарная фиксация попытки (created)
+                    attempt_id = None
                     try:
                         attempt_id = billing_db.precharge_guard_and_attempt(
-                            subscription_id=sub["id"],
-                            now=now_msk.astimezone(ZoneInfo("UTC")),
+                            subscription_id=subscription_id,
+                            now=now_msk_val,  # Передаём МСК
                             user_id=user_id,
                         )
                         if not attempt_id:
-                            logging.info("Skip recurring: guard blocked (sub=%s, user=%s)", sub.get("id"), user_id)
+                            logging.info("Skip recurring: guard blocked (sub=%s, user=%s)", subscription_id, user_id)
                             continue
+                        
+                        # Создаём платёж с передачей attempt_id для обработки ошибок
                         pay_id = youmoney.charge_saved_method(
                             user_id=user_id,
                             payment_method_id=pm_id,
                             amount_rub=amount,
                             description=f"Подписка {plan_code}",
                             metadata={"is_recurring": "1", "plan_code": plan_code},
-                            subscription_id=sub.get("id"),
+                            subscription_id=subscription_id,
                             record_attempt=False,
+                            attempt_id=attempt_id,  # Передаём для пометки как failed при ошибке
                         )
                         billing_db.link_payment_to_attempt(attempt_id=attempt_id, payment_id=pay_id)
-                        logging.info("Recurring charge created: %s (user=%s, sub=%s)", pay_id, user_id, sub.get("id"))
+                        logging.info("Recurring charge created: %s (user=%s, sub=%s, attempt=%s)", 
+                                   pay_id, user_id, subscription_id, attempt_id)
+                    except ValueError as e:
+                        # Ошибки валидации - логируем и помечаем попытку
+                        logging.error(
+                            "Validation error creating recurring charge for user %s, subscription %s: %s",
+                            user_id, subscription_id, e
+                        )
+                        if attempt_id:
+                            try:
+                                from bot.utils.billing_db import SessionLocal, ChargeAttempt
+                                with SessionLocal() as s, s.begin():
+                                    attempt_rec = s.get(ChargeAttempt, attempt_id)
+                                    if attempt_rec:
+                                        attempt_rec.status = "failed"
+                                        s.flush()
+                            except Exception as mark_error:
+                                logging.warning("Failed to mark attempt %s as failed: %s", attempt_id, mark_error)
+                        continue
                     except Exception as e:
-                        logging.exception("Failed to create recurring charge for user %s: %s", user_id, e)
+                        # Другие ошибки - логируем с полным контекстом
+                        logging.exception(
+                            "Failed to create recurring charge for user %s, subscription %s, attempt %s: %s",
+                            user_id, subscription_id, attempt_id, e
+                        )
+                        # Помечаем попытку как failed при ошибке (charge_saved_method уже должен был это сделать,
+                        # но делаем дополнительную проверку на всякий случай)
+                        if attempt_id:
+                            try:
+                                from bot.utils.billing_db import SessionLocal, ChargeAttempt
+                                with SessionLocal() as s, s.begin():
+                                    attempt_rec = s.get(ChargeAttempt, attempt_id)
+                                    if attempt_rec and attempt_rec.status == "created":
+                                        attempt_rec.status = "failed"
+                                        s.flush()
+                            except Exception as mark_error:
+                                logging.warning("Failed to mark attempt %s as failed: %s", attempt_id, mark_error)
                         continue
 
                     # перенос next_charge_at и продление — только по вебхуку

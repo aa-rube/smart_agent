@@ -4,6 +4,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from urllib.parse import quote_plus
+from zoneinfo import ZoneInfo
 
 load_dotenv()
 
@@ -68,6 +69,9 @@ DB_URL = f"mysql+pymysql://{MYSQL_USER}:{quote_plus(MYSQL_PASSWORD)}@{MYSQL_HOST
 YOUMONEY_SHOP_ID = os.getenv("YOUMONEY_SHOP_ID")
 YOUMONEY_SECRET_KEY = os.getenv("YOUMONEY_SECRET_KEY")
 YOUMONEY_PORT = int(os.getenv("YOUMONEY_PORT"))
+
+# === Timezone ===
+TIMEZONE = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow"))
 
 
 def get_file_path(relative_path: str) -> str:

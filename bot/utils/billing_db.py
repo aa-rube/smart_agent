@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from typing import Optional, Any, List, Dict
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
 
 from sqlalchemy import (
     create_engine, text, inspect,
@@ -17,23 +16,10 @@ from sqlalchemy.orm import (
 
 from bot.config import DB_URL  # <— общий DSN для биллинга
 from bot.utils.redis_repo import _redis as _redis_client  # используем уже настроенный Redis из проекта
+from bot.utils.time_helpers import (
+    now_msk, to_aware_msk, to_utc_for_db, from_db_naive
+)
 import json
-
-MSK = ZoneInfo("Europe/Moscow")
-
-# ────────────
-# UTC helpers
-# ────────────
-def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
-
-def to_aware_utc(dt: Optional[datetime]) -> Optional[datetime]:
-    """
-    MySQL DATETIME часто «naive». Приводим к aware-UTC для корректной арифметики.
-    """
-    if dt is None:
-        return None
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
 
 
 # =========================
@@ -87,8 +73,8 @@ class Subscription(Base):
     last_fail_notice_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     cancel_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_msk, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_msk, nullable=False)
 
     __table_args__ = (
         # быстрые выборки по дью и статусам
@@ -114,7 +100,7 @@ class PaymentMethod(Base):
     exp_month: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     exp_year:  Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_msk, nullable=False)
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -132,7 +118,7 @@ class ChargeAttempt(Base):
     # Якорь "одного платежа/цикла": значение next_charge_at на момент ПЕРВОЙ попытки этого цикла
     # Все попытки с одинаковым due_at относятся к одной "истории платежа"
     due_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_msk, nullable=False)
     __table_args__ = (
         # для быстрых окон по попыткам
         {},
@@ -154,7 +140,7 @@ class PaymentLog(Base):
     metadata_json:    Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     raw_payload_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    created_at:   Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    created_at:   Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_msk, nullable=False)
     processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -229,7 +215,7 @@ class BillingRepository:
             if not rec:
                 return None
             dt: datetime = rec[0]
-            return to_aware_utc(dt)
+            return from_db_naive(dt)
 
     def list_trial_started_map(self, user_ids: List[int]) -> Dict[int, datetime]:
         """
@@ -248,7 +234,7 @@ class BillingRepository:
             out: Dict[int, datetime] = {}
             for uid, created_at in rows:
                 if uid not in out:
-                    out[uid] = to_aware_utc(created_at)
+                    out[uid] = from_db_naive(created_at)
             return out
 
     def precharge_guard_and_attempt(self, *, subscription_id: int, now: datetime, user_id: int) -> Optional[int]:
@@ -256,9 +242,12 @@ class BillingRepository:
         В одной транзакции: перечитать подписку FOR UPDATE, проверить щиты,
         записать ChargeAttempt(status='created'), обновить last_attempt_at.
         Возвращает id попытки или None, если щит не пропустил.
+        now должен быть в МСК.
         """
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=timezone.utc)
+        # Нормализуем now к МСК
+        from bot.config import TIMEZONE
+        now = to_aware_msk(now) if now.tzinfo is None else now.astimezone(TIMEZONE)
+        
         with self._session() as s, s.begin():
             rec: Subscription | None = s.query(Subscription).with_for_update().filter(Subscription.id == subscription_id).one_or_none()
             if rec is None or rec.status != "active" or rec.payment_method_id is None:
@@ -266,32 +255,53 @@ class BillingRepository:
             # щит: макс фейлов В ТЕКУЩЕМ ЦИКЛЕ (consecutive_failures копится с последнего успеха)
             if (rec.consecutive_failures or 0) >= 6:
                 return None
-            # щит: пауза 12ч (last_attempt_at может быть naive → нормализуем)
-            last_attempt_aware = to_aware_utc(rec.last_attempt_at)
+            # щит: пауза 12ч (last_attempt_at может быть naive → нормализуем к МСК)
+            last_attempt_aware = from_db_naive(rec.last_attempt_at)
             if last_attempt_aware is not None and (now - last_attempt_aware) < timedelta(hours=12):
                 return None
             # щит: 2 попытки/24ч
             since_24h = now - timedelta(hours=24)
+            # Конвертируем для сравнения с БД (БД хранит в UTC)
+            since_24h_utc = to_utc_for_db(since_24h)
             cnt_24h = s.query(ChargeAttempt).filter(
                 ChargeAttempt.subscription_id == subscription_id,
-                ChargeAttempt.attempted_at >= since_24h
+                ChargeAttempt.attempted_at >= since_24h_utc
             ).count()
             if cnt_24h >= 2:
                 return None
             # due_anchor — это "какой платёж сейчас пытаемся закрыть" (значение next_charge_at на момент первой попытки)
-            due_anchor = to_aware_utc(rec.next_charge_at)
-            # записываем попытку и след на подписке
+            # Проверяем существующие незавершённые попытки для этой подписки
+            existing_attempt = (
+                s.query(ChargeAttempt)
+                .filter(
+                    ChargeAttempt.subscription_id == subscription_id,
+                    ChargeAttempt.status == "created"
+                )
+                .order_by(ChargeAttempt.attempted_at.desc())
+                .first()
+            )
+            if existing_attempt and existing_attempt.due_at:
+                # Используем due_at из существующей попытки
+                due_anchor = from_db_naive(existing_attempt.due_at)
+            else:
+                # Используем текущий next_charge_at, округляем до секунд
+                due_anchor_raw = from_db_naive(rec.next_charge_at)
+                if due_anchor_raw:
+                    due_anchor = due_anchor_raw.replace(microsecond=0)
+                else:
+                    due_anchor = None
+            # записываем попытку и след на подписке (конвертируем в UTC для БД)
             attempt = ChargeAttempt(
                 subscription_id=subscription_id,
                 user_id=user_id,
                 payment_id=None,
                 status="created",
-                attempted_at=now,
-                due_at=due_anchor,
+                attempted_at=to_utc_for_db(now),
+                due_at=to_utc_for_db(due_anchor) if due_anchor else None,
             )
             s.add(attempt)
-            rec.last_attempt_at = now
-            rec.updated_at = now
+            rec.last_attempt_at = to_utc_for_db(now)
+            rec.updated_at = to_utc_for_db(now)
             s.flush()
             return attempt.id
 
@@ -300,6 +310,9 @@ class BillingRepository:
             rec = s.query(ChargeAttempt).filter(ChargeAttempt.id == attempt_id).one_or_none()
             if rec:
                 rec.payment_id = payment_id
+            else:
+                import logging
+                logging.warning("ChargeAttempt with id=%s not found when linking payment_id=%s", attempt_id, payment_id)
 
     def list_mailing_eligible_users(self) -> List[int]:
         """
@@ -452,7 +465,8 @@ class BillingRepository:
         Возвращает количество затронутых подписок.
         """
         with self._session() as s, s.begin():
-            now = now_utc()
+            now_msk_val = now_msk()
+            now = to_utc_for_db(now_msk_val)  # Для БД храним в UTC
             # какие СБП-токены удаляем
             sbp_tokens = [
                 token for (token,) in
@@ -532,7 +546,8 @@ class BillingRepository:
         Возвращает количество затронутых подписок.
         """
         with self._session() as s, s.begin():
-            now = now_utc()
+            now_msk_val = now_msk()
+            now = to_utc_for_db(now_msk_val)  # Для БД храним в UTC
             # пометить все карты как deleted
             for pm in s.query(PaymentMethod).filter(
                 PaymentMethod.user_id == user_id, PaymentMethod.deleted_at.is_(None)
@@ -563,14 +578,38 @@ class BillingRepository:
         payment_method_id: Optional[str],
         next_charge_at: Optional[datetime],
         status: str = "active",
+        update_payment_method: bool = True,
     ) -> int:
+        """
+        Создаёт или обновляет подписку.
+        Использует SELECT FOR UPDATE для защиты от race condition.
+        update_payment_method: если False и payment_method_id=None, не обновляет существующую карту.
+        """
         with self._session() as s, s.begin():
+            # Проверяем все активные подписки пользователя с этим plan_code для защиты от дублей
             rec = (
                 s.query(Subscription)
-                .filter(Subscription.user_id == user_id, Subscription.plan_code == plan_code)
-                .one_or_none()
+                .with_for_update()
+                .filter(
+                    Subscription.user_id == user_id, 
+                    Subscription.plan_code == plan_code,
+                    Subscription.status == "active"
+                )
+                .first()
             )
+            # Если нет активной, проверяем любую (для обновления canceled)
+            if not rec:
+                rec = (
+                    s.query(Subscription)
+                    .with_for_update()
+                    .filter(Subscription.user_id == user_id, Subscription.plan_code == plan_code)
+                    .first()
+                )
             if rec is None:
+                # Конвертируем next_charge_at в UTC для БД если передан
+                next_charge_at_utc = None
+                if next_charge_at is not None:
+                    next_charge_at_utc = to_utc_for_db(to_aware_msk(next_charge_at))
                 rec = Subscription(
                     user_id=user_id,
                     plan_code=plan_code,
@@ -578,7 +617,7 @@ class BillingRepository:
                     amount_value=amount_value,
                     amount_currency=amount_currency,
                     payment_method_id=payment_method_id,
-                    next_charge_at=next_charge_at,
+                    next_charge_at=next_charge_at_utc,
                     status=status,
                 )
                 s.add(rec)
@@ -588,10 +627,20 @@ class BillingRepository:
                 rec.interval_months = interval_months
                 rec.amount_value = amount_value
                 rec.amount_currency = amount_currency or rec.amount_currency
-                rec.payment_method_id = payment_method_id  # можно None, чтобы отвязать
-                rec.next_charge_at = next_charge_at
+                # Не обновляем payment_method_id если передан None и карта уже привязана (если update_payment_method=False)
+                if update_payment_method:
+                    rec.payment_method_id = payment_method_id
+                elif payment_method_id is not None:
+                    # Явно передан новый payment_method_id - обновляем
+                    rec.payment_method_id = payment_method_id
+                # Иначе (payment_method_id=None и update_payment_method=False) - не трогаем существующую карту
+                # Конвертируем next_charge_at в UTC для БД если передан
+                if next_charge_at is not None:
+                    rec.next_charge_at = to_utc_for_db(to_aware_msk(next_charge_at))
+                else:
+                    rec.next_charge_at = next_charge_at
                 rec.status = status
-                rec.updated_at = now_utc()
+                rec.updated_at = to_utc_for_db(now_msk())
                 s.flush()
                 return rec.id
 
@@ -599,7 +648,8 @@ class BillingRepository:
         with self._session() as s, s.begin():
             q = s.query(Subscription).filter(Subscription.user_id == user_id, Subscription.status == "active")
             updated = 0
-            now = now_utc()
+            now_msk = now_msk()
+            now = to_utc_for_db(now_msk)  # Для БД храним в UTC
             for rec in q:
                 rec.status = "canceled"
                 rec.cancel_at = now
@@ -613,23 +663,55 @@ class BillingRepository:
         with self._session() as s, s.begin():
             rec = s.get(Subscription, sub_id)
             if rec:
-                rec.last_charge_at = now_utc()
-                rec.next_charge_at = next_charge_at
-                rec.updated_at = now_utc()
+                now_msk = now_msk()
+                rec.last_charge_at = to_utc_for_db(now_msk)
+                rec.next_charge_at = to_utc_for_db(to_aware_msk(next_charge_at))
+                rec.updated_at = to_utc_for_db(now_msk)
 
-    def subscription_mark_charged_for_user(self, user_id: int, *, next_charge_at: datetime) -> Optional[int]:
+    def subscription_mark_charged_for_user(
+        self, 
+        user_id: int, 
+        *, 
+        next_charge_at: datetime,
+        subscription_id: Optional[int] = None,
+        plan_code: Optional[str] = None
+    ) -> Optional[int]:
+        """
+        Обновляет подписку после успешного платежа.
+        next_charge_at должен быть в МСК.
+        Если передан subscription_id - обновляет конкретную подписку.
+        Если передан plan_code - ищет по plan_code.
+        Иначе - использует текущую логику (первая активная подписка).
+        """
         with self._session() as s, s.begin():
-            rec = (
-                s.query(Subscription)
-                .filter(Subscription.user_id == user_id, Subscription.status == "active")
-                .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
-                .first()
-            )
+            if subscription_id:
+                rec = s.get(Subscription, subscription_id)
+                if rec and rec.user_id != user_id:
+                    rec = None
+            elif plan_code:
+                rec = (
+                    s.query(Subscription)
+                    .filter(
+                        Subscription.user_id == user_id,
+                        Subscription.plan_code == plan_code,
+                        Subscription.status == "active"
+                    )
+                    .first()
+                )
+            else:
+                rec = (
+                    s.query(Subscription)
+                    .filter(Subscription.user_id == user_id, Subscription.status == "active")
+                    .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
+                    .first()
+                )
             if not rec:
                 return None
-            rec.last_charge_at = now_utc()
-            rec.next_charge_at = next_charge_at
-            rec.updated_at = now_utc()
+            now_msk = now_msk()
+            rec.last_charge_at = to_utc_for_db(now_msk)
+            rec.next_charge_at = to_utc_for_db(to_aware_msk(next_charge_at))
+            rec.updated_at = to_utc_for_db(now_msk)
+            rec.consecutive_failures = 0  # Сбрасываем счётчик неудач
             s.flush()
             return rec.id
 
@@ -637,19 +719,17 @@ class BillingRepository:
         """
         Все пользователи с активной подпиской, доступной на момент now:
         status='active' и next_charge_at > now (т.е.оплаченный доступ ещё не истёк).
+        now должен быть в МСК.
         """
-        now = now or now_utc()
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=timezone.utc)
-        else:
-            now = now.astimezone(timezone.utc)
+        now_msk = to_aware_msk(now) if now else now_msk()
+        now_utc = to_utc_for_db(now_msk)  # Для сравнения с БД (БД хранит в UTC)
         with self._session() as s:
             rows = (
                 s.query(Subscription.user_id)
                  .filter(
                     Subscription.status == "active",
                     Subscription.next_charge_at != None,   # noqa: E711
-                    Subscription.next_charge_at > now,
+                    Subscription.next_charge_at > now_utc,
                  )
                  .group_by(Subscription.user_id)
                  .all()
@@ -659,28 +739,56 @@ class BillingRepository:
     # --- retries / attempts ---
     def record_charge_attempt(self, *, subscription_id: int, user_id: int, payment_id: Optional[str], status: str, due_at: Optional[datetime] = None) -> int:
         with self._session() as s, s.begin():
+            # due_at должен быть в МСК, округляем до секунд и конвертируем в UTC для БД
+            due_at_utc = None
+            if due_at:
+                due_at_msk = to_aware_msk(due_at).replace(microsecond=0)
+                due_at_utc = to_utc_for_db(due_at_msk)
             rec = ChargeAttempt(
                 subscription_id=subscription_id,
                 user_id=user_id,
                 payment_id=payment_id,
                 status=status,
-                due_at=to_aware_utc(due_at) if due_at else None,
+                due_at=due_at_utc,
+                attempted_at=to_utc_for_db(now_msk()),
             )
             s.add(rec)
             s.flush()
             return rec.id
 
-    def mark_charge_attempt_status(self, *, payment_id: str, status: str) -> None:
+    def mark_charge_attempt_status(
+        self, 
+        *, 
+        payment_id: Optional[str] = None,
+        subscription_id: Optional[int] = None,
+        status: str
+    ) -> None:
+        """
+        Обновляет статус попытки списания.
+        Ищет по payment_id, если не найден - ищет по subscription_id (для fallback).
+        """
         with self._session() as s, s.begin():
-            rec = s.query(ChargeAttempt).filter(ChargeAttempt.payment_id == payment_id).one_or_none()
+            rec = None
+            if payment_id:
+                rec = s.query(ChargeAttempt).filter(ChargeAttempt.payment_id == payment_id).one_or_none()
+            if not rec and subscription_id:
+                # Fallback: ищем последнюю попытку для подписки
+                rec = (
+                    s.query(ChargeAttempt)
+                    .filter(ChargeAttempt.subscription_id == subscription_id)
+                    .order_by(ChargeAttempt.attempted_at.desc())
+                    .first()
+                )
             if rec:
                 rec.status = status
 
     def subscriptions_due(self, *, now: datetime, limit: int = 200) -> List[Dict[str, Any]]:
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=timezone.utc)
-        else:
-            now = now.astimezone(timezone.utc)
+        """
+        Возвращает подписки, требующие списания.
+        now должен быть в МСК.
+        """
+        now_msk = to_aware_msk(now)
+        now_utc = to_utc_for_db(now_msk)  # Для сравнения с БД (БД хранит в UTC)
 
         # Политика ретраев авто-списаний:
         # 1) Не чаще 2-х попыток в сутки (окно 24h).
@@ -697,7 +805,7 @@ class BillingRepository:
                 .filter(
                     Subscription.status == "active",
                     Subscription.next_charge_at != None,                     # noqa: E711
-                    Subscription.next_charge_at <= now,
+                    Subscription.next_charge_at <= now_utc,  # Сравниваем с UTC (БД хранит в UTC)
                     Subscription.payment_method_id != None,                  # noqa: E711
                 )
                 .order_by(Subscription.next_charge_at.asc())
@@ -709,50 +817,81 @@ class BillingRepository:
             except Exception:
                 subs = list(q)
             # Ограничение 2 попытки в сутки
-            since_24h = now - window_24h
+            since_24h_msk = now_msk - window_24h
+            since_24h_utc = to_utc_for_db(since_24h_msk)
             blocked_ids_day2 = {
                 sub_id for (sub_id,) in
                 s.query(ChargeAttempt.subscription_id)
-                 .filter(ChargeAttempt.attempted_at >= since_24h)
+                 .filter(ChargeAttempt.attempted_at >= since_24h_utc)
                  .group_by(ChargeAttempt.subscription_id)
                  .having(text("COUNT(*) >= 2"))
                  .all()
             }
 
             # Минимальный интервал 12 часов (любая последняя попытка, независимо от статуса)
-            since_12h = now - min_gap
+            since_12h_msk = now_msk - min_gap
+            since_12h_utc = to_utc_for_db(since_12h_msk)
             blocked_ids_gap12h = {
                 sub_id for (sub_id,) in
                 s.query(ChargeAttempt.subscription_id)
-                 .filter(ChargeAttempt.attempted_at >= since_12h)
+                 .filter(ChargeAttempt.attempted_at >= since_12h_utc)
                  .group_by(ChargeAttempt.subscription_id)
                  .all()
             }
 
             # Лимит 6 НЕуспешных попыток в рамках ТЕКУЩЕГО цикла (due_at == rec.next_charge_at)
             # Сначала соберём пары (sub_id, due_at) для кандидатов
-            candidate_pairs: List[tuple[int, Optional[datetime]]] = [
-                (rec.id, to_aware_utc(rec.next_charge_at)) for rec in subs
-            ]
+            # Округляем due_at до секунд для сравнения
+            candidate_pairs: List[tuple[int, Optional[datetime]]] = []
+            for rec in subs:
+                due_at_raw = from_db_naive(rec.next_charge_at)
+                if due_at_raw:
+                    due_at_rounded = due_at_raw.replace(microsecond=0)
+                    candidate_pairs.append((rec.id, due_at_rounded))
+                else:
+                    candidate_pairs.append((rec.id, None))
+            
             # Вычислим counts по всем парам разом: group by (subscription_id, due_at)
             from sqlalchemy import func
-            failed_counts = {
-                (sid, to_aware_utc(due_at)): cnt
-                for (sid, due_at, cnt) in
-                s.query(
-                    ChargeAttempt.subscription_id,
-                    ChargeAttempt.due_at,
-                    func.count("*")
-                )
-                .filter(
-                    ChargeAttempt.status.in_(('canceled', 'expired')),
-                    # фильтруем только по интересующим подпискам и только по их due_at
-                    ChargeAttempt.subscription_id.in_([sid for (sid, _) in candidate_pairs]),
-                    ChargeAttempt.due_at.in_({to_aware_utc(due_at) for (_, due_at) in candidate_pairs if due_at is not None})
-                )
-                .group_by(ChargeAttempt.subscription_id, ChargeAttempt.due_at)
-                .all()
-            }
+            failed_counts = {}
+            if candidate_pairs:
+                # Конвертируем due_at в UTC для сравнения с БД и округляем
+                due_at_utc_set = {
+                    to_utc_for_db(due_at).replace(microsecond=0) 
+                    for (_, due_at) in candidate_pairs 
+                    if due_at is not None
+                }
+                if due_at_utc_set:
+                    failed_rows = (
+                        s.query(
+                            ChargeAttempt.subscription_id,
+                            ChargeAttempt.due_at,
+                            func.count("*")
+                        )
+                        .filter(
+                            ChargeAttempt.status.in_(('canceled', 'expired')),
+                            ChargeAttempt.subscription_id.in_([sid for (sid, _) in candidate_pairs]),
+                            ChargeAttempt.due_at.in_(due_at_utc_set)
+                        )
+                        .group_by(ChargeAttempt.subscription_id, ChargeAttempt.due_at)
+                        .all()
+                    )
+                    # Маппинг обратно на МСК для сравнения
+                    for sid, due_at_utc, cnt in failed_rows:
+                        due_at_msk = from_db_naive(due_at_utc)
+                        if due_at_msk:
+                            due_at_msk = due_at_msk.replace(microsecond=0)
+                        # Находим соответствующую пару
+                        for pair_sid, pair_due in candidate_pairs:
+                            if pair_sid == sid:
+                                if pair_due and due_at_msk:
+                                    # Сравниваем округлённые значения
+                                    if pair_due.replace(microsecond=0) == due_at_msk:
+                                        failed_counts[(sid, pair_due)] = cnt
+                                        break
+                                elif pair_due is None and due_at_msk is None:
+                                    failed_counts[(sid, None)] = cnt
+                                    break
 
             items: List[Dict[str, Any]] = []
             for rec in subs:
@@ -760,14 +899,17 @@ class BillingRepository:
                 if rec.consecutive_failures is not None and rec.consecutive_failures >= 6:
                     # skip: max failures reached (>=6)
                     continue
-                # last_attempt_at может быть naive → привести к aware UTC
-                last_attempt_aware = to_aware_utc(rec.last_attempt_at)
-                if last_attempt_aware is not None and (now - last_attempt_aware) < min_gap:
+                # last_attempt_at может быть naive → привести к aware МСК
+                last_attempt_msk = from_db_naive(rec.last_attempt_at)
+                if last_attempt_msk is not None and (now_msk - last_attempt_msk) < min_gap:
                     # skip: 12h gap not passed
                     continue
                 # Лимиты по окнам + лимит 6 фейлов В ТЕКУЩЕМ ЦИКЛЕ
                 # (по паре (subscription_id, due_at = rec.next_charge_at))
-                pair = (rec.id, to_aware_utc(rec.next_charge_at))
+                next_charge_msk = from_db_naive(rec.next_charge_at)
+                if next_charge_msk:
+                    next_charge_msk = next_charge_msk.replace(microsecond=0)
+                pair = (rec.id, next_charge_msk)
                 failed6_now = failed_counts.get(pair, 0) >= 6
                 if (rec.id in blocked_ids_day2) or (rec.id in blocked_ids_gap12h) or failed6_now:
                     continue
@@ -799,12 +941,20 @@ class BillingRepository:
         metadata: Optional[Dict[str, Any]],
         raw_payload: Optional[Dict[str, Any]],
     ) -> None:
+        """
+        Создаёт или обновляет запись в payment_log.
+        Использует INSERT ... ON DUPLICATE KEY UPDATE для защиты от race condition.
+        """
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
+        raw_payload_json = json.dumps(raw_payload or {}, ensure_ascii=False)
         with self._session() as s, s.begin():
-            rec = s.get(PaymentLog, payment_id)
-            metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
-            raw_payload_json = json.dumps(raw_payload or {}, ensure_ascii=False)
-            if rec is None:
-                rec = PaymentLog(
+            # Используем SQL INSERT ... ON DUPLICATE KEY UPDATE для атомарности
+            # Это защищает от race condition при одновременной обработке webhook'ов
+            from sqlalchemy.dialects.mysql import insert as mysql_insert
+            # MySQL поддерживает INSERT ... ON DUPLICATE KEY UPDATE
+            stmt = (
+                mysql_insert(PaymentLog)
+                .values(
                     payment_id=payment_id,
                     user_id=user_id,
                     amount_value=amount_value,
@@ -813,17 +963,19 @@ class BillingRepository:
                     status=status,
                     metadata_json=metadata_json,
                     raw_payload_json=raw_payload_json,
+                    created_at=to_utc_for_db(now_msk()),
                 )
-                s.add(rec)
-            else:
-                if user_id and not rec.user_id:
-                    rec.user_id = user_id
-                rec.amount_value = amount_value
-                rec.amount_currency = amount_currency or rec.amount_currency
-                rec.event = event or rec.event
-                rec.status = status or rec.status
-                rec.metadata_json = metadata_json
-                rec.raw_payload_json = raw_payload_json
+                .on_duplicate_key_update(
+                    user_id=user_id if user_id else PaymentLog.user_id,
+                    amount_value=amount_value,
+                    amount_currency=amount_currency or PaymentLog.amount_currency,
+                    event=event or PaymentLog.event,
+                    status=status or PaymentLog.status,
+                    metadata_json=metadata_json,
+                    raw_payload_json=raw_payload_json,
+                )
+            )
+            s.execute(stmt)
 
     def payment_log_is_processed(self, payment_id: str) -> bool:
         with self._session() as s:
@@ -834,10 +986,10 @@ class BillingRepository:
         with self._session() as s, s.begin():
             rec = s.get(PaymentLog, payment_id)
             if rec is None:
-                rec = PaymentLog(payment_id=payment_id, processed_at=now_utc())
+                rec = PaymentLog(payment_id=payment_id, processed_at=to_utc_for_db(now_msk()))
                 s.add(rec)
             else:
-                rec.processed_at = now_utc()
+                rec.processed_at = to_utc_for_db(now_msk())
 
 
 # Глобальный репозиторий (billing DB)
@@ -894,8 +1046,19 @@ def subscription_cancel_for_user(*, user_id: int) -> int:
 def subscription_mark_charged(sub_id: int, *, next_charge_at: datetime) -> None:
     _repo.subscription_mark_charged(sub_id, next_charge_at=next_charge_at)
 
-def subscription_mark_charged_for_user(user_id: int, *, next_charge_at: datetime) -> Optional[int]:
-    return _repo.subscription_mark_charged_for_user(user_id, next_charge_at=next_charge_at)
+def subscription_mark_charged_for_user(
+    user_id: int, 
+    *, 
+    next_charge_at: datetime,
+    subscription_id: Optional[int] = None,
+    plan_code: Optional[str] = None
+) -> Optional[int]:
+    return _repo.subscription_mark_charged_for_user(
+        user_id, 
+        next_charge_at=next_charge_at,
+        subscription_id=subscription_id,
+        plan_code=plan_code
+    )
 
 # Retries / Scheduler
 def subscriptions_due(now: datetime, limit: int = 200) -> List[Dict[str, Any]]:
@@ -904,8 +1067,17 @@ def subscriptions_due(now: datetime, limit: int = 200) -> List[Dict[str, Any]]:
 def record_charge_attempt(*, subscription_id: int, user_id: int, payment_id: Optional[str], status: str, due_at: Optional[datetime] = None) -> int:
     return _repo.record_charge_attempt(subscription_id=subscription_id, user_id=user_id, payment_id=payment_id, status=status, due_at=due_at)
 
-def mark_charge_attempt_status(*, payment_id: str, status: str) -> None:
-    _repo.mark_charge_attempt_status(payment_id=payment_id, status=status)
+def mark_charge_attempt_status(
+    *, 
+    payment_id: Optional[str] = None,
+    subscription_id: Optional[int] = None,
+    status: str
+) -> None:
+    _repo.mark_charge_attempt_status(
+        payment_id=payment_id,
+        subscription_id=subscription_id,
+        status=status
+    )
 
 def precharge_guard_and_attempt(*, subscription_id: int, now: datetime, user_id: int) -> Optional[int]:
     return _repo.precharge_guard_and_attempt(subscription_id=subscription_id, now=now, user_id=user_id)

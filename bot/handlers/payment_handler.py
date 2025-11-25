@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 from typing import Dict, Optional, Tuple, List
 import asyncio
 import os
@@ -18,8 +17,9 @@ from aiogram.filters import Command
 from html import escape
 
 from yookassa.domain.exceptions.forbidden_error import ForbiddenError
-from bot.config import get_file_path
+from bot.config import get_file_path, TIMEZONE
 from bot.utils import youmoney
+from bot.utils.time_helpers import now_msk, to_aware_msk, to_utc_for_db, from_db_naive, msk_str
 import bot.utils.database as app_db
 import bot.utils.billing_db as billing_db
 from bot.utils.redis_repo import yookassa_dedup, invalidate_payment_ok_cache, quota_repo
@@ -28,9 +28,6 @@ logger = logging.getLogger(__name__)
 
 # Membership-service (FastAPI), по умолчанию локально на 6000
 MEMBERSHIP_BASE_URL = os.getenv("MEMBERSHIP_BASE_URL", "http://127.0.0.1:6000")
-
-# Локальная константа времени МСК для форматирования дат в UI
-MSK = ZoneInfo("Europe/Moscow")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ТАРИФЫ
@@ -210,7 +207,7 @@ def format_access_text(user_id: int) -> str:
     # Подписка/грейс
     try:
         from bot.utils.billing_db import SessionLocal, Subscription
-        now = datetime.now(timezone.utc)
+        now = now_msk()
         with SessionLocal() as s:
             rec = (
                 s.query(Subscription)
@@ -312,15 +309,7 @@ _PENDING_SELECTION: dict[int, Dict[str, str]] = {}
 # ──────────────────────────────────────────────────────────────────────────────
 # TIME HELPERS
 # ──────────────────────────────────────────────────────────────────────────────
-def _to_msk_str(dt: Optional[datetime]) -> str:
-    """Возвращает dt в МСК 'YYYY-MM-DD HH:MM'. Если dt None — '—'.
-    Если dt naive — считаем, что это UTC.
-    """
-    if not dt:
-        return "—"
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(MSK).strftime("%Y-%m-%d %H:%M")
+# _to_msk_str заменена на msk_str из time_helpers
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -340,7 +329,7 @@ def _build_settings_text(user_id: int) -> str:
     Формат: HTML (совместим с _edit_safe и .answer(parse_mode="HTML")).
     """
     # 1) Статус
-    now = datetime.now(timezone.utc)
+    now_msk_val = now_msk()
     try:
         if app_db.is_trial_active(user_id):
             until = app_db.get_trial_until(user_id)
@@ -357,7 +346,9 @@ def _build_settings_text(user_id: int) -> str:
                     .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
                     .first()
                 )
-                if rec and rec.next_charge_at and rec.next_charge_at > now:
+                # Конвертируем next_charge_at из БД (UTC) в МСК для сравнения
+                next_charge_msk = from_db_naive(rec.next_charge_at) if rec and rec.next_charge_at else None
+                if rec and next_charge_msk and next_charge_msk > now_msk_val:
                     status_line = "активна"
                 elif rec and int(rec.consecutive_failures or 0) < 3:
                     fails = int(rec.consecutive_failures or 0)
@@ -603,12 +594,17 @@ async def _membership_remove(user_id: int) -> None:
         logging.exception("membership remove exception for user_id=%s: %s", user_id, e)
 
 
-def _compute_next_time_from_months(months: int) -> datetime:
+def _compute_next_time_from_months(months: int, base_time: Optional[datetime] = None) -> datetime:
+    """
+    Вычисляет дату через N месяцев от base_time (или текущего времени в МСК).
+    base_time должен быть в МСК.
+    """
+    base = to_aware_msk(base_time) if base_time else now_msk()
     try:
         from dateutil.relativedelta import relativedelta
-        return datetime.now(timezone.utc) + relativedelta(months=+months)
+        return base + relativedelta(months=+months)
     except Exception:
-        return datetime.now(timezone.utc) + timedelta(days=30 * months)
+        return base + timedelta(days=30 * months)
 
 def _has_paid_or_grace_access(user_id: int) -> bool:
     """
@@ -619,7 +615,7 @@ def _has_paid_or_grace_access(user_id: int) -> bool:
     """
     try:
         from bot.utils.billing_db import SessionLocal, Subscription
-        now = datetime.now(timezone.utc)
+        now = now_msk()
         with SessionLocal() as s:
             rec = (
                 s.query(Subscription)
@@ -629,7 +625,9 @@ def _has_paid_or_grace_access(user_id: int) -> bool:
             )
             if not rec:
                 return False
-            if rec.next_charge_at and rec.next_charge_at > now:
+            # Конвертируем next_charge_at из БД (UTC) в МСК для сравнения
+            next_charge_msk = from_db_naive(rec.next_charge_at)
+            if next_charge_msk and next_charge_msk > now_msk_val:
                 return True  # оплаченный период ещё идёт
             # оплаченный период закончился — смотрим кол-во попыток
             fails = int(rec.consecutive_failures or 0)
@@ -664,16 +662,40 @@ def _create_links_for_selection(user_id: int) -> tuple[Optional[str], Optional[s
     # Решаем: пробный период или полный платеж
     has_trial = bool(plan.get("trial_amount"))
     is_recurring = "1" if plan.get("recurring") else "0"
-    if has_trial:
-        first_amount = plan["trial_amount"]
-        phase = "trial"
-        desc_suffix = " (пробный период)"
-        # Проверяем кулдаун 90 дней для пробного периода за 1 рубль
-        if not app_db.is_trial_allowed(user_id, cooldown_days=90):
-            return (None, None)  # Кулдаун не прошёл - не создаём ссылки
+    
+    # Различаем первый платёж (нет подписки) и renewal (есть подписка)
+    # Проверяем наличие активной подписки
+    has_active_subscription = False
+    try:
+        from bot.utils.billing_db import SessionLocal, Subscription
+        with SessionLocal() as s:
+            active_sub = (
+                s.query(Subscription)
+                .filter(Subscription.user_id == user_id, Subscription.status == "active")
+                .first()
+            )
+            has_active_subscription = active_sub is not None
+    except Exception:
+        pass
+    
+    # ВАЖНО: Для тарифа "1m" с trial_amount проверяем кулдаун ТОЛЬКО для первого платежа.
+    # Если есть активная подписка - это renewal, всегда полная оплата.
+    if has_trial and not has_active_subscription:
+        # Первый платёж - проверяем кулдаун для пробного периода за 1 рубль
+        if app_db.is_trial_allowed(user_id, cooldown_days=90):
+            # Кулдаун прошел - создаем пробный период за 1 рубль
+            first_amount = plan["trial_amount"]
+            phase = "trial"
+            desc_suffix = " (пробный период)"
+        else:
+            # Кулдаун не прошел - предлагаем полную оплату за полную сумму
+            first_amount = plan["amount"]
+            phase = "renewal"  # первый полный платёж трактуем как период подписки
+            desc_suffix = ""
     else:
+        # Для renewal или тарифов без пробного периода - всегда полная оплата
         first_amount = plan["amount"]
-        phase = "renewal"  # первый полный платёж трактуем как период подписки
+        phase = "renewal"
         desc_suffix = ""
 
     # 1) Карта (РЕКУРРЕНТ ТОЛЬКО): без фолбэков на разовую оплату.
@@ -686,8 +708,20 @@ def _create_links_for_selection(user_id: int) -> tuple[Optional[str], Optional[s
             save_payment_method=bool(plan.get("recurring")),
             payment_method_type="bank_card",
         )
+    except ForbiddenError as e:
+        logger.warning("Card recurring not allowed for user %s: %s", user_id, e)
+        pay_url_card = None
+    except ValueError as e:
+        # Ошибки валидации (BadRequestError преобразуется в ValueError в create_pay_ex)
+        logger.error("Card payment validation error for user %s: %s", user_id, e)
+        pay_url_card = None
+    except (ConnectionError, TimeoutError, OSError) as e:
+        # Ошибки сети
+        logger.error("Network error creating card payment for user %s: %s", user_id, e)
+        pay_url_card = None
     except Exception as e:
-        logger.error("Card recurring not allowed — declining tokenless trial: %s", e)
+        # Другие неожиданные ошибки
+        logger.exception("Unexpected error creating card payment for user %s: %s", user_id, e)
         pay_url_card = None
 
     # 2) СБП (РЕКУРРЕНТ ТОЛЬКО): без фолбэков на разовую оплату.
@@ -701,10 +735,19 @@ def _create_links_for_selection(user_id: int) -> tuple[Optional[str], Optional[s
             payment_method_type="sbp",
         )
     except ForbiddenError as e:
-        logger.error("SBP recurring not allowed — declining tokenless trial: %s", e)
+        logger.warning("SBP recurring not allowed for user %s: %s", user_id, e)
+        pay_url_sbp = None
+    except ValueError as e:
+        # Ошибки валидации (BadRequestError преобразуется в ValueError в create_pay_ex)
+        logger.error("SBP payment validation error for user %s: %s", user_id, e)
+        pay_url_sbp = None
+    except (ConnectionError, TimeoutError, OSError) as e:
+        # Ошибки сети
+        logger.error("Network error creating SBP payment for user %s: %s", user_id, e)
         pay_url_sbp = None
     except Exception as e:
-        logger.error("SBP recurring flow failed: %s", e)
+        # Другие неожиданные ошибки
+        logger.exception("Unexpected error creating SBP payment for user %s: %s", user_id, e)
         pay_url_sbp = None
 
     return (pay_url_card, pay_url_sbp)
@@ -735,16 +778,9 @@ async def choose_rate(cb: CallbackQuery) -> None:
         await _edit_safe(cb, "Такого тарифа нет. Выберите из списка.", kb_rates(user_id))
         return
 
-    # Проверяем кулдаун для пробного периода за 1 рубль (только для тарифа 1m с trial_amount)
-    has_trial = bool(plan.get("trial_amount"))
-    if has_trial and code == "1m":
-        if not app_db.is_trial_allowed(user_id, cooldown_days=90):
-            await _edit_safe(
-                cb,
-                "❗ Повторный пробный доступ доступен раз в 90 дней после последней покупки. Сейчас оформить пробный период нельзя. Выберите тариф и оформите подписку.",
-                kb_rates(user_id)
-            )
-            return
+    # ВАЖНО: Не блокируем выбор тарифа "1m" здесь, даже если кулдаун не прошел.
+    # Кулдаун проверяется только при создании ссылок для пробного периода за 1 рубль.
+    # Если пользователь хочет оплатить полную сумму (2490 ₽), кулдаун не применяется.
 
     description = f"Подписка на {plan['label']}"
     # Сохраняем выбор тарифа — ссылки пока не создаём
@@ -807,8 +843,8 @@ async def toggle_tos(cb: CallbackQuery) -> None:
     if new_state:
         # Создаём ссылки ТОЛЬКО сейчас — после согласия
         pay_url_card, pay_url_sbp = _create_links_for_selection(user_id)
-        # Если пробный период запрещён (кулдаун) — _create_links_for_selection() вернёт (None, None)
-        # В этом случае просто не показываем кнопки оплаты
+        # ВАЖНО: Если кулдаун не прошел для пробного периода, создается ссылка на полную оплату
+        # (None, None) возвращается только если план не найден или ошибка создания платежа
         _LAST_PAY_URL_CARD[user_id] = pay_url_card or ""
         _LAST_PAY_URL_SBP[user_id]  = pay_url_sbp or ""
     else:
@@ -849,6 +885,20 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
         if status_lc == "waiting_for_capture":
             # Запомним, но побочных эффектов не делаем
             await yookassa_dedup.should_process(payment_id, status_lc)  # просто зафиксирует, если надо
+            # Создаём запись в payment_log для истории
+            try:
+                billing_db.payment_log_upsert(
+                    payment_id=payment_id,
+                    user_id=int(metadata.get("user_id") or 0) if metadata.get("user_id") else None,
+                    amount_value=str(obj.get("amount", {}).get("value") or ""),
+                    amount_currency=str(obj.get("amount", {}).get("currency") or "RUB"),
+                    event=str(event or ""),
+                    status=str(status or ""),
+                    metadata=metadata,
+                    raw_payload=payload,
+                )
+            except Exception as e:
+                logger.warning("Failed to log waiting_for_capture payment %s: %s", payment_id, e)
             return 200, "ack waiting_for_capture"
 
         # Для финальных статусов проверяем «надо ли обрабатывать?»
@@ -856,11 +906,21 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
         if not ok:
             return 200, f"duplicate/no-op status={status_lc}"
 
+        # Дополнительная проверка дубликатов в БД (защита от race conditions при сбое Redis)
+        if billing_db.payment_log_is_processed(payment_id):
+            logger.info("Payment %s already processed in DB, skipping duplicate webhook", payment_id)
+            return 200, f"duplicate/already-processed status={status_lc}"
+
         # помечаем попытку списания в billing_db (статусы created -> succeeded/canceled/expired)
         try:
             if payment_id and status in ("succeeded", "canceled", "expired"):
-                billing_db.mark_charge_attempt_status(payment_id=payment_id,
-                                                      status=("succeeded" if status == "succeeded" else status))
+                sub_id_raw = metadata.get("subscription_id")
+                sub_id = int(sub_id_raw) if sub_id_raw else None
+                billing_db.mark_charge_attempt_status(
+                    payment_id=payment_id,
+                    subscription_id=sub_id,
+                    status=("succeeded" if status == "succeeded" else status)
+                )
         except Exception:
             pass
 
@@ -889,23 +949,30 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                     can_notice = True
                     should_remove = False  # сигнал «достигли 3-й подряд неудачи»
                     if sub_id:
-                        from bot.utils.billing_db import SessionLocal, Subscription, now_utc
-                        from sqlalchemy import select
+                        from bot.utils.billing_db import SessionLocal, Subscription
+                        from sqlalchemy import select, update
                         with SessionLocal() as s, s.begin():
                             rec = s.get(Subscription, sub_id)
                             if rec:
-                                now = now_utc()
-                                if rec.last_fail_notice_at and (now - rec.last_fail_notice_at) < timedelta(hours=12):
+                                now_msk_val = now_msk()
+                                # Конвертируем last_fail_notice_at из БД (UTC) в МСК для сравнения
+                                last_fail_notice_msk = from_db_naive(rec.last_fail_notice_at)
+                                if last_fail_notice_msk and (now_msk_val - last_fail_notice_msk) < timedelta(hours=12):
                                     can_notice = False
-                                # инкремент фейлов (не более 6) + детекция порога 3
+                                # Атомарное обновление consecutive_failures
                                 prev_fails = int(rec.consecutive_failures or 0)
                                 new_fails = min(prev_fails + 1, 6)
-                                rec.consecutive_failures = new_fails
+                                # Используем атомарное обновление через SQL
+                                s.execute(
+                                    update(Subscription)
+                                    .where(Subscription.id == sub_id)
+                                    .values(consecutive_failures=new_fails)
+                                )
                                 if new_fails >= 3 and prev_fails < 3:
                                     should_remove = True
                                 if can_notice:
-                                    rec.last_fail_notice_at = now
-                                rec.updated_at = now
+                                    rec.last_fail_notice_at = to_utc_for_db(now_msk_val)
+                                rec.updated_at = to_utc_for_db(now_msk_val)
                     # если достигли 3-й неудачи — инициируем полное удаление из чата
                     if should_remove:
                         try:
@@ -990,101 +1057,300 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
         if is_recurring and phase == "trial":
             # 1) сохраняем карту в справочник (id не нужен в подписке; храним токен провайдера)
             if pm_token:
-                billing_db.card_upsert_from_provider(
-                    user_id=user_id, provider=pmethod.get("type", "yookassa"),
-                    pm_token=pm_token, brand=brand, first6=first6, last4=last4,
-                    exp_month=exp_month, exp_year=exp_year,
+                try:
+                    billing_db.card_upsert_from_provider(
+                        user_id=user_id, provider=pmethod.get("type", "yookassa"),
+                        pm_token=pm_token, brand=brand, first6=first6, last4=last4,
+                        exp_month=exp_month, exp_year=exp_year,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to save payment method for user %s, payment_id %s: %s",
+                        user_id, payment_id, e
+                    )
+                    # Продолжаем обработку платежа даже если сохранение карты не удалось
+            else:
+                logger.warning(
+                    "Trial payment succeeded but pm_token is None for user %s, payment_id %s. "
+                    "Automatic renewal will not work.",
+                    user_id, payment_id
                 )
+            
             # 2) включаем пробный период доступа
             trial_hours = int(str(metadata.get("trial_hours") or "72"))
             trial_until = app_db.set_trial(user_id, hours=trial_hours)  # datetime (UTC)
             # 3) создаём/обновляем подписку с next_charge_at после пробный периода
-            next_charge_at = datetime.now(timezone.utc) + timedelta(hours=trial_hours)
+            # ИСПРАВЛЕНО: Используем время создания платежа из webhook (obj.created_at), если доступно,
+            # чтобы избежать проблем при задержке webhook'а. Если нет - используем текущее время.
+            payment_created_at = obj.get("created_at")
+            if payment_created_at:
+                try:
+                    if isinstance(payment_created_at, str):
+                        # YooKassa возвращает ISO формат: "2024-01-01T12:00:00.000Z" (UTC)
+                        from dateutil.parser import parse as parse_dt
+                        payment_created_dt_utc = parse_dt(payment_created_at)
+                        # Конвертируем из UTC в МСК
+                        if payment_created_dt_utc.tzinfo is None:
+                            payment_created_dt_utc = payment_created_dt_utc.replace(tzinfo=timezone.utc)
+                        payment_created_dt = payment_created_dt_utc.astimezone(TIMEZONE)
+                    else:
+                        payment_created_dt = now_msk()
+                except Exception as e:
+                    logger.warning(
+                        "Failed to parse payment created_at %s for user %s, payment_id %s: %s. "
+                        "Using current time as fallback.",
+                        payment_created_at, user_id, payment_id, e
+                    )
+                    payment_created_dt = now_msk()
+            else:
+                # Fallback: используем текущее время в МСК
+                payment_created_dt = now_msk()
+            # Расчёт next_charge_at в МСК
+            next_charge_at = payment_created_dt + timedelta(hours=trial_hours)
+            
+            # ВАЖНО: Проверяем pm_token перед созданием подписки
+            # Если pm_token=None, подписка создается без токена, что делает автопродление невозможным
+            if not pm_token:
+                logger.critical(
+                    "Creating subscription without payment_method_id for user %s, payment_id %s. "
+                    "Automatic renewal will not work. This should not happen for recurring trial payments.",
+                    user_id, payment_id
+                )
+            
             billing_db.subscription_upsert(
                 user_id=user_id, plan_code=code, interval_months=months,
                 amount_value=str(metadata.get("plan_amount") or TARIFFS.get(code, {}).get("amount", "0.00")),
                 amount_currency=str(obj.get("amount", {}).get("currency") or "RUB"),
                 payment_method_id=pm_token,  # в подписке хранится провайдерский токен (string), не PK карты
+                # ВАЖНО: Если pm_token=None, автопродление не будет работать
                 next_charge_at=next_charge_at,
                 status="active",
             )
             # уведомление
-            await _notify_after_payment(bot, user_id, code, trial_until.date().isoformat())
+            try:
+                await _notify_after_payment(bot, user_id, code, trial_until.date().isoformat())
+            except Exception as e:
+                logger.warning("Failed to send payment notification to user %s: %s", user_id, e)
+                # Не прерываем обработку платежа при ошибке уведомления
+            
             # попытка инициализировать добавление/приглашение в чат
             try:
                 asyncio.create_task(membership_invite(user_id))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to create membership_invite task for user %s: %s", user_id, e)
 
         elif is_recurring and phase == "renewal":
             # Сохраняем платёжный метод (чтобы было автопродление)
             if pm_token:
-                billing_db.card_upsert_from_provider(
-                    user_id=user_id, provider=pmethod.get("type", "yookassa"),
-                    pm_token=pm_token, brand=brand, first6=first6, last4=last4,
-                    exp_month=exp_month, exp_year=exp_year,
-                )
-            # переносим next_charge_at вперёд на период тарифа
-            next_at = _compute_next_time_from_months(months)
-            updated_sub_id = billing_db.subscription_mark_charged_for_user(user_id=user_id, next_charge_at=next_at)
-            if not updated_sub_id:
-                # если нет подписки (крайний случай) — создадим
-                billing_db.subscription_upsert(
-                    user_id=user_id, plan_code=code, interval_months=months,
-                    amount_value=TARIFFS.get(code, {}).get("amount", "0.00"),
-                    amount_currency=str(obj.get("amount", {}).get("currency") or "RUB"),
-                    payment_method_id=pm_token,  # знаем токен из текущего события
-                    next_charge_at=next_at, status="active",
-                )
-            else:
-                # если подписка есть, но карта ещё не привязана — привяжем
                 try:
-                    from bot.utils.billing_db import SessionLocal, Subscription, now_utc
-                    with SessionLocal() as s, s.begin():
-                        rec = (
+                    billing_db.card_upsert_from_provider(
+                        user_id=user_id, provider=pmethod.get("type", "yookassa"),
+                        pm_token=pm_token, brand=brand, first6=first6, last4=last4,
+                        exp_month=exp_month, exp_year=exp_year,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to save payment method for renewal user %s, payment_id %s: %s",
+                        user_id, payment_id, e
+                    )
+                    # Продолжаем обработку платежа даже если сохранение карты не удалось
+            else:
+                logger.warning(
+                    "Renewal payment succeeded but pm_token is None for user %s, payment_id %s. "
+                    "Automatic renewals may not work.",
+                    user_id, payment_id
+                )
+            
+            # переносим next_charge_at вперёд на период тарифа
+            # Используем payment_created_at из webhook для consistency (как для trial)
+            payment_created_at = obj.get("created_at")
+            if payment_created_at:
+                try:
+                    if isinstance(payment_created_at, str):
+                        from dateutil.parser import parse as parse_dt
+                        payment_created_dt_utc = parse_dt(payment_created_at)
+                        if payment_created_dt_utc.tzinfo is None:
+                            payment_created_dt_utc = payment_created_dt_utc.replace(tzinfo=timezone.utc)
+                        payment_created_dt = payment_created_dt_utc.astimezone(TIMEZONE)
+                    else:
+                        payment_created_dt = now_msk()
+                except Exception as e:
+                    logger.warning(
+                        "Failed to parse payment created_at for renewal user %s, payment_id %s: %s. "
+                        "Using current time as fallback.",
+                        user_id, payment_id, e
+                    )
+                    payment_created_dt = now_msk()
+            else:
+                payment_created_dt = now_msk()
+            # Расчёт next_charge_at от времени создания платежа в МСК
+            next_at = _compute_next_time_from_months(months, base_time=payment_created_dt)
+            # Передаём subscription_id или plan_code из metadata для правильного выбора подписки
+            sub_id_raw = metadata.get("subscription_id")
+            sub_id = int(sub_id_raw) if sub_id_raw else None
+            updated_sub_id = billing_db.subscription_mark_charged_for_user(
+                user_id=user_id, 
+                next_charge_at=next_at,
+                subscription_id=sub_id,
+                plan_code=code
+            )
+            if not updated_sub_id:
+                # Подписка не найдена - проверяем все возможные причины
+                try:
+                    from bot.utils.billing_db import SessionLocal, Subscription
+                    with SessionLocal() as s:
+                        # Проверяем canceled подписки
+                        canceled_sub = (
                             s.query(Subscription)
-                            .filter(Subscription.user_id == user_id, Subscription.status == "active")
-                            .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
+                            .filter(
+                                Subscription.user_id == user_id,
+                                Subscription.plan_code == code,
+                                Subscription.status == "canceled"
+                            )
                             .first()
                         )
-                        if rec and not rec.payment_method_id and pm_token:
-                            rec.payment_method_id = pm_token
-                            rec.updated_at = now_utc()
-                except Exception:
-                    pass
+                        # Проверяем активные подписки с другим plan_code
+                        active_sub = (
+                            s.query(Subscription)
+                            .filter(
+                                Subscription.user_id == user_id,
+                                Subscription.status == "active"
+                            )
+                            .first()
+                        )
+                        if active_sub and active_sub.plan_code != code:
+                            logger.warning(
+                                "Renewal payment for plan_code=%s but user has active subscription with plan_code=%s: "
+                                "user_id=%s, payment_id=%s",
+                                code, active_sub.plan_code, user_id, payment_id
+                            )
+                        if canceled_sub:
+                            # ИСПРАВЛЕНО: Активируем существующую canceled подписку вместо создания новой
+                            logger.info(
+                                "Renewal payment received for canceled subscription: user_id=%s, plan_code=%s, "
+                                "payment_id=%s, subscription_id=%s. Activating existing subscription.",
+                                user_id, code, payment_id, canceled_sub.id
+                            )
+                            canceled_sub.status = "active"
+                            canceled_sub.payment_method_id = pm_token  # Обновляем токен
+                            canceled_sub.next_charge_at = to_utc_for_db(to_aware_msk(next_at))
+                            canceled_sub.last_charge_at = to_utc_for_db(now_msk())
+                            canceled_sub.consecutive_failures = 0
+                            canceled_sub.updated_at = to_utc_for_db(now_msk())
+                            s.commit()
+                        else:
+                            # если нет подписки (крайний случай) — создадим
+                            # ВАЖНО: Проверяем pm_token перед созданием подписки
+                            if not pm_token:
+                                logger.critical(
+                                    "Renewal payment succeeded but cannot create subscription without pm_token: "
+                                    "user_id=%s, payment_id=%s, plan_code=%s. Payment processed but subscription not created.",
+                                    user_id, payment_id, code
+                                )
+                                # Отправляем уведомление пользователю о проблеме
+                                try:
+                                    await bot.send_message(
+                                        chat_id=user_id,
+                                        text=(
+                                            "⚠️ *Проблема с подпиской*\n\n"
+                                            "Ваш платёж прошёл успешно, но возникла техническая проблема с активацией подписки.\n"
+                                            "Пожалуйста, обратитесь в поддержку для решения вопроса."
+                                        ),
+                                        parse_mode="Markdown",
+                                    )
+                                except Exception as notify_error:
+                                    logger.warning("Failed to send notification to user %s: %s", user_id, notify_error)
+                            else:
+                                billing_db.subscription_upsert(
+                                    user_id=user_id, plan_code=code, interval_months=months,
+                                    amount_value=TARIFFS.get(code, {}).get("amount", "0.00"),
+                                    amount_currency=str(obj.get("amount", {}).get("currency") or "RUB"),
+                                    payment_method_id=pm_token,  # знаем токен из текущего события
+                                    next_charge_at=next_at, status="active",
+                                )
+                except Exception as e:
+                    logger.exception("Failed to check/create subscription for renewal: %s", e)
+            # Проверка pm_token для renewal (дополнительная проверка после обновления)
+            if not pm_token:
+                logger.warning(
+                    "Renewal payment without pm_token: user_id=%s, payment_id=%s, plan_code=%s. "
+                    "Automatic renewals may not work.",
+                    user_id, payment_id, code
+                )
             # уведомление с «до …» брать из next_at
-            await _notify_after_payment(bot, user_id, code, next_at.date().isoformat())
+            try:
+                await _notify_after_payment(bot, user_id, code, next_at.date().isoformat())
+            except Exception as e:
+                logger.warning("Failed to send payment notification to user %s: %s", user_id, e)
+                # Не прерываем обработку платежа при ошибке уведомления
+            
             # попытка инициализировать добавление/приглашение в чат
             try:
                 asyncio.create_task(membership_invite(user_id))
-            except Exception:
-                pass
-            # сброс счётчиков фейлов, обновление last_charge_at выполнено в repo; здесь — обнуление fail-серии на подписке
-            try:
-                from bot.utils.billing_db import SessionLocal, Subscription, now_utc
-                with SessionLocal() as s, s.begin():
-                    rec = (
-                        s.query(Subscription)
-                        .filter(Subscription.user_id == user_id, Subscription.status == "active")
-                        .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
-                        .first()
-                    )
-                    if rec:
-                        rec.consecutive_failures = 0
-                        rec.updated_at = now_utc()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to create membership_invite task for user %s: %s", user_id, e)
+            # consecutive_failures уже сброшен в subscription_mark_charged_for_user()
 
         else:
             # Не рекуррентный кейс (включая trial_tokenless): только пробный период.
             trial_hours = int(str(metadata.get("trial_hours") or "72"))
             trial_until = app_db.set_trial(user_id, hours=trial_hours)
+            
+            # ИСПРАВЛЕНО: Создаём подписку даже для нерекуррентных платежей, если есть plan_code
+            # Это необходимо для отслеживания платежей и правильной работы системы
+            if code and code in TARIFFS:
+                try:
+                    # Вычисляем next_charge_at на основе trial_hours
+                    payment_created_at = obj.get("created_at")
+                    if payment_created_at:
+                        try:
+                            if isinstance(payment_created_at, str):
+                                from dateutil.parser import parse as parse_dt
+                                payment_created_dt_utc = parse_dt(payment_created_at)
+                                if payment_created_dt_utc.tzinfo is None:
+                                    payment_created_dt_utc = payment_created_dt_utc.replace(tzinfo=timezone.utc)
+                                payment_created_dt = payment_created_dt_utc.astimezone(TIMEZONE)
+                            else:
+                                payment_created_dt = now_msk()
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to parse payment created_at for non-recurring payment user %s: %s",
+                                user_id, e
+                            )
+                            payment_created_dt = now_msk()
+                    else:
+                        payment_created_dt = now_msk()
+                    
+                    next_charge_at = payment_created_dt + timedelta(hours=trial_hours)
+                    
+                    # Создаём подписку без payment_method_id (автопродление не будет работать)
+                    billing_db.subscription_upsert(
+                        user_id=user_id,
+                        plan_code=code,
+                        interval_months=months,
+                        amount_value=str(metadata.get("plan_amount") or TARIFFS.get(code, {}).get("amount", "0.00")),
+                        amount_currency=str(obj.get("amount", {}).get("currency") or "RUB"),
+                        payment_method_id=None,  # Нет токена для нерекуррентных платежей
+                        next_charge_at=next_charge_at,
+                        status="active",
+                    )
+                    logger.info(
+                        "Created subscription for non-recurring payment: user_id=%s, plan_code=%s, payment_id=%s. "
+                        "Automatic renewal will not work.",
+                        user_id, code, payment_id
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to create subscription for non-recurring payment user %s, payment_id %s: %s",
+                        user_id, payment_id, e
+                    )
+            
             await _notify_after_payment(bot, user_id, code, trial_until.date().isoformat())
             # попытка инициализировать добавление/приглашение в чат
             try:
                 asyncio.create_task(membership_invite(user_id))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to create membership_invite task for user %s: %s", user_id, e)
 
         # помечаем как обработанный в БД (а в Redis уже зафиксирован финальный статус)
         try:

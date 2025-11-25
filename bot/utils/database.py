@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from typing import Optional
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
 
 from sqlalchemy import (
     create_engine, String, Integer, BigInteger, ForeignKey, DateTime, Text, func
@@ -15,26 +14,10 @@ from sqlalchemy.orm import (
 )
 
 from bot.config import DB_URL
+from bot.utils.time_helpers import (
+    now_msk, to_aware_msk, to_utc_for_db, from_db_naive, msk_str
+)
 import json
-
-MSK = ZoneInfo("Europe/Moscow")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# UTC helpers
-# ──────────────────────────────────────────────────────────────────────────────
-def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def to_aware_utc(dt: datetime | None) -> datetime | None:
-    if dt is None:
-        return None
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
-
-
-def iso_utc_z(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 # =========================
@@ -115,7 +98,7 @@ class ReviewHistory(Base):
         BigInteger, ForeignKey("users.user_id", ondelete="CASCADE"),
         index=True, nullable=False,
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_msk, nullable=False)
 
     # Идентификатор кейса (коллекции вариантов), общий для всех вариантов одного запуска
     case_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
@@ -143,7 +126,7 @@ class SummaryHistory(Base):
         BigInteger, ForeignKey("users.user_id", ondelete="CASCADE"),
         index=True, nullable=False,
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_msk, nullable=False)
 
     source_type: Mapped[str] = mapped_column(String(32), nullable=False)  # "text" | "audio" | "unknown"
     options_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
@@ -162,7 +145,7 @@ class DescriptionHistory(Base):
         BigInteger, ForeignKey("users.user_id", ondelete="CASCADE"),
         index=True, nullable=False,
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_msk, nullable=False)
 
     # Новое поле: уникальный идентификатор генерации (для связи с options и обновления по callback)
     msg_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
@@ -199,7 +182,7 @@ class UserConsent(Base):
         index=True, nullable=False,
     )
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_msk, nullable=False)
 
     user: Mapped[User] = relationship(back_populates="consents")
 
@@ -215,8 +198,8 @@ class Trial(Base):
         primary_key=True,
     )
     until_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_msk, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_msk, nullable=False)
 
     user: Mapped[User] = relationship(back_populates="trials")
 
@@ -234,7 +217,7 @@ class EventLog(Base):
         index=True, nullable=False,
     )
     message: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_msk, nullable=False)
 
     user: Mapped[User] = relationship(back_populates="events")
 
@@ -283,31 +266,33 @@ class AppRepository:
         with self._session() as s, s.begin():
             if s.get(User, user_id) is None:
                 s.add(User(user_id=user_id))
-            rec = UserConsent(user_id=user_id, kind=kind, accepted_at=when or now_utc())
+            when_msk = to_aware_msk(when) if when else now_msk()
+            rec = UserConsent(user_id=user_id, kind=kind, accepted_at=to_utc_for_db(when_msk))
             s.add(rec)
             s.flush()
             return rec.id
 
     # --- trials ---
     def set_trial(self, user_id: int, hours: int = 72) -> datetime:
-        until = now_utc() + timedelta(hours=int(hours))
+        until_msk = now_msk() + timedelta(hours=int(hours))
+        until_utc = to_utc_for_db(until_msk)  # Для БД храним в UTC
         with self._session() as s, s.begin():
             if s.get(User, user_id) is None:
                 s.add(User(user_id=user_id))
             rec = s.get(Trial, user_id)
             if rec is None:
-                s.add(Trial(user_id=user_id, until_at=until))
+                s.add(Trial(user_id=user_id, until_at=until_utc))
             else:
-                rec.until_at = until
-                rec.updated_at = now_utc()
-        return until
+                rec.until_at = until_utc
+                rec.updated_at = to_utc_for_db(now_msk())
+        return until_msk  # Возвращаем в МСК
 
     def get_trial_until(self, user_id: int) -> Optional[datetime]:
         with self._session() as s:
             rec = s.get(Trial, user_id)
             if not rec:
                 return None
-            return to_aware_utc(rec.until_at)
+            return from_db_naive(rec.until_at)
 
     def get_trial_created_at(self, user_id: int) -> Optional[datetime]:
         """Дата первого оформления триала (created_at записи Trial)."""
@@ -315,7 +300,7 @@ class AppRepository:
             rec = s.get(Trial, user_id)
             if not rec:
                 return None
-            return to_aware_utc(rec.created_at)
+            return from_db_naive(rec.created_at)
 
     def trial_cooldown_days_left(self, user_id: int, *, cooldown_days: int = 60) -> int:
         """
@@ -325,7 +310,8 @@ class AppRepository:
         created = self.get_trial_created_at(user_id)
         if not created:
             return 0
-        delta = (now_utc() - created).days
+        now_msk_val = now_msk()
+        delta = (now_msk_val - created).days
         left = cooldown_days - max(0, delta)
         return max(0, left)
 
@@ -346,7 +332,7 @@ class AppRepository:
         with self._session() as s:
             trial_rec = s.get(Trial, user_id)
             if trial_rec:
-                dates.append(to_aware_utc(trial_rec.updated_at))
+                dates.append(from_db_naive(trial_rec.updated_at))
         
         # 2. Последняя подписка и последний успешный платеж
         try:
@@ -360,9 +346,9 @@ class AppRepository:
                     .first()
                 )
                 if sub_rec:
-                    dates.append(to_aware_utc(sub_rec.updated_at))
+                    dates.append(from_db_naive(sub_rec.updated_at))
                     if sub_rec.last_charge_at:
-                        dates.append(to_aware_utc(sub_rec.last_charge_at))
+                        dates.append(from_db_naive(sub_rec.last_charge_at))
                 
                 # Последняя попытка автосписания
                 attempt_rec = (
@@ -372,7 +358,7 @@ class AppRepository:
                     .first()
                 )
                 if attempt_rec:
-                    dates.append(to_aware_utc(attempt_rec.attempted_at))
+                    dates.append(from_db_naive(attempt_rec.attempted_at))
                 
                 # Последний платеж (любой статус - успех, отмена, истечение)
                 payment_rec = (
@@ -386,7 +372,7 @@ class AppRepository:
                     .first()
                 )
                 if payment_rec:
-                    dates.append(to_aware_utc(payment_rec.created_at))
+                    dates.append(from_db_naive(payment_rec.created_at))
         except Exception:
             pass  # billing_db может быть недоступен
         
@@ -402,32 +388,40 @@ class AppRepository:
         Разрешён ли повторный триал/покупка за 1 рубль с учётом кулдауна.
         Проверяет не только триал, но и любые покупки подписки.
         Кулдаун: 90 дней с последней итерации покупки (успех/неуспех, автосписание, любое действие).
+        
+        ИСПРАВЛЕНО: Использует timedelta для точного сравнения вместо .days,
+        чтобы избежать проблем на границе 90 дней (89 дней 23 часа).
         """
         last_action = self.get_last_purchase_action_date(user_id)
         if last_action is None:
             return True  # Не было покупок - разрешено
         
-        now = now_utc()
-        delta = (now - last_action).days
-        return delta >= cooldown_days
+        now_msk_val = now_msk()
+        # ИСПРАВЛЕНО: Используем timedelta для точного сравнения вместо .days
+        # .days возвращает только целую часть, что приводит к проблемам на границе
+        delta = now_msk_val - last_action
+        required_delta = timedelta(days=cooldown_days)
+        return delta >= required_delta
 
     def is_trial_active(self, user_id: int) -> bool:
         until = self.get_trial_until(user_id)
-        return bool(until and now_utc() < to_aware_utc(until))
+        return bool(until and now_msk() < until)
 
     def trial_remaining_hours(self, user_id: int) -> int:
-        until = to_aware_utc(self.get_trial_until(user_id))
+        until = self.get_trial_until(user_id)
         if until is None:
             return 0
-        return max(0, int((until - now_utc()).total_seconds() // 3600))
+        now_msk_val = now_msk()
+        return max(0, int((until - now_msk_val).total_seconds() // 3600))
 
     def list_trial_active_user_ids(self, now: Optional[datetime] = None) -> list[int]:
         """Все пользователи, у кого активен триал на момент now (MySQL 8+)."""
-        now = to_aware_utc(now or now_utc())
+        now_msk_val = to_aware_msk(now) if now else now_msk()
+        now_utc = to_utc_for_db(now_msk_val)  # Для сравнения с БД (БД хранит в UTC)
         with self._session() as s:
             rows = (
                 s.query(Trial.user_id)
-                .filter(Trial.until_at > now)
+                .filter(Trial.until_at > now_utc)
                 .all()
             )
             return [uid for (uid,) in rows]
@@ -733,7 +727,7 @@ class AppRepository:
     # --- events ---
     def event_add(self, user_id: int, text: str) -> None:
         """Сохраняет событие (user_id, сообщение и точный timestamp)."""
-        ts = now_utc()
+        ts = to_utc_for_db(now_msk())  # Для БД храним в UTC
         with self._session() as s, s.begin():
             if s.get(User, user_id) is None:
                 s.add(User(user_id=user_id))
