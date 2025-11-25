@@ -216,7 +216,9 @@ def format_access_text(user_id: int) -> str:
                 .first()
             )
             if rec:
-                if rec.next_charge_at and rec.next_charge_at > now:
+                # Конвертируем next_charge_at из БД (UTC) в МСК для сравнения
+                next_charge_msk = from_db_naive(rec.next_charge_at)
+                if next_charge_msk and next_charge_msk > now:
                     return "✅ Подписка активна"
                 fails = int(rec.consecutive_failures or 0)
                 if fails < 3:
@@ -627,7 +629,7 @@ def _has_paid_or_grace_access(user_id: int) -> bool:
                 return False
             # Конвертируем next_charge_at из БД (UTC) в МСК для сравнения
             next_charge_msk = from_db_naive(rec.next_charge_at)
-            if next_charge_msk and next_charge_msk > now_msk_val:
+            if next_charge_msk and next_charge_msk > now:
                 return True  # оплаченный период ещё идёт
             # оплаченный период закончился — смотрим кол-во попыток
             fails = int(rec.consecutive_failures or 0)
