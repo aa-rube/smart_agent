@@ -122,8 +122,14 @@ async def _membership_remove_http(user_id: int) -> bool:
             logging.warning("membership remove failed: user_id=%s status=%s body=%s",
                             user_id, r.status_code, r.text)
             return False
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as e:
+        # Сетевые ошибки - логируем только предупреждение без полного traceback
+        logging.warning("membership remove connection error for user_id=%s: %s (service may be unavailable)", 
+                       user_id, str(e))
+        return False
     except Exception as e:
-        logging.exception("membership remove exception for user_id=%s: %s", user_id, e)
+        # Другие ошибки - логируем с полным traceback для отладки
+        logging.exception("membership remove unexpected error for user_id=%s: %s", user_id, e)
         return False
 
 
