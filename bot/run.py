@@ -231,14 +231,24 @@ async def main():
         """
         Простой фоновый цикл рекуррентного биллинга.
         Забирает «просроченные» подписки и создаёт платёж по сохранённому способу оплаты.
+        Поддерживает корректное завершение по сигналам (SIGTERM/SIGINT) для systemd.
         """
+        logging.info("billing_loop started")
         while not shutdown_event.is_set():
             try:
                 # Используем МСК везде
                 now_msk_val = now_msk()
                 due = billing_db.subscriptions_due(now=now_msk_val, limit=100)
+                
+                # Проверяем shutdown_event перед началом обработки
+                if shutdown_event.is_set():
+                    logging.info("billing_loop: shutdown signal received, exiting immediately")
+                    break
+                
                 for sub in due:
+                    # Частая проверка shutdown_event для быстрого завершения
                     if shutdown_event.is_set():
+                        logging.info("billing_loop: shutdown signal received during processing, breaking")
                         break
                     
                     user_id = sub["user_id"]
@@ -346,12 +356,24 @@ async def main():
             except Exception as e:
                 logging.exception("billing_loop error: %s", e)
             
-            # Прерываемый sleep
-            try:
-                await asyncio.wait_for(shutdown_event.wait(), timeout=60)
+            # Проверяем shutdown_event перед sleep
+            if shutdown_event.is_set():
+                logging.info("billing_loop: shutdown signal received, exiting")
                 break
+            
+            # Прерываемый sleep с коротким таймаутом для быстрой реакции на сигналы
+            try:
+                # Используем короткий таймаут (5 секунд) для быстрой реакции на shutdown_event
+                await asyncio.wait_for(shutdown_event.wait(), timeout=5.0)
+                # Если shutdown_event установлен, выходим немедленно
+                if shutdown_event.is_set():
+                    logging.info("billing_loop: shutdown signal received during sleep, exiting")
+                    break
             except asyncio.TimeoutError:
+                # Таймаут истёк, продолжаем цикл
                 continue
+        
+        logging.info("billing_loop stopped")
 
     async def notification_loop():
         """
@@ -379,21 +401,41 @@ async def main():
 
     # ---Жёсткий стоп по сигналу---
     def _hard_stop(signum, frame):
-        # максимально быстрый stop для systemd: отменяем таски и мгновенно выходим
-        logging.warning(f"Получен сигнал {signum}, выполняю немедленную остановку...")
+        # максимально быстрый stop для systemd: устанавливаем shutdown_event и отменяем таски
+        signal_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+        logging.warning(f"Получен сигнал {signal_name} ({signum}), выполняю немедленную остановку...")
+        
+        # Устанавливаем shutdown_event - все циклы должны немедленно завершиться
+        shutdown_event.set()
+        
         try:
-            shutdown_event.set()
+            # Отменяем все задачи, кроме текущей
             loop = asyncio.get_event_loop()
-            for task in asyncio.all_tasks(loop):
-                if task is not asyncio.current_task(loop):
-                    task.cancel()
+            if loop.is_running():
+                current_task = asyncio.current_task(loop)
+                for task in asyncio.all_tasks(loop):
+                    if task is not current_task and not task.done():
+                        task.cancel()
+                        logging.debug(f"Отменена задача: {task.get_name()}")
+        except Exception as e:
+            logging.warning(f"Ошибка при отмене задач: {e}")
+        
+        # Даём немного времени на корректное завершение (но не ждём долго)
+        try:
+            # Небольшая задержка для завершения текущих операций в циклах
+            # но не более 2 секунд
+            import time
+            time.sleep(0.5)  # 500ms на завершение текущих операций
         except Exception:
             pass
+        
         try:
             logging.shutdown()
         except Exception:
             pass
+        
         # Жёсткий выход без ожидания сборки/cleanup — гарантирует моментальный рестарт
+        logging.warning("Принудительное завершение процесса")
         os._exit(0)
 
     signal.signal(signal.SIGTERM, _hard_stop)
