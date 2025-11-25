@@ -16,6 +16,7 @@ from bot.utils import database as app_db
 from bot.utils import billing_db
 from bot.utils.mailing import send_last_published_to_chat  # обёртка на "последний пост"
 from bot.utils.redis_repo import set_nx_with_ttl
+from bot.utils.time_helpers import from_db_naive
 from bot.config import get_file_path
 
 MSK = ZoneInfo("Europe/Moscow")
@@ -311,7 +312,7 @@ def _compose_trial_d3_text(
     Если next_charge_at попадает на «завтра» по МСК — используем слово «Завтра», иначе указываем дату.
     """
     now = now or _utcnow()
-    nca = billing_db.to_aware_utc(next_charge_at) if next_charge_at else None
+    nca = from_db_naive(next_charge_at) if next_charge_at else None
     plan = _tariff_name(plan_code, interval_months)
     price = _format_amount(amount_value, amount_currency)
 
@@ -607,7 +608,7 @@ async def run_paid_lifecycle(bot: Bot, *, sent_in_run: Optional[set[int]] = None
             continue
         # 0) СНАЧАЛА проверяем pre_renew (чтобы не было «трёх сообщений в один момент»)
         if next_charge_at is not None:
-            nca = billing_db.to_aware_utc(next_charge_at) or next_charge_at
+            nca = from_db_naive(next_charge_at) if next_charge_at else None
             delta_s = (nca - now).total_seconds()
             if 0 < delta_s <= 24 * 3600:
                 epoch_key = int(nca.timestamp())

@@ -20,7 +20,7 @@ from bot.utils.notification import run_notification_scheduler
 
 from bot.handlers.payment_handler import process_yookassa_webhook
 from bot.utils import youmoney
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from bot.utils.time_helpers import now_msk, to_aware_msk
 from bot.handlers.description_playbook import register_http_endpoints
 
