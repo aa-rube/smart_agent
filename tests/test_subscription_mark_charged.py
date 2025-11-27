@@ -9,7 +9,7 @@ from bot.utils.billing_db import subscription_mark_charged_for_user
 from bot.utils.time_helpers import now_msk, TIMEZONE
 
 
-def test_subscription_mark_charged_by_subscription_id(mock_subscription, mock_time):
+def test_subscription_mark_charged_by_subscription_id(mock_time):
     """Test updating subscription by subscription_id."""
     with patch('bot.utils.billing_db.SessionLocal') as mock_session_local, \
          patch('bot.utils.billing_db.now_msk', return_value=mock_time):
@@ -19,13 +19,14 @@ def test_subscription_mark_charged_by_subscription_id(mock_subscription, mock_ti
         mock_session.begin.return_value.__enter__.return_value = None
         
         # Setup subscription query - создаем новый объект с правильным user_id
-        # Проблема: mock_subscription из фикстуры может иметь другой user_id
+        # НЕ используем mock_subscription из фикстуры, чтобы избежать проблем с user_id
         mock_sub = MagicMock()
         mock_sub.id = 1
         mock_sub.user_id = 7833048230  # Должен совпадать с переданным user_id
         mock_sub.status = "active"  # Должен быть active
         mock_sub.consecutive_failures = 0
-        mock_session.get.return_value = mock_sub
+        # Настраиваем get() так, чтобы он возвращал наш объект при любом вызове
+        mock_session.get = MagicMock(return_value=mock_sub)
         
         # Execute
         result = subscription_mark_charged_for_user(
@@ -40,7 +41,7 @@ def test_subscription_mark_charged_by_subscription_id(mock_subscription, mock_ti
         mock_session.flush.assert_called_once()
 
 
-def test_subscription_mark_charged_by_plan_code(mock_subscription, mock_time):
+def test_subscription_mark_charged_by_plan_code(mock_time):
     """Test updating subscription by plan_code."""
     with patch('bot.utils.billing_db.SessionLocal') as mock_session_local, \
          patch('bot.utils.billing_db.now_msk', return_value=mock_time):
@@ -54,13 +55,15 @@ def test_subscription_mark_charged_by_plan_code(mock_subscription, mock_time):
         # Нужно правильно настроить моки для query()
         # Создаем новый объект с правильным user_id
         mock_sub = MagicMock()
-        mock_sub.id = 1
+        mock_sub.id = 1  # Важно: должен быть id=1 для проверки
         mock_sub.user_id = 7833048230
         mock_sub.plan_code = "1m"
         mock_sub.status = "active"
         mock_sub.consecutive_failures = 0
         
         # Настраиваем query() для поиска по plan_code
+        # Когда не передается subscription_id, get() не вызывается, только query()
+        mock_session.get = MagicMock(return_value=None)  # Не используется в этом тесте
         mock_query = MagicMock()
         mock_query.filter.return_value.first.return_value = mock_sub
         mock_session.query.return_value = mock_query
@@ -101,7 +104,7 @@ def test_subscription_mark_charged_subscription_not_found(mock_time):
         assert result is None
 
 
-def test_subscription_mark_charged_inactive_subscription_fallback(mock_subscription, mock_time):
+def test_subscription_mark_charged_inactive_subscription_fallback(mock_time):
     """Test fallback when subscription_id points to inactive subscription."""
     with patch('bot.utils.billing_db.SessionLocal') as mock_session_local, \
          patch('bot.utils.billing_db.now_msk', return_value=mock_time):
@@ -116,7 +119,8 @@ def test_subscription_mark_charged_inactive_subscription_fallback(mock_subscript
         mock_inactive_sub.id = 1
         mock_inactive_sub.status = "canceled"
         mock_inactive_sub.user_id = 7833048230  # Совпадает, но статус canceled
-        mock_session.get.return_value = mock_inactive_sub
+        # Настраиваем get() так, чтобы он возвращал наш объект
+        mock_session.get = MagicMock(return_value=mock_inactive_sub)
         
         # Fallback - find active subscription by plan_code
         mock_active_sub = MagicMock()
