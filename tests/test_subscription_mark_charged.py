@@ -25,8 +25,15 @@ def test_subscription_mark_charged_by_subscription_id(mock_time):
         mock_sub.user_id = 7833048230  # Должен совпадать с переданным user_id
         mock_sub.status = "active"  # Должен быть active
         mock_sub.consecutive_failures = 0
-        # Настраиваем get() так, чтобы он возвращал наш объект при любом вызове
-        mock_session.get = MagicMock(return_value=mock_sub)
+        
+        # Настраиваем get() так, чтобы он возвращал наш объект при вызове с Subscription и subscription_id=1
+        # Используем side_effect для более точного контроля
+        def get_side_effect(model_class, pk):
+            if pk == 1:
+                return mock_sub
+            return None
+        
+        mock_session.get = MagicMock(side_effect=get_side_effect)
         
         # Execute
         result = subscription_mark_charged_for_user(
@@ -63,10 +70,24 @@ def test_subscription_mark_charged_by_plan_code(mock_time):
         
         # Настраиваем query() для поиска по plan_code
         # Когда не передается subscription_id, get() не вызывается, только query()
+        # Код делает два вызова query():
+        # 1. Поиск по plan_code (должен найти подписку)
+        # 2. Fallback поиск (не должен вызываться, т.к. первая подписка найдена)
+        
+        # Первый query - поиск по plan_code (находит подписку)
+        mock_query1 = MagicMock()
+        mock_filter1 = MagicMock()
+        mock_filter1.first.return_value = mock_sub  # Находит подписку
+        mock_query1.filter.return_value = mock_filter1
+        
+        # Fallback query не должен вызываться, но настраиваем на всякий случай
+        mock_query2 = MagicMock()
+        mock_filter2 = MagicMock()
+        mock_filter2.order_by.return_value.first.return_value = None
+        mock_query2.filter.return_value = mock_filter2
+        
+        mock_session.query.side_effect = [mock_query1, mock_query2]
         mock_session.get = MagicMock(return_value=None)  # Не используется в этом тесте
-        mock_query = MagicMock()
-        mock_query.filter.return_value.first.return_value = mock_sub
-        mock_session.query.return_value = mock_query
         
         # Execute
         result = subscription_mark_charged_for_user(
@@ -119,8 +140,14 @@ def test_subscription_mark_charged_inactive_subscription_fallback(mock_time):
         mock_inactive_sub.id = 1
         mock_inactive_sub.status = "canceled"
         mock_inactive_sub.user_id = 7833048230  # Совпадает, но статус canceled
-        # Настраиваем get() так, чтобы он возвращал наш объект
-        mock_session.get = MagicMock(return_value=mock_inactive_sub)
+        
+        # Настраиваем get() так, чтобы он возвращал наш объект при вызове с Subscription и subscription_id=1
+        def get_side_effect(model_class, pk):
+            if pk == 1:
+                return mock_inactive_sub
+            return None
+        
+        mock_session.get = MagicMock(side_effect=get_side_effect)
         
         # Fallback - find active subscription by plan_code
         mock_active_sub = MagicMock()
@@ -131,15 +158,19 @@ def test_subscription_mark_charged_inactive_subscription_fallback(mock_time):
         mock_active_sub.consecutive_failures = 0
         
         # Настраиваем последовательные вызовы query() для fallback
+        # Код делает fallback поиск по plan_code (первый query после того как rec стал None)
         mock_query1 = MagicMock()
-        mock_query1.filter.return_value.first.return_value = mock_active_sub
-        mock_query2 = MagicMock()
-        mock_query2.filter.return_value.order_by.return_value.first.return_value = None
+        mock_filter1 = MagicMock()
+        mock_filter1.first.return_value = mock_active_sub  # Поиск по plan_code находит активную подписку
+        mock_query1.filter.return_value = mock_filter1
         
-        mock_session.query.side_effect = [
-            mock_query1,  # Поиск по plan_code
-            mock_query2,  # Fallback поиск по умолчанию (не используется в этом случае)
-        ]
+        # Второй query (fallback по умолчанию) не должен вызываться, т.к. первый нашел подписку
+        mock_query2 = MagicMock()
+        mock_filter2 = MagicMock()
+        mock_filter2.order_by.return_value.first.return_value = None
+        mock_query2.filter.return_value = mock_filter2
+        
+        mock_session.query.side_effect = [mock_query1, mock_query2]
         
         # Execute
         result = subscription_mark_charged_for_user(
