@@ -75,7 +75,10 @@ def test_mark_charge_attempt_status(in_memory_db):
         due_at=now + timedelta(days=30)
     )
     
-    # Update status
+    # First link payment_id to attempt
+    repo.link_payment_to_attempt(attempt_id=attempt_id, payment_id="payment_123")
+    
+    # Then update status
     repo.mark_charge_attempt_status(
         payment_id="payment_123",
         status="succeeded"

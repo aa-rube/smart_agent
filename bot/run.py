@@ -232,27 +232,29 @@ async def main():
             except asyncio.TimeoutError:
                 continue
 
-    async def billing_loop():
-        """
-        Простой фоновый цикл рекуррентного биллинга.
-        Забирает «просроченные» подписки и создаёт платёж по сохранённому способу оплаты.
-        Поддерживает корректное завершение по сигналам (SIGTERM/SIGINT) для systemd.
-        """
-        logging.info("billing_loop started")
-        while not shutdown_event.is_set():
+async def billing_loop(shutdown_event_param=None):
+    """
+    Простой фоновый цикл рекуррентного биллинга.
+    Забирает «просроченные» подписки и создаёт платёж по сохранённому способу оплаты.
+    Поддерживает корректное завершение по сигналам (SIGTERM/SIGINT) для systemd.
+    """
+    # Используем переданный shutdown_event или глобальный
+    event = shutdown_event_param if shutdown_event_param is not None else shutdown_event
+    logging.info("billing_loop started")
+    while not event.is_set():
             try:
                 # Используем МСК везде
                 now_msk_val = now_msk()
                 due = billing_db.subscriptions_due(now=now_msk_val, limit=100)
                 
                 # Проверяем shutdown_event перед началом обработки
-                if shutdown_event.is_set():
+                if event.is_set():
                     logging.info("billing_loop: shutdown signal received, exiting immediately")
                     break
                 
                 for sub in due:
                     # Частая проверка shutdown_event для быстрого завершения
-                    if shutdown_event.is_set():
+                    if event.is_set():
                         logging.info("billing_loop: shutdown signal received during processing, breaking")
                         break
                     
@@ -392,16 +394,16 @@ async def main():
                 logging.exception("billing_loop error: %s", e)
             
             # Проверяем shutdown_event перед sleep
-            if shutdown_event.is_set():
+            if event.is_set():
                 logging.info("billing_loop: shutdown signal received, exiting")
                 break
             
             # Прерываемый sleep с коротким таймаутом для быстрой реакции на сигналы
             try:
                 # Используем короткий таймаут (5 секунд) для быстрой реакции на shutdown_event
-                await asyncio.wait_for(shutdown_event.wait(), timeout=5.0)
+                await asyncio.wait_for(event.wait(), timeout=5.0)
                 # Если shutdown_event установлен, выходим немедленно
-                if shutdown_event.is_set():
+                if event.is_set():
                     logging.info("billing_loop: shutdown signal received during sleep, exiting")
                     break
             except asyncio.TimeoutError:
@@ -478,7 +480,7 @@ async def main():
     try:
         logging.info("Бот запущен")
         # Запускаем задачи как отдельные таски, чтобы их можно было отменить мгновенно
-        billing_task = asyncio.create_task(billing_loop(), name="billing_loop")
+        billing_task = asyncio.create_task(billing_loop(shutdown_event), name="billing_loop")
         mailing_task = asyncio.create_task(mailing_loop(), name="mailing_loop")
         notification_task = asyncio.create_task(notification_loop(), name="notification_loop")
         enforcer_task = asyncio.create_task(membership_enforcer_loop(), name="membership_enforcer_loop")

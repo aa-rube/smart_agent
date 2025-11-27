@@ -42,16 +42,15 @@ async def test_billing_loop_full_cycle(in_memory_db, mock_bot):
          patch('bot.run.billing_db.subscriptions_due', repo.subscriptions_due), \
          patch('bot.run.billing_db.precharge_guard_and_attempt', repo.precharge_guard_and_attempt), \
          patch('bot.run.billing_db.link_payment_to_attempt', repo.link_payment_to_attempt), \
-         patch('bot.run.youmoney.charge_saved_method') as mock_charge, \
-         patch('bot.run.shutdown_event', shutdown_event):
+         patch('bot.run.youmoney.charge_saved_method') as mock_charge:
         
         mock_charge.return_value = "payment_123"
         
         # 4. Call one iteration of billing_loop
         from bot.run import billing_loop
         
-        # Create task
-        task = asyncio.create_task(billing_loop())
+        # Create task with shutdown_event
+        task = asyncio.create_task(billing_loop(shutdown_event))
         await asyncio.sleep(0.2)  # Give time for one iteration
         shutdown_event.set()
         
@@ -105,8 +104,7 @@ async def test_billing_loop_handles_errors(in_memory_db, mock_bot):
     with patch('bot.run.billing_db._repo', repo), \
          patch('bot.run.billing_db.subscriptions_due', repo.subscriptions_due), \
          patch('bot.run.billing_db.precharge_guard_and_attempt', repo.precharge_guard_and_attempt), \
-         patch('bot.run.youmoney.charge_saved_method') as mock_charge, \
-         patch('bot.run.shutdown_event', shutdown_event):
+         patch('bot.run.youmoney.charge_saved_method') as mock_charge:
         
         # Simulate error
         mock_charge.side_effect = ValueError("Invalid payment method")
@@ -114,7 +112,7 @@ async def test_billing_loop_handles_errors(in_memory_db, mock_bot):
         # Call billing_loop
         from bot.run import billing_loop
         
-        task = asyncio.create_task(billing_loop())
+        task = asyncio.create_task(billing_loop(shutdown_event))
         await asyncio.sleep(0.2)
         shutdown_event.set()
         
@@ -170,13 +168,12 @@ async def test_billing_loop_skips_duplicates(in_memory_db, mock_bot):
     
     with patch('bot.run.billing_db._repo', repo), \
          patch('bot.run.billing_db.subscriptions_due', repo.subscriptions_due), \
-         patch('bot.run.youmoney.charge_saved_method') as mock_charge, \
-         patch('bot.run.shutdown_event', shutdown_event):
+         patch('bot.run.youmoney.charge_saved_method') as mock_charge:
         
         # Call billing_loop
         from bot.run import billing_loop
         
-        task = asyncio.create_task(billing_loop())
+        task = asyncio.create_task(billing_loop(shutdown_event))
         await asyncio.sleep(0.2)
         shutdown_event.set()
         
@@ -229,13 +226,12 @@ async def test_billing_loop_respects_guard_rules(in_memory_db, mock_bot):
     
     with patch('bot.run.billing_db._repo', repo), \
          patch('bot.run.billing_db.subscriptions_due', repo.subscriptions_due), \
-         patch('bot.run.youmoney.charge_saved_method') as mock_charge, \
-         patch('bot.run.shutdown_event', shutdown_event):
+         patch('bot.run.youmoney.charge_saved_method') as mock_charge:
         
         # Call billing_loop
         from bot.run import billing_loop
         
-        task = asyncio.create_task(billing_loop())
+        task = asyncio.create_task(billing_loop(shutdown_event))
         await asyncio.sleep(0.2)
         shutdown_event.set()
         
@@ -281,13 +277,12 @@ async def test_billing_loop_skips_no_payment_method(in_memory_db, mock_bot):
     
     with patch('bot.run.billing_db._repo', repo), \
          patch('bot.run.billing_db.subscriptions_due', repo.subscriptions_due), \
-         patch('bot.run.youmoney.charge_saved_method') as mock_charge, \
-         patch('bot.run.shutdown_event', shutdown_event):
+         patch('bot.run.youmoney.charge_saved_method') as mock_charge:
         
         # Call billing_loop
         from bot.run import billing_loop
         
-        task = asyncio.create_task(billing_loop())
+        task = asyncio.create_task(billing_loop(shutdown_event))
         await asyncio.sleep(0.2)
         shutdown_event.set()
         

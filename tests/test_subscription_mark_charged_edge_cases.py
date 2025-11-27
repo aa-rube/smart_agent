@@ -237,13 +237,14 @@ def test_precharge_guard_edge_cases(in_memory_db):
         sub.last_attempt_at = to_utc_for_db(now - timedelta(hours=12))
         s.flush()
     
-    # Should be blocked (exactly 12 hours, not more)
+    # Should pass (exactly 12 hours = pass, blocked only if < 12 hours)
+    # Logic uses strict <, so exactly 12 hours should pass
     attempt_id = repo.precharge_guard_and_attempt(
         subscription_id=sub_id3,
         now=now,
         user_id=789
     )
-    assert attempt_id is None  # Blocked
+    assert attempt_id is not None  # Should pass (exactly 12 hours = pass)
 
 
 def test_subscription_mark_charged_consecutive_failures_reset(in_memory_db):

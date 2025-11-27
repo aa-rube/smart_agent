@@ -42,7 +42,10 @@ def test_subscription_cancel_for_user_single(in_memory_db):
         assert sub.payment_method_id is None  # Cleared
         assert sub.next_charge_at is None  # Cleared
         assert sub.updated_at is not None
-        assert sub.updated_at > original_sub.updated_at
+        # Compare in same timezone (MSK)
+        updated_at_msk = from_db_naive(sub.updated_at)
+        original_updated_at_msk = from_db_naive(original_sub.updated_at)
+        assert updated_at_msk > original_updated_at_msk
 
 
 def test_subscription_cancel_for_user_multiple(in_memory_db):
@@ -137,8 +140,10 @@ def test_subscription_cancel_for_user_updates_fields(in_memory_db):
         # next_charge_at cleared
         assert sub.next_charge_at is None
         
-        # updated_at updated
-        assert sub.updated_at > original_updated_at
+        # updated_at updated (compare in same timezone)
+        updated_at_msk = from_db_naive(sub.updated_at)
+        original_updated_at_msk = from_db_naive(original_updated_at)
+        assert updated_at_msk > original_updated_at_msk
 
 
 def test_subscription_cancel_for_user_only_active(in_memory_db):

@@ -102,8 +102,10 @@ def test_subscription_upsert_updates_existing(in_memory_db):
         
         # created_at should not change
         assert updated_sub.created_at == original_created_at
-        # updated_at should be updated
-        assert updated_sub.updated_at > original_sub.updated_at
+        # updated_at should be updated (compare in same timezone)
+        updated_at_msk = from_db_naive(updated_sub.updated_at)
+        original_updated_at_msk = from_db_naive(original_sub.updated_at)
+        assert updated_at_msk > original_updated_at_msk
 
 
 def test_subscription_upsert_prevents_duplicates(in_memory_db):

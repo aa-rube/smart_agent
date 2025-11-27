@@ -1018,37 +1018,69 @@ class BillingRepository:
         """
         Создаёт или обновляет запись в payment_log.
         Использует INSERT ... ON DUPLICATE KEY UPDATE для защиты от race condition.
+        Поддерживает как MySQL, так и SQLite (для тестов).
         """
         metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
         raw_payload_json = json.dumps(raw_payload or {}, ensure_ascii=False)
         with self._session() as s, s.begin():
-            # Используем SQL INSERT ... ON DUPLICATE KEY UPDATE для атомарности
-            # Это защищает от race condition при одновременной обработке webhook'ов
-            from sqlalchemy.dialects.mysql import insert as mysql_insert
-            # MySQL поддерживает INSERT ... ON DUPLICATE KEY UPDATE
-            stmt = (
-                mysql_insert(PaymentLog)
-                .values(
-                    payment_id=payment_id,
-                    user_id=user_id,
-                    amount_value=amount_value,
-                    amount_currency=amount_currency or "RUB",
-                    event=event,
-                    status=status,
-                    metadata_json=metadata_json,
-                    raw_payload_json=raw_payload_json,
-                    created_at=to_utc_for_db(now_msk()),
+            # Определяем диалект БД
+            dialect = s.bind.dialect.name
+            
+            if dialect == 'sqlite':
+                # SQLite использует ON CONFLICT DO UPDATE
+                from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+                stmt = (
+                    sqlite_insert(PaymentLog)
+                    .values(
+                        payment_id=payment_id,
+                        user_id=user_id,
+                        amount_value=amount_value,
+                        amount_currency=amount_currency or "RUB",
+                        event=event,
+                        status=status,
+                        metadata_json=metadata_json,
+                        raw_payload_json=raw_payload_json,
+                        created_at=to_utc_for_db(now_msk()),
+                    )
+                    .on_conflict_do_update(
+                        index_elements=['payment_id'],
+                        set_=dict(
+                            user_id=user_id if user_id is not None else PaymentLog.user_id,
+                            amount_value=amount_value,
+                            amount_currency=amount_currency or PaymentLog.amount_currency,
+                            event=event or PaymentLog.event,
+                            status=status or PaymentLog.status,
+                            metadata_json=metadata_json,
+                            raw_payload_json=raw_payload_json,
+                        )
+                    )
                 )
-                .on_duplicate_key_update(
-                    user_id=user_id if user_id else PaymentLog.user_id,
-                    amount_value=amount_value,
-                    amount_currency=amount_currency or PaymentLog.amount_currency,
-                    event=event or PaymentLog.event,
-                    status=status or PaymentLog.status,
-                    metadata_json=metadata_json,
-                    raw_payload_json=raw_payload_json,
+            else:
+                # MySQL использует ON DUPLICATE KEY UPDATE
+                from sqlalchemy.dialects.mysql import insert as mysql_insert
+                stmt = (
+                    mysql_insert(PaymentLog)
+                    .values(
+                        payment_id=payment_id,
+                        user_id=user_id,
+                        amount_value=amount_value,
+                        amount_currency=amount_currency or "RUB",
+                        event=event,
+                        status=status,
+                        metadata_json=metadata_json,
+                        raw_payload_json=raw_payload_json,
+                        created_at=to_utc_for_db(now_msk()),
+                    )
+                    .on_duplicate_key_update(
+                        user_id=user_id if user_id else PaymentLog.user_id,
+                        amount_value=amount_value,
+                        amount_currency=amount_currency or PaymentLog.amount_currency,
+                        event=event or PaymentLog.event,
+                        status=status or PaymentLog.status,
+                        metadata_json=metadata_json,
+                        raw_payload_json=raw_payload_json,
+                    )
                 )
-            )
             s.execute(stmt)
 
     def payment_log_is_processed(self, payment_id: str) -> bool:
