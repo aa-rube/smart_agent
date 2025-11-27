@@ -670,6 +670,8 @@ def _create_links_for_selection(user_id: int) -> tuple[Optional[str], Optional[s
     has_active_subscription = False
     try:
         from bot.utils.billing_db import SessionLocal, Subscription
+        from bot.utils.time_helpers import from_db_naive, now_msk
+        from datetime import timedelta
         with SessionLocal() as s:
             active_sub = (
                 s.query(Subscription)
@@ -677,13 +679,39 @@ def _create_links_for_selection(user_id: int) -> tuple[Optional[str], Optional[s
                 .first()
             )
             has_active_subscription = active_sub is not None
+            
+            # Дополнительная проверка: есть ли canceled подписка с недавним last_charge_at (в пределах кулдауна)
+            # Это предотвращает повторное предложение купить за 1 рубль после canceled подписки
+            if not has_active_subscription:
+                canceled_sub = (
+                    s.query(Subscription)
+                    .filter(
+                        Subscription.user_id == user_id,
+                        Subscription.status == "canceled",
+                        Subscription.last_charge_at.isnot(None)
+                    )
+                    .order_by(Subscription.last_charge_at.desc())
+                    .first()
+                )
+                if canceled_sub:
+                    last_charge_msk = from_db_naive(canceled_sub.last_charge_at)
+                    if last_charge_msk:
+                        cooldown_days = 90
+                        cooldown_delta = timedelta(days=cooldown_days)
+                        now_msk_val = now_msk()
+                        if (now_msk_val - last_charge_msk) < cooldown_delta:
+                            # Есть canceled подписка в пределах кулдауна - считаем что есть активная подписка
+                            # Это заставит предложить полную оплату вместо trial за 1 рубль
+                            has_active_subscription = True
     except Exception:
         pass
     
     # ВАЖНО: Для тарифа "1m" с trial_amount проверяем кулдаун ТОЛЬКО для первого платежа.
-    # Если есть активная подписка - это renewal, всегда полная оплата.
+    # Если есть активная подписка (или canceled в пределах кулдауна) - это renewal, всегда полная оплата.
+    # Используем единообразную проверку кулдауна через is_trial_allowed
     if has_trial and not has_active_subscription:
         # Первый платёж - проверяем кулдаун для пробного периода за 1 рубль
+        # is_trial_allowed использует get_last_purchase_action_date, который учитывает все покупки
         if app_db.is_trial_allowed(user_id, cooldown_days=90):
             # Кулдаун прошел - создаем пробный период за 1 рубль
             first_amount = plan["trial_amount"]
@@ -1130,7 +1158,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
             )
             # уведомление
             try:
-                await _notify_after_payment(bot, user_id, code, trial_until.date().isoformat())
+                await _notify_after_payment(bot, user_id, code, trial_until.date().isoformat(), payment_id=payment_id)
             except Exception as e:
                 logger.warning("Failed to send payment notification to user %s: %s", user_id, e)
                 # Не прерываем обработку платежа при ошибке уведомления
@@ -1281,7 +1309,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                 )
             # уведомление с «до …» брать из next_at
             try:
-                await _notify_after_payment(bot, user_id, code, next_at.date().isoformat())
+                await _notify_after_payment(bot, user_id, code, next_at.date().isoformat(), payment_id=payment_id)
             except Exception as e:
                 logger.warning("Failed to send payment notification to user %s: %s", user_id, e)
                 # Не прерываем обработку платежа при ошибке уведомления
@@ -1347,7 +1375,7 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
                         user_id, payment_id, e
                     )
             
-            await _notify_after_payment(bot, user_id, code, trial_until.date().isoformat())
+            await _notify_after_payment(bot, user_id, code, trial_until.date().isoformat(), payment_id=payment_id)
             # попытка инициализировать добавление/приглашение в чат
             try:
                 asyncio.create_task(membership_invite(user_id))
@@ -1367,7 +1395,25 @@ async def process_yookassa_webhook(bot: Bot, payload: Dict) -> Tuple[int, str]:
         return 500, f"error: {e}"
 
 
-async def _notify_after_payment(bot: Bot, user_id: int, code: str, until_date_iso: str) -> None:
+async def _notify_after_payment(bot: Bot, user_id: int, code: str, until_date_iso: str, payment_id: Optional[str] = None) -> None:
+    """
+    Отправляет уведомление об успешном платеже с идемпотентностью через Redis.
+    Если payment_id передан, проверяет что уведомление ещё не было отправлено.
+    """
+    # Идемпотентность через Redis (если payment_id доступен)
+    if payment_id:
+        from bot.utils.redis_repo import set_nx_with_ttl
+        key = f"notif:payment_success:{payment_id}"
+        ttl_sec = 7 * 24 * 3600  # 7 дней
+        try:
+            need_send = await set_nx_with_ttl(key, "1", ttl_sec)
+            if not need_send:
+                logger.debug("Payment success notification already sent for payment_id=%s, user_id=%s", payment_id, user_id)
+                return
+        except Exception as e:
+            logger.warning("Failed to check idempotency for payment notification payment_id=%s: %s", payment_id, e)
+            # Продолжаем отправку при ошибке Redis
+    
     try:
         await bot.send_message(
             chat_id=user_id,

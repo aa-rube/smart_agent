@@ -262,16 +262,21 @@ async def main():
                     subscription_id = sub.get("id")
                     # если токена нет (триал был без сохранённой карты) — пропускаем
                     if not pm_id:
-                        logging.info("Skip recurring: subscription %s for user %s has no payment_method_id", subscription_id, user_id)
+                        # Это нормальная ситуация для trial без сохранённой карты - логируем только на debug
+                        logging.debug("Skip recurring: subscription %s for user %s has no payment_method_id", subscription_id, user_id)
                         continue
                     amount = sub["amount_value"]
                     plan_code = sub["plan_code"]
 
-                    # Проверка на дубликаты: есть ли активная попытка с payment_id для этой подписки
+                    # Проверка на дубликаты: есть ли активная попытка с payment_id или недавно созданная попытка без payment_id
+                    # Это предотвращает создание нескольких платежей при race condition между созданием платежа и получением webhook
                     try:
                         from bot.utils.billing_db import SessionLocal, ChargeAttempt
+                        from bot.utils.time_helpers import to_utc_for_db
+                        from datetime import timedelta
                         with SessionLocal() as s:
-                            existing_attempt = (
+                            # Проверяем попытки с payment_id (уже создан платёж)
+                            existing_attempt_with_payment = (
                                 s.query(ChargeAttempt)
                                 .filter(
                                     ChargeAttempt.subscription_id == subscription_id,
@@ -280,9 +285,32 @@ async def main():
                                 )
                                 .first()
                             )
-                            if existing_attempt:
-                                logging.info("Skip recurring: active attempt with payment_id exists (sub=%s, user=%s, payment_id=%s)", 
-                                           subscription_id, user_id, existing_attempt.payment_id)
+                            if existing_attempt_with_payment:
+                                logging.warning(
+                                    "Skip recurring: active attempt with payment_id exists (sub=%s, user=%s, payment_id=%s, attempt_id=%s)", 
+                                    subscription_id, user_id, existing_attempt_with_payment.payment_id, existing_attempt_with_payment.id
+                                )
+                                continue
+                            
+                            # Проверяем недавно созданные попытки без payment_id (за последние 5 минут)
+                            # Это предотвращает создание нескольких платежей при race condition
+                            recent_threshold = now_msk_val - timedelta(minutes=5)
+                            recent_threshold_utc = to_utc_for_db(recent_threshold)
+                            recent_attempt = (
+                                s.query(ChargeAttempt)
+                                .filter(
+                                    ChargeAttempt.subscription_id == subscription_id,
+                                    ChargeAttempt.status == "created",
+                                    ChargeAttempt.payment_id.is_(None),
+                                    ChargeAttempt.attempted_at >= recent_threshold_utc
+                                )
+                                .first()
+                            )
+                            if recent_attempt:
+                                logging.warning(
+                                    "Skip recurring: recent attempt without payment_id exists (sub=%s, user=%s, attempt_id=%s, attempted_at=%s)", 
+                                    subscription_id, user_id, recent_attempt.id, recent_attempt.attempted_at
+                                )
                                 continue
                     except Exception as e:
                         logging.warning("Failed to check for duplicate attempts: %s", e)
@@ -304,7 +332,9 @@ async def main():
                             user_id=user_id,
                         )
                         if not attempt_id:
-                            logging.info("Skip recurring: guard blocked (sub=%s, user=%s)", subscription_id, user_id)
+                            # Guard заблокировал - это нормально (лимиты ретраев, паузы и т.д.)
+                            # Логируем только на debug уровне, чтобы не засорять логи
+                            logging.debug("Skip recurring: guard blocked (sub=%s, user=%s)", subscription_id, user_id)
                             continue
                         
                         # Создаём платёж с передачей attempt_id для обработки ошибок

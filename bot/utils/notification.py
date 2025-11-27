@@ -575,11 +575,12 @@ async def run_paid_lifecycle(bot: Bot, *, sent_in_run: Optional[set[int]] = None
 
     Session = billing_db.SessionLocal
     with Session() as s:
-        subs: List[Tuple[int, datetime, datetime]] = (
+        subs: List[Tuple[int, datetime, datetime, Optional[datetime]]] = (
             s.query(
                 billing_db.Subscription.user_id,
                 billing_db.Subscription.created_at,
                 billing_db.Subscription.next_charge_at,
+                billing_db.Subscription.last_charge_at,
             )
             .filter(
                 billing_db.Subscription.user_id.in_(active_ids),
@@ -594,20 +595,34 @@ async def run_paid_lifecycle(bot: Bot, *, sent_in_run: Optional[set[int]] = None
             .all()
         )
 
-    by_user: Dict[int, Tuple[datetime, datetime]] = {}
-    for uid, created_at, next_charge_at in subs:
+    by_user: Dict[int, Tuple[datetime, datetime, Optional[datetime]]] = {}
+    for uid, created_at, next_charge_at, last_charge_at in subs:
         if uid not in by_user:
-            by_user[uid] = (created_at, next_charge_at)
+            by_user[uid] = (created_at, next_charge_at, last_charge_at)
 
     sent = dict(d3=0, d5=0, d7=0, d10=0, pre=0)
-    for uid, (created_at, next_charge_at) in by_user.items():
+    for uid, (created_at, next_charge_at, last_charge_at) in by_user.items():
         if sent_in_run is not None and uid in sent_in_run:
             continue
         h = _hours_since(created_at, now)
         if h < 0:
             continue
         # 0) СНАЧАЛА проверяем pre_renew (чтобы не было «трёх сообщений в один момент»)
-        if next_charge_at is not None:
+        # ВАЖНО: Не отправляем pre_renew уведомление, если был недавний успешный платёж (в пределах 2 часов)
+        # Это предотвращает отправку "скоро списание" сразу после успешного списания
+        should_skip_pre_renew = False
+        if last_charge_at is not None:
+            last_charge_msk = from_db_naive(last_charge_at)
+            if last_charge_msk:
+                hours_since_charge = (now - last_charge_msk).total_seconds() / 3600
+                if hours_since_charge < 2:
+                    should_skip_pre_renew = True
+                    logging.debug(
+                        "[notif][paid] Skipping pre_renew for user %s: last_charge_at was %s hours ago (too recent)",
+                        uid, hours_since_charge
+                    )
+        
+        if next_charge_at is not None and not should_skip_pre_renew:
             nca = from_db_naive(next_charge_at) if next_charge_at else None
             delta_s = (nca - now).total_seconds()
             if 0 < delta_s <= 24 * 3600:

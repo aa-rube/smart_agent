@@ -360,7 +360,9 @@ class AppRepository:
                 if attempt_rec:
                     dates.append(from_db_naive(attempt_rec.attempted_at))
                 
-                # Последний платеж (любой статус - успех, отмена, истечение)
+                # Последний платеж: проверяем все финальные статусы (успех, отмена, истечение)
+                # ВАЖНО: PaymentLog.created_at используется как дополнительный источник истины для renewal платежей,
+                # даже если last_charge_at в подписке не обновился из-за ошибки
                 payment_rec = (
                     s.query(PaymentLog)
                     .filter(
@@ -373,6 +375,21 @@ class AppRepository:
                 )
                 if payment_rec:
                     dates.append(from_db_naive(payment_rec.created_at))
+                    
+                # Дополнительно: проверяем только успешные платежи отдельно для более точного учёта кулдауна
+                # Это особенно важно для renewal платежей, где last_charge_at может не обновиться
+                succeeded_payment_rec = (
+                    s.query(PaymentLog)
+                    .filter(
+                        PaymentLog.user_id == user_id,
+                        PaymentLog.status == 'succeeded'
+                    )
+                    .order_by(PaymentLog.created_at.desc())
+                    .first()
+                )
+                if succeeded_payment_rec:
+                    # Добавляем дату успешного платежа (может быть уже в dates, но это не страшно)
+                    dates.append(from_db_naive(succeeded_payment_rec.created_at))
         except Exception:
             pass  # billing_db может быть недоступен
         
