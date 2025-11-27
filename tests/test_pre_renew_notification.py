@@ -28,15 +28,20 @@ async def test_pre_renew_notification_skipped_recent_charge(mock_bot):
             mock_session_local.return_value.__enter__.return_value = mock_session
             
             # Setup subscription query - используем реальные datetime объекты
+            # next_charge_at должен быть в будущем (для фильтра > now)
             next_charge_at = now + timedelta(hours=23)
             created_at = now - timedelta(days=10)
             last_charge_at = now - timedelta(hours=1)
             
             # Настраиваем query chain правильно
-            mock_query = MagicMock()
-            mock_query.filter.return_value.order_by.return_value.all.return_value = [
+            # SQLAlchemy filter() возвращает объект, который поддерживает сравнения
+            mock_filter = MagicMock()
+            mock_filter.order_by.return_value.all.return_value = [
                 (7833048230, created_at, next_charge_at, last_charge_at)
             ]
+            # Мокируем так, чтобы filter() возвращал объект с методом order_by
+            mock_query = MagicMock()
+            mock_query.filter.return_value = mock_filter
             mock_session.query.return_value = mock_query
             
             mock_send.return_value = False  # Not sent due to recent charge
@@ -67,15 +72,18 @@ async def test_pre_renew_notification_sent_old_charge(mock_bot):
             mock_session_local.return_value.__enter__.return_value = mock_session
             
             # Setup subscription query - используем реальные datetime объекты
+            # next_charge_at должен быть в будущем (для фильтра > now)
             next_charge_at = now + timedelta(hours=23)
             created_at = now - timedelta(days=10)
             last_charge_at = now - timedelta(hours=3)
             
             # Настраиваем query chain правильно
-            mock_query = MagicMock()
-            mock_query.filter.return_value.order_by.return_value.all.return_value = [
+            mock_filter = MagicMock()
+            mock_filter.order_by.return_value.all.return_value = [
                 (7833048230, created_at, next_charge_at, last_charge_at)
             ]
+            mock_query = MagicMock()
+            mock_query.filter.return_value = mock_filter
             mock_session.query.return_value = mock_query
             
             mock_send.return_value = True  # Sent
@@ -107,14 +115,17 @@ async def test_pre_renew_notification_no_last_charge_at(mock_bot):
             mock_session_local.return_value.__enter__.return_value = mock_session
             
             # Setup subscription query - используем реальные datetime объекты
+            # next_charge_at должен быть в будущем (для фильтра > now)
             next_charge_at = now + timedelta(hours=23)
             created_at = now - timedelta(days=10)
             
             # Настраиваем query chain правильно
-            mock_query = MagicMock()
-            mock_query.filter.return_value.order_by.return_value.all.return_value = [
+            mock_filter = MagicMock()
+            mock_filter.order_by.return_value.all.return_value = [
                 (7833048230, created_at, next_charge_at, None)
             ]
+            mock_query = MagicMock()
+            mock_query.filter.return_value = mock_filter
             mock_session.query.return_value = mock_query
             
             mock_send.return_value = True  # Sent

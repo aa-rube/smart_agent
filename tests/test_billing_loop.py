@@ -18,6 +18,13 @@ def test_precharge_guard_and_attempt_success(mock_subscription, mock_time):
         mock_session_local.return_value.__enter__.return_value = mock_session
         mock_session.begin.return_value.__enter__.return_value = None
         
+        # Убеждаемся что mock_subscription имеет правильные атрибуты
+        mock_subscription.status = "active"
+        mock_subscription.payment_method_id = "pm_token_123"
+        mock_subscription.consecutive_failures = 0
+        mock_subscription.last_attempt_at = None
+        mock_subscription.next_charge_at = datetime(2025, 2, 15, 12, 0, 0, tzinfo=TIMEZONE)
+        
         # Setup subscription query - первый вызов query() для Subscription
         mock_sub_query = MagicMock()
         mock_sub_query.with_for_update.return_value.filter.return_value.one_or_none.return_value = mock_subscription
@@ -40,12 +47,9 @@ def test_precharge_guard_and_attempt_success(mock_subscription, mock_time):
         
         # Mock для attempt.id после flush
         # Настраиваем так, чтобы add() устанавливал id объекту
-        attempt_obj = MagicMock()
-        attempt_obj.id = 123
-        
         def add_side_effect(obj):
             # Устанавливаем id для объекта attempt
-            if hasattr(obj, '__class__'):
+            if hasattr(obj, '__class__') and 'ChargeAttempt' in str(obj.__class__):
                 obj.id = 123
             return None
         mock_session.add.side_effect = add_side_effect
@@ -177,11 +181,16 @@ def test_subscriptions_due_filters_correctly(mock_time):
         mock_sub.payment_method_id = "pm_token_123"
         mock_sub.consecutive_failures = 0
         mock_sub.last_attempt_at = None
-        mock_sub.next_charge_at = datetime.now(TIMEZONE) - timedelta(hours=1)  # Due
+        # next_charge_at должен быть в прошлом (due)
+        from bot.utils.time_helpers import to_utc_for_db
+        mock_sub.next_charge_at = to_utc_for_db(mock_time - timedelta(hours=1))
         
         # Настраиваем правильную цепочку SQLAlchemy запросов
         mock_query = MagicMock()
+        # Первый вызов limit() возвращает список
         mock_query.filter.return_value.order_by.return_value.limit.return_value = [mock_sub]
+        # Второй вызов limit() тоже возвращает список (в try/except блоке)
+        mock_query.limit.return_value = [mock_sub]
         
         # Setup charge attempt queries - нужно настроить отдельные запросы
         mock_attempt_query1 = MagicMock()
@@ -197,7 +206,7 @@ def test_subscriptions_due_filters_correctly(mock_time):
             mock_query,  # Первый запрос для subscriptions
             mock_attempt_query1,  # Для blocked_ids_day2
             mock_attempt_query2,  # Для blocked_ids_gap12h
-            mock_attempt_query3,  # Для failed_counts (может быть несколько вызовов)
+            mock_attempt_query3,  # Для failed_counts
         ]
         
         # Execute

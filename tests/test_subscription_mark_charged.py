@@ -19,7 +19,10 @@ def test_subscription_mark_charged_by_subscription_id(mock_subscription, mock_ti
         mock_session.begin.return_value.__enter__.return_value = None
         
         # Setup subscription query - убеждаемся что user_id совпадает
+        # mock_subscription из фикстуры уже имеет user_id=7833048230, но переопределяем для уверенности
+        mock_subscription.id = 1
         mock_subscription.user_id = 7833048230  # Должен совпадать с переданным user_id
+        mock_subscription.status = "active"  # Должен быть active
         mock_session.get.return_value = mock_subscription
         
         # Execute
@@ -45,11 +48,17 @@ def test_subscription_mark_charged_by_plan_code(mock_subscription, mock_time):
         mock_session.begin.return_value.__enter__.return_value = None
         
         # Setup subscription query by plan_code
+        # Когда не передается subscription_id, код идет по ветке elif plan_code:
+        # Нужно правильно настроить моки для query()
         mock_subscription.user_id = 7833048230
         mock_subscription.plan_code = "1m"
         mock_subscription.status = "active"
-        mock_session.get.return_value = None  # Not found by subscription_id
-        mock_session.query.return_value.filter.return_value.first.return_value = mock_subscription
+        mock_subscription.id = 1  # Важно: должен быть id=1 для проверки
+        
+        # Настраиваем query() для поиска по plan_code
+        mock_query = MagicMock()
+        mock_query.filter.return_value.first.return_value = mock_subscription
+        mock_session.query.return_value = mock_query
         
         # Execute
         result = subscription_mark_charged_for_user(
