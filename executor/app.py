@@ -1,5 +1,7 @@
 # smart_agent/executor/app.py
 import logging
+import os
+import sys
 from flask import Flask
 
 from executor.config import *
@@ -9,7 +11,6 @@ def create_app() -> Flask:
     sa_executor = Flask(__name__)
 
     # --- logging ---
-    import sys
     root_level = os.getenv("LOG_LEVEL", "INFO").upper()
     logging.basicConfig(
         level=getattr(logging, root_level, logging.INFO),

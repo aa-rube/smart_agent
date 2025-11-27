@@ -19,7 +19,7 @@ from html import escape
 from yookassa.domain.exceptions.forbidden_error import ForbiddenError
 from bot.config import get_file_path, TIMEZONE
 from bot.utils import youmoney
-from bot.utils.time_helpers import now_msk, to_aware_msk, to_utc_for_db, from_db_naive, msk_str
+from bot.utils.time_helpers import now_msk, to_aware_msk, to_utc_for_db, from_db_naive
 import bot.utils.database as app_db
 import bot.utils.billing_db as billing_db
 from bot.utils.redis_repo import yookassa_dedup, invalidate_payment_ok_cache, quota_repo
@@ -406,18 +406,6 @@ def kb_rates(user_id: Optional[int] = None) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="start_retry")],
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def _trial_status_line(user_id: int) -> Optional[str]:
-    """Возвращает строку статуса, если активен пробный период."""
-    try:
-
-        until = app_db.get_trial_until(user_id)
-        if until and app_db.is_trial_active(user_id):
-            return f"Статус: до {until.date().isoformat()} (пробный период)"
-    except Exception:
-        pass
-    return None
 
 
 def kb_settings_main(user_id: int) -> InlineKeyboardMarkup:

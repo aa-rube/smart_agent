@@ -1,8 +1,12 @@
 #C:\Users\alexr\Desktop\dev\super_bot\smart_agent\bot\run.py
 import asyncio
 import logging
+import os
 import signal
+import time
 from contextlib import suppress
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -20,8 +24,7 @@ from bot.utils.notification import run_notification_scheduler
 
 from bot.handlers.payment_handler import process_yookassa_webhook
 from bot.utils import youmoney
-from datetime import datetime, timedelta, timezone
-from bot.utils.time_helpers import now_msk, to_aware_msk
+from bot.utils.time_helpers import now_msk
 from bot.handlers.description_playbook import register_http_endpoints
 
 
@@ -140,7 +143,6 @@ async def membership_enforcer_loop():
     и аккуратно инициирует удаление из чата через membership-service.
     Анти-спам: один и тот же user_id удаляем не чаще, чем раз в REMOVAL_COOLDOWN_HOURS.
     """
-    msk = ZoneInfo("Europe/Moscow")
     while not shutdown_event.is_set():
         try:
             # 1) Кандидаты: подписки со статусом 'active', у которых оплаченный период уже закончился
@@ -204,9 +206,6 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", YOUMONEY_PORT)
     await site.start()
-
-    #UTC+3
-    msk = ZoneInfo("Europe/Moscow")
 
     async def mailing_loop():
         """
@@ -460,7 +459,6 @@ async def main():
         try:
             # Небольшая задержка для завершения текущих операций в циклах
             # но не более 2 секунд
-            import time
             time.sleep(0.5)  # 500ms на завершение текущих операций
         except Exception:
             pass

@@ -15,7 +15,7 @@ from sqlalchemy.orm import (
 
 from bot.config import DB_URL
 from bot.utils.time_helpers import (
-    now_msk, to_aware_msk, to_utc_for_db, from_db_naive, msk_str
+    now_msk, to_aware_msk, to_utc_for_db, from_db_naive
 )
 import json
 
