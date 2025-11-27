@@ -18,12 +18,14 @@ def test_subscription_mark_charged_by_subscription_id(mock_subscription, mock_ti
         mock_session_local.return_value.__enter__.return_value = mock_session
         mock_session.begin.return_value.__enter__.return_value = None
         
-        # Setup subscription query - убеждаемся что user_id совпадает
-        # mock_subscription из фикстуры уже имеет user_id=7833048230, но переопределяем для уверенности
-        mock_subscription.id = 1
-        mock_subscription.user_id = 7833048230  # Должен совпадать с переданным user_id
-        mock_subscription.status = "active"  # Должен быть active
-        mock_session.get.return_value = mock_subscription
+        # Setup subscription query - создаем новый объект с правильным user_id
+        # Проблема: mock_subscription из фикстуры может иметь другой user_id
+        mock_sub = MagicMock()
+        mock_sub.id = 1
+        mock_sub.user_id = 7833048230  # Должен совпадать с переданным user_id
+        mock_sub.status = "active"  # Должен быть active
+        mock_sub.consecutive_failures = 0
+        mock_session.get.return_value = mock_sub
         
         # Execute
         result = subscription_mark_charged_for_user(
@@ -34,7 +36,7 @@ def test_subscription_mark_charged_by_subscription_id(mock_subscription, mock_ti
         
         # Should update subscription
         assert result == 1
-        assert mock_subscription.consecutive_failures == 0
+        assert mock_sub.consecutive_failures == 0
         mock_session.flush.assert_called_once()
 
 
@@ -50,14 +52,17 @@ def test_subscription_mark_charged_by_plan_code(mock_subscription, mock_time):
         # Setup subscription query by plan_code
         # Когда не передается subscription_id, код идет по ветке elif plan_code:
         # Нужно правильно настроить моки для query()
-        mock_subscription.user_id = 7833048230
-        mock_subscription.plan_code = "1m"
-        mock_subscription.status = "active"
-        mock_subscription.id = 1  # Важно: должен быть id=1 для проверки
+        # Создаем новый объект с правильным user_id
+        mock_sub = MagicMock()
+        mock_sub.id = 1
+        mock_sub.user_id = 7833048230
+        mock_sub.plan_code = "1m"
+        mock_sub.status = "active"
+        mock_sub.consecutive_failures = 0
         
         # Настраиваем query() для поиска по plan_code
         mock_query = MagicMock()
-        mock_query.filter.return_value.first.return_value = mock_subscription
+        mock_query.filter.return_value.first.return_value = mock_sub
         mock_session.query.return_value = mock_query
         
         # Execute
@@ -69,7 +74,7 @@ def test_subscription_mark_charged_by_plan_code(mock_subscription, mock_time):
         
         # Should update subscription
         assert result == 1
-        assert mock_subscription.consecutive_failures == 0
+        assert mock_sub.consecutive_failures == 0
 
 
 def test_subscription_mark_charged_subscription_not_found(mock_time):
@@ -106,7 +111,9 @@ def test_subscription_mark_charged_inactive_subscription_fallback(mock_subscript
         mock_session.begin.return_value.__enter__.return_value = None
         
         # Setup - subscription found but inactive
+        # Создаем новый объект с правильным user_id
         mock_inactive_sub = MagicMock()
+        mock_inactive_sub.id = 1
         mock_inactive_sub.status = "canceled"
         mock_inactive_sub.user_id = 7833048230  # Совпадает, но статус canceled
         mock_session.get.return_value = mock_inactive_sub
