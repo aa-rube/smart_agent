@@ -5,8 +5,8 @@ import pytest
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta
 
-from bot.utils.billing_db import subscription_mark_charged_for_user
-from bot.utils.time_helpers import now_msk, TIMEZONE
+from bot.utils.billing_db import subscription_mark_charged_for_user, Subscription
+from bot.utils.time_helpers import now_msk, TIMEZONE, from_db_naive
 
 
 def test_subscription_mark_charged_by_subscription_id(mock_time):

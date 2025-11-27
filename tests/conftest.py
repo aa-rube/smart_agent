@@ -153,6 +153,48 @@ def mock_redis():
 
 
 @pytest.fixture
+def mock_redis_client():
+    """Mock Redis client with sync methods for billing_db."""
+    from unittest.mock import MagicMock
+    redis = MagicMock()
+    redis.sync_get = MagicMock(return_value=None)
+    redis.sync_setex = MagicMock(return_value=True)
+    redis.sync_set = MagicMock(return_value=True)
+    return redis
+
+
+@pytest.fixture(autouse=True)
+def patch_redis(monkeypatch, mock_redis_client):
+    """Automatically patch Redis in all tests."""
+    from bot.utils import redis_repo
+    monkeypatch.setattr(redis_repo, '_redis', mock_redis_client)
+
+
+@pytest.fixture
+def in_memory_db():
+    """Create in-memory SQLite database for testing real logic."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from bot.utils.billing_db import Base, BillingRepository
+    
+    # In-memory SQLite (fast, isolated)
+    engine = create_engine("sqlite:///:memory:", echo=False)
+    Base.metadata.create_all(engine)
+    
+    SessionLocal_test = sessionmaker(
+        bind=engine,
+        autoflush=False,
+        autocommit=False
+    )
+    repo = BillingRepository(SessionLocal_test)
+    
+    yield repo, SessionLocal_test
+    
+    # Cleanup after test
+    Base.metadata.drop_all(engine)
+
+
+@pytest.fixture
 def mock_db_session():
     """Mock database session."""
     session = MagicMock()

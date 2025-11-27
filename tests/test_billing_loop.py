@@ -5,7 +5,7 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 from datetime import datetime, timedelta
 
-from bot.utils.billing_db import precharge_guard_and_attempt, subscriptions_due
+from bot.utils.billing_db import precharge_guard_and_attempt, subscriptions_due, Subscription
 from bot.utils.time_helpers import now_msk, TIMEZONE
 
 
@@ -132,33 +132,38 @@ def test_precharge_guard_and_attempt_blocked_by_2_attempts_24h(mock_subscription
         assert attempt_id is None
 
 
-def test_subscriptions_due_filters_correctly(mock_time):
-    """Test that subscriptions_due filters subscriptions correctly."""
-    # Мокируем _repo напрямую
-    with patch('bot.utils.billing_db._repo') as mock_repo:
-        # Настраиваем возвращаемое значение
-        mock_repo.subscriptions_due.return_value = [
-            {
-                "id": 1,
-                "user_id": 7833048230,
-                "plan_code": "1m",
-                "interval_months": 1,
-                "amount_value": "2490.00",
-                "amount_currency": "RUB",
-                "payment_method_id": "pm_token_123",
-                "consecutive_failures": 0,
-                "last_attempt_at": None,
-            }
-        ]
-        
-        # Execute
-        due = subscriptions_due(now=mock_time, limit=100)
-        
-        # Should return due subscription
-        assert len(due) > 0
-        assert due[0]["id"] == 1
-        assert due[0]["user_id"] == 7833048230
-        mock_repo.subscriptions_due.assert_called_once_with(now=mock_time, limit=100)
+def test_subscriptions_due_filters_correctly(in_memory_db, mock_time):
+    """Test that subscriptions_due filters subscriptions correctly with real DB."""
+    repo, SessionLocal = in_memory_db
+    
+    # Create real data in DB
+    now = mock_time
+    sub_id = repo.subscription_upsert(
+        user_id=7833048230,
+        plan_code="1m",
+        interval_months=1,
+        amount_value="2490.00",
+        amount_currency="RUB",
+        payment_method_id="pm_token_123",
+        next_charge_at=now - timedelta(days=1),  # Overdue
+        status="active"
+    )
+    
+    # Call function with real DB
+    with patch('bot.utils.billing_db._repo', repo):
+        due = subscriptions_due(now=now, limit=100)
+    
+    # Check real results
+    assert len(due) > 0
+    assert due[0]["id"] == sub_id
+    assert due[0]["user_id"] == 7833048230
+    
+    # Check that SQL query works correctly
+    # (subscription actually got into selection)
+    with SessionLocal() as s:
+        sub = s.get(Subscription, sub_id)
+        assert sub is not None
+        assert sub.status == "active"
 
 
 def test_subscriptions_due_filters_by_guard_rules(mock_time):
