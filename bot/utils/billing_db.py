@@ -648,8 +648,8 @@ class BillingRepository:
         with self._session() as s, s.begin():
             q = s.query(Subscription).filter(Subscription.user_id == user_id, Subscription.status == "active")
             updated = 0
-            now_msk = now_msk()
-            now = to_utc_for_db(now_msk)  # Для БД храним в UTC
+            now_msk_val = now_msk()
+            now = to_utc_for_db(now_msk_val)  # Для БД храним в UTC
             for rec in q:
                 rec.status = "canceled"
                 rec.cancel_at = now
@@ -663,10 +663,10 @@ class BillingRepository:
         with self._session() as s, s.begin():
             rec = s.get(Subscription, sub_id)
             if rec:
-                now_msk = now_msk()
-                rec.last_charge_at = to_utc_for_db(now_msk)
+                now_msk_val = now_msk()
+                rec.last_charge_at = to_utc_for_db(now_msk_val)
                 rec.next_charge_at = to_utc_for_db(to_aware_msk(next_charge_at))
-                rec.updated_at = to_utc_for_db(now_msk)
+                rec.updated_at = to_utc_for_db(now_msk_val)
 
     def subscription_mark_charged_for_user(
         self, 
@@ -679,15 +679,61 @@ class BillingRepository:
         """
         Обновляет подписку после успешного платежа.
         next_charge_at должен быть в МСК.
-        Если передан subscription_id - обновляет конкретную подписку.
+        Если передан subscription_id - обновляет конкретную подписку (только если она active).
         Если передан plan_code - ищет по plan_code.
         Иначе - использует текущую логику (первая активная подписка).
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         with self._session() as s, s.begin():
+            rec = None
+            
             if subscription_id:
                 rec = s.get(Subscription, subscription_id)
-                if rec and rec.user_id != user_id:
-                    rec = None
+                if rec:
+                    if rec.user_id != user_id:
+                        logger.warning(
+                            "subscription_mark_charged_for_user: subscription_id=%s belongs to different user_id=%s (expected %s)",
+                            subscription_id, rec.user_id, user_id
+                        )
+                        rec = None
+                    elif rec.status != "active":
+                        logger.warning(
+                            "subscription_mark_charged_for_user: subscription_id=%s has status=%s (expected 'active'), user_id=%s. "
+                            "Will try fallback search.",
+                            subscription_id, rec.status, user_id
+                        )
+                        rec = None
+                        # Fallback: попробуем найти активную подписку по plan_code или по умолчанию
+                        if plan_code:
+                            rec = (
+                                s.query(Subscription)
+                                .filter(
+                                    Subscription.user_id == user_id,
+                                    Subscription.plan_code == plan_code,
+                                    Subscription.status == "active"
+                                )
+                                .first()
+                            )
+                            if rec:
+                                logger.info(
+                                    "subscription_mark_charged_for_user: Found active subscription by plan_code=%s as fallback, user_id=%s",
+                                    plan_code, user_id
+                                )
+                        if not rec:
+                            # Последняя попытка: любая активная подписка пользователя
+                            rec = (
+                                s.query(Subscription)
+                                .filter(Subscription.user_id == user_id, Subscription.status == "active")
+                                .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
+                                .first()
+                            )
+                            if rec:
+                                logger.info(
+                                    "subscription_mark_charged_for_user: Found active subscription by default fallback, user_id=%s, subscription_id=%s",
+                                    user_id, rec.id
+                                )
             elif plan_code:
                 rec = (
                     s.query(Subscription)
@@ -698,6 +744,24 @@ class BillingRepository:
                     )
                     .first()
                 )
+                if not rec:
+                    logger.warning(
+                        "subscription_mark_charged_for_user: No active subscription found for user_id=%s, plan_code=%s. "
+                        "Trying default fallback.",
+                        user_id, plan_code
+                    )
+                    # Fallback: любая активная подписка пользователя
+                    rec = (
+                        s.query(Subscription)
+                        .filter(Subscription.user_id == user_id, Subscription.status == "active")
+                        .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
+                        .first()
+                    )
+                    if rec:
+                        logger.info(
+                            "subscription_mark_charged_for_user: Found active subscription by default fallback, user_id=%s, subscription_id=%s (requested plan_code=%s)",
+                            user_id, rec.id, plan_code
+                        )
             else:
                 rec = (
                     s.query(Subscription)
@@ -705,12 +769,22 @@ class BillingRepository:
                     .order_by(Subscription.next_charge_at.desc(), Subscription.updated_at.desc())
                     .first()
                 )
+            
             if not rec:
+                logger.warning(
+                    "subscription_mark_charged_for_user: No subscription found to update for user_id=%s, subscription_id=%s, plan_code=%s",
+                    user_id, subscription_id, plan_code
+                )
                 return None
-            now_msk = now_msk()
-            rec.last_charge_at = to_utc_for_db(now_msk)
+            
+            logger.info(
+                "subscription_mark_charged_for_user: Updating subscription_id=%s for user_id=%s, next_charge_at=%s",
+                rec.id, user_id, next_charge_at
+            )
+            now_msk_val = now_msk()
+            rec.last_charge_at = to_utc_for_db(now_msk_val)
             rec.next_charge_at = to_utc_for_db(to_aware_msk(next_charge_at))
-            rec.updated_at = to_utc_for_db(now_msk)
+            rec.updated_at = to_utc_for_db(now_msk_val)
             rec.consecutive_failures = 0  # Сбрасываем счётчик неудач
             s.flush()
             return rec.id
