@@ -15,13 +15,7 @@ from bot.config import TIMEZONE
 from bot.utils.time_helpers import now_msk
 
 
-@pytest.fixture
-def event_loop():
-    """Create an instance of the default event loop for the test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
+# Event loop управляется pytest-asyncio автоматически
 
 @pytest.fixture
 def mock_bot():
