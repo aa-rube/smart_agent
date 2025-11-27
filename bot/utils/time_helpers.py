@@ -76,3 +76,4 @@ def from_db_naive(dt: Optional[datetime]) -> Optional[datetime]:
         dt = dt.replace(tzinfo=UTC)
     return dt.astimezone(TIMEZONE)
 
+
