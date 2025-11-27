@@ -12,7 +12,7 @@ from bot.utils.time_helpers import now_msk, TIMEZONE
 @pytest.mark.asyncio
 async def test_cooldown_with_canceled_subscription():
     """Test that canceled subscription with recent last_charge_at blocks trial offer."""
-    user_id = 123456789
+    user_id = 7833048230
     
     with patch('bot.handlers.payment_handler.app_db') as mock_app_db, \
          patch('bot.handlers.payment_handler.youmoney') as mock_youmoney, \
@@ -24,7 +24,7 @@ async def test_cooldown_with_canceled_subscription():
         mock_canceled_sub.last_charge_at = datetime.now(TIMEZONE) - timedelta(days=30)  # 30 days ago
         
         from bot.utils.billing_db import SessionLocal, Subscription
-        with patch('bot.handlers.payment_handler.SessionLocal') as mock_session_local:
+        with patch('bot.utils.billing_db.SessionLocal') as mock_session_local:
             mock_session = MagicMock()
             mock_session_local.return_value.__enter__.return_value = mock_session
             
@@ -51,7 +51,7 @@ async def test_cooldown_with_canceled_subscription():
 @pytest.mark.asyncio
 async def test_cooldown_with_old_canceled_subscription():
     """Test that old canceled subscription (beyond 90 days) allows trial offer."""
-    user_id = 123456789
+    user_id = 7833048230
     
     with patch('bot.handlers.payment_handler.app_db') as mock_app_db, \
          patch('bot.handlers.payment_handler.youmoney') as mock_youmoney, \
@@ -63,7 +63,7 @@ async def test_cooldown_with_old_canceled_subscription():
         mock_canceled_sub.last_charge_at = datetime.now(TIMEZONE) - timedelta(days=100)  # 100 days ago
         
         from bot.utils.billing_db import SessionLocal, Subscription
-        with patch('bot.handlers.payment_handler.SessionLocal') as mock_session_local:
+        with patch('bot.utils.billing_db.SessionLocal') as mock_session_local:
             mock_session = MagicMock()
             mock_session_local.return_value.__enter__.return_value = mock_session
             
@@ -90,7 +90,7 @@ async def test_cooldown_with_old_canceled_subscription():
 @pytest.mark.asyncio
 async def test_cooldown_with_active_subscription():
     """Test that active subscription always offers full payment."""
-    user_id = 123456789
+    user_id = 7833048230
     
     with patch('bot.handlers.payment_handler.app_db') as mock_app_db, \
          patch('bot.handlers.payment_handler.youmoney') as mock_youmoney, \
@@ -101,7 +101,7 @@ async def test_cooldown_with_active_subscription():
         mock_active_sub.status = "active"
         
         from bot.utils.billing_db import SessionLocal, Subscription
-        with patch('bot.handlers.payment_handler.SessionLocal') as mock_session_local:
+        with patch('bot.utils.billing_db.SessionLocal') as mock_session_local:
             mock_session = MagicMock()
             mock_session_local.return_value.__enter__.return_value = mock_session
             mock_session.query.return_value.filter.return_value.first.return_value = mock_active_sub

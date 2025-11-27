@@ -20,17 +20,24 @@ async def test_pre_renew_notification_skipped_recent_charge(mock_bot):
         mock_utcnow.return_value = now
         
         # Setup active subscription with recent last_charge_at (1 hour ago)
-        mock_billing.list_active_subscription_user_ids.return_value = [123456789]
+        mock_billing.list_active_subscription_user_ids.return_value = [7833048230]
         
         from bot.utils.billing_db import SessionLocal, Subscription
         with patch('bot.utils.notification.billing_db.SessionLocal') as mock_session_local:
             mock_session = MagicMock()
             mock_session_local.return_value.__enter__.return_value = mock_session
             
-            # Setup subscription query
-            mock_session.query.return_value.filter.return_value.order_by.return_value.all.return_value = [
-                (123456789, datetime.now(TIMEZONE) - timedelta(days=10), datetime.now(TIMEZONE) + timedelta(hours=23), datetime.now(TIMEZONE) - timedelta(hours=1))
+            # Setup subscription query - используем реальные datetime объекты
+            next_charge_at = now + timedelta(hours=23)
+            created_at = now - timedelta(days=10)
+            last_charge_at = now - timedelta(hours=1)
+            
+            # Настраиваем query chain правильно
+            mock_query = MagicMock()
+            mock_query.filter.return_value.order_by.return_value.all.return_value = [
+                (7833048230, created_at, next_charge_at, last_charge_at)
             ]
+            mock_session.query.return_value = mock_query
             
             mock_send.return_value = False  # Not sent due to recent charge
             
@@ -52,17 +59,24 @@ async def test_pre_renew_notification_sent_old_charge(mock_bot):
         mock_utcnow.return_value = now
         
         # Setup active subscription with old last_charge_at (3 hours ago)
-        mock_billing.list_active_subscription_user_ids.return_value = [123456789]
+        mock_billing.list_active_subscription_user_ids.return_value = [7833048230]
         
         from bot.utils.billing_db import SessionLocal, Subscription
         with patch('bot.utils.notification.billing_db.SessionLocal') as mock_session_local:
             mock_session = MagicMock()
             mock_session_local.return_value.__enter__.return_value = mock_session
             
-            # Setup subscription query
-            mock_session.query.return_value.filter.return_value.order_by.return_value.all.return_value = [
-                (123456789, datetime.now(TIMEZONE) - timedelta(days=10), datetime.now(TIMEZONE) + timedelta(hours=23), datetime.now(TIMEZONE) - timedelta(hours=3))
+            # Setup subscription query - используем реальные datetime объекты
+            next_charge_at = now + timedelta(hours=23)
+            created_at = now - timedelta(days=10)
+            last_charge_at = now - timedelta(hours=3)
+            
+            # Настраиваем query chain правильно
+            mock_query = MagicMock()
+            mock_query.filter.return_value.order_by.return_value.all.return_value = [
+                (7833048230, created_at, next_charge_at, last_charge_at)
             ]
+            mock_session.query.return_value = mock_query
             
             mock_send.return_value = True  # Sent
             
@@ -85,17 +99,23 @@ async def test_pre_renew_notification_no_last_charge_at(mock_bot):
         mock_utcnow.return_value = now
         
         # Setup active subscription without last_charge_at
-        mock_billing.list_active_subscription_user_ids.return_value = [123456789]
+        mock_billing.list_active_subscription_user_ids.return_value = [7833048230]
         
         from bot.utils.billing_db import SessionLocal, Subscription
         with patch('bot.utils.notification.billing_db.SessionLocal') as mock_session_local:
             mock_session = MagicMock()
             mock_session_local.return_value.__enter__.return_value = mock_session
             
-            # Setup subscription query
-            mock_session.query.return_value.filter.return_value.order_by.return_value.all.return_value = [
-                (123456789, datetime.now(TIMEZONE) - timedelta(days=10), datetime.now(TIMEZONE) + timedelta(hours=23), None)
+            # Setup subscription query - используем реальные datetime объекты
+            next_charge_at = now + timedelta(hours=23)
+            created_at = now - timedelta(days=10)
+            
+            # Настраиваем query chain правильно
+            mock_query = MagicMock()
+            mock_query.filter.return_value.order_by.return_value.all.return_value = [
+                (7833048230, created_at, next_charge_at, None)
             ]
+            mock_session.query.return_value = mock_query
             
             mock_send.return_value = True  # Sent
             

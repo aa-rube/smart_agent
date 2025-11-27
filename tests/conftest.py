@@ -30,7 +30,7 @@ def mock_bot():
 def mock_user():
     """Mock Telegram User."""
     user = User(
-        id=123456789,
+        id=7833048230,
         is_bot=False,
         first_name="Test",
         username="testuser"
@@ -41,7 +41,7 @@ def mock_user():
 @pytest.fixture
 def mock_chat():
     """Mock Telegram Chat."""
-    chat = Chat(id=123456789, type="private")
+    chat = Chat(id=7833048230, type="private")
     return chat
 
 
@@ -70,7 +70,7 @@ def sample_payment_webhook_succeeded():
                 }
             },
             "metadata": {
-                "user_id": "123456789",
+                "user_id": "7833048230",
                 "plan_code": "1m",
                 "months": "1",
                 "is_recurring": "1",
@@ -108,7 +108,7 @@ def sample_payment_webhook_renewal():
                 }
             },
             "metadata": {
-                "user_id": "123456789",
+                "user_id": "7833048230",
                 "plan_code": "1m",
                 "months": "1",
                 "is_recurring": "1",
@@ -133,7 +133,7 @@ def sample_payment_webhook_canceled():
                 "currency": "RUB"
             },
             "metadata": {
-                "user_id": "123456789",
+                "user_id": "7833048230",
                 "subscription_id": "2"
             }
         }
@@ -177,7 +177,7 @@ def mock_subscription():
     """Mock subscription object."""
     sub = MagicMock()
     sub.id = 1
-    sub.user_id = 123456789
+    sub.user_id = 7833048230
     sub.plan_code = "1m"
     sub.status = "active"
     sub.payment_method_id = "pm_token_123"
@@ -196,7 +196,7 @@ def mock_charge_attempt():
     attempt = MagicMock()
     attempt.id = 1
     attempt.subscription_id = 1
-    attempt.user_id = 123456789
+    attempt.user_id = 7833048230
     attempt.payment_id = "test_payment_123"
     attempt.status = "created"
     attempt.attempted_at = datetime(2025, 1, 15, 12, 0, 0, tzinfo=TIMEZONE)

@@ -18,12 +18,13 @@ def test_subscription_mark_charged_by_subscription_id(mock_subscription, mock_ti
         mock_session_local.return_value.__enter__.return_value = mock_session
         mock_session.begin.return_value.__enter__.return_value = None
         
-        # Setup subscription query
+        # Setup subscription query - убеждаемся что user_id совпадает
+        mock_subscription.user_id = 7833048230  # Должен совпадать с переданным user_id
         mock_session.get.return_value = mock_subscription
         
         # Execute
         result = subscription_mark_charged_for_user(
-            user_id=123456789,
+            user_id=7833048230,
             next_charge_at=mock_time + timedelta(days=30),
             subscription_id=1
         )
@@ -44,12 +45,15 @@ def test_subscription_mark_charged_by_plan_code(mock_subscription, mock_time):
         mock_session.begin.return_value.__enter__.return_value = None
         
         # Setup subscription query by plan_code
+        mock_subscription.user_id = 7833048230
+        mock_subscription.plan_code = "1m"
+        mock_subscription.status = "active"
         mock_session.get.return_value = None  # Not found by subscription_id
         mock_session.query.return_value.filter.return_value.first.return_value = mock_subscription
         
         # Execute
         result = subscription_mark_charged_for_user(
-            user_id=123456789,
+            user_id=7833048230,
             next_charge_at=mock_time + timedelta(days=30),
             plan_code="1m"
         )
@@ -74,7 +78,7 @@ def test_subscription_mark_charged_subscription_not_found(mock_time):
         
         # Execute
         result = subscription_mark_charged_for_user(
-            user_id=123456789,
+            user_id=7833048230,
             next_charge_at=mock_time + timedelta(days=30),
             subscription_id=999
         )
@@ -95,18 +99,31 @@ def test_subscription_mark_charged_inactive_subscription_fallback(mock_subscript
         # Setup - subscription found but inactive
         mock_inactive_sub = MagicMock()
         mock_inactive_sub.status = "canceled"
+        mock_inactive_sub.user_id = 7833048230  # Совпадает, но статус canceled
         mock_session.get.return_value = mock_inactive_sub
         
         # Fallback - find active subscription by plan_code
         mock_active_sub = MagicMock()
         mock_active_sub.id = 2
-        mock_active_sub.user_id = 123456789
+        mock_active_sub.user_id = 7833048230
+        mock_active_sub.plan_code = "1m"
+        mock_active_sub.status = "active"
         mock_active_sub.consecutive_failures = 0
-        mock_session.query.return_value.filter.return_value.first.return_value = mock_active_sub
+        
+        # Настраиваем последовательные вызовы query() для fallback
+        mock_query1 = MagicMock()
+        mock_query1.filter.return_value.first.return_value = mock_active_sub
+        mock_query2 = MagicMock()
+        mock_query2.filter.return_value.order_by.return_value.first.return_value = None
+        
+        mock_session.query.side_effect = [
+            mock_query1,  # Поиск по plan_code
+            mock_query2,  # Fallback поиск по умолчанию (не используется в этом случае)
+        ]
         
         # Execute
         result = subscription_mark_charged_for_user(
-            user_id=123456789,
+            user_id=7833048230,
             next_charge_at=mock_time + timedelta(days=30),
             subscription_id=1,
             plan_code="1m"

@@ -89,7 +89,7 @@ async def test_webhook_canceled_payment(mock_bot, sample_payment_webhook_cancele
         mock_sub.last_fail_notice_at = None
         
         from bot.utils.billing_db import SessionLocal, Subscription
-        with patch('bot.handlers.payment_handler.SessionLocal') as mock_session_local:
+        with patch('bot.utils.billing_db.SessionLocal') as mock_session_local:
             mock_session = MagicMock()
             mock_session_local.return_value.__enter__.return_value = mock_session
             mock_session.get.return_value = mock_sub
@@ -151,7 +151,7 @@ async def test_webhook_renewal_subscription_not_found(mock_bot, sample_payment_w
         
         # Mock subscription query for fallback logic
         from bot.utils.billing_db import SessionLocal, Subscription
-        with patch('bot.handlers.payment_handler.SessionLocal') as mock_session_local:
+        with patch('bot.utils.billing_db.SessionLocal') as mock_session_local:
             mock_session = MagicMock()
             mock_session_local.return_value.__enter__.return_value = mock_session
             mock_session.query.return_value.filter.return_value.first.return_value = None  # No canceled sub
