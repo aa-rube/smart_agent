@@ -1,6 +1,7 @@
 """
 Tests for subscription_cancel_for_user with real database.
 """
+import time
 import pytest
 from datetime import datetime, timedelta
 from bot.utils.billing_db import Subscription
@@ -29,6 +30,9 @@ def test_subscription_cancel_for_user_single(in_memory_db):
         original_sub = s.get(Subscription, sub_id)
         original_pm_id = original_sub.payment_method_id
         original_next_charge = original_sub.next_charge_at
+    
+    # Small delay to ensure timestamps differ
+    time.sleep(0.1)
     
     # Cancel
     count = repo.subscription_cancel_for_user(user_id=123)
@@ -118,6 +122,9 @@ def test_subscription_cancel_for_user_updates_fields(in_memory_db):
     with SessionLocal() as s:
         original_sub = s.get(Subscription, sub_id)
         original_updated_at = original_sub.updated_at
+    
+    # Small delay to ensure timestamps differ
+    time.sleep(0.1)
     
     # Cancel
     repo.subscription_cancel_for_user(user_id=123)

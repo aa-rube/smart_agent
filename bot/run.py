@@ -409,8 +409,8 @@ async def billing_loop(shutdown_event_param=None):
             except asyncio.TimeoutError:
                 # Таймаут истёк, продолжаем цикл
                 continue
-        
-        logging.info("billing_loop stopped")
+    
+    logging.info("billing_loop stopped")
 
     async def notification_loop():
         """

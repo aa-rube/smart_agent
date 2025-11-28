@@ -1,6 +1,7 @@
 """
 Tests for subscription_upsert with real database.
 """
+import time
 import pytest
 from datetime import datetime, timedelta
 from bot.utils.billing_db import Subscription
@@ -71,6 +72,9 @@ def test_subscription_upsert_updates_existing(in_memory_db):
     with SessionLocal() as s:
         original_sub = s.get(Subscription, sub_id)
         original_created_at = original_sub.created_at
+    
+    # Small delay to ensure timestamps differ
+    time.sleep(0.1)
     
     # 2. Update with new data
     new_next_charge = now + timedelta(days=60)
